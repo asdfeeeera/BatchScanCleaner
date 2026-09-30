@@ -1,0 +1,15 @@
+build/
+*.user
+*.suo
+*.sdf
+*.opendb
+*.VC.db
+.vs/
+.vscode/
+*.obj
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.log
