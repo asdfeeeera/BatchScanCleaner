@@ -101,7 +101,7 @@ int BlackEdge::scanTop(const cv::Mat &gray,
                                 darkThreshold, options.gapTolerance);
         depths.push_back(d);
     }
-    return percentileOf(depths, 1.0);
+    return percentileOf(depths, 0.95) + 5;
 }
 
 int BlackEdge::scanBottom(const cv::Mat &gray,
@@ -119,7 +119,7 @@ int BlackEdge::scanBottom(const cv::Mat &gray,
                                 darkThreshold, options.gapTolerance);
         depths.push_back(d);
     }
-    return percentileOf(depths, 1.0);
+    return percentileOf(depths, 0.95) + 5;
 }
 
 int BlackEdge::scanLeft(const cv::Mat &gray,
@@ -137,7 +137,7 @@ int BlackEdge::scanLeft(const cv::Mat &gray,
                                 darkThreshold, options.gapTolerance);
         depths.push_back(d);
     }
-    return percentileOf(depths, 1.0);
+    return percentileOf(depths, 0.95) + 5;
 }
 
 int BlackEdge::scanRight(const cv::Mat &gray,
@@ -155,7 +155,7 @@ int BlackEdge::scanRight(const cv::Mat &gray,
                                 darkThreshold, options.gapTolerance);
         depths.push_back(d);
     }
-    return percentileOf(depths, 1.0);
+    return percentileOf(depths, 0.95) + 5;
 }
 
 void BlackEdge::smoothMask(cv::Mat &mask, int kernelSize)
