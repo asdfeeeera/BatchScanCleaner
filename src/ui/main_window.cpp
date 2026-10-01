@@ -356,9 +356,15 @@ void MainWindow::onRemoveBlackEdge()
 
     statusBar()->showMessage(QString::fromUtf8("正在去除黑边..."));
 
-process::BlackEdgeOptions options;
-options.expandPixels = 8;
-options.minAreaRatio = 0.1;
+    process::BlackEdgeOptions options;
+    options.paperSampleRatio   = 0.6;
+    options.paperPercentile    = 0.9;
+    options.darkRatio          = 0.75;
+    options.maxScanRatio       = 0.30;
+    options.darkPixelRatio     = 0.50;
+    options.gapTolerance       = 3;
+    options.smoothKernelSize   = 5;
+    options.fillWhite          = true;
 
     const process::BlackEdgeResult result =
         process::BlackEdge::removeBlackEdge(m_currentMat, options);
@@ -375,13 +381,18 @@ options.minAreaRatio = 0.1;
 
     if (result.skipped) {
         statusBar()->showMessage(
-            QString::fromUtf8("黑边去除：未检测到明显黑边，已跳过（纸张占比 %1%）")
-                .arg(result.detectedAreaRatio * 100.0, 0, 'f', 1));
+            QString::fromUtf8("黑边去除：未检测到明显黑边（纸张灰度 %1，阈值 %2）")
+                .arg(result.paperGray, 0, 'f', 1)
+                .arg(result.darkThreshold, 0, 'f', 1));
     } else {
         statusBar()->showMessage(
-            QString::fromUtf8("黑边去除完成：填白 %1 像素，纸张占比 %2%")
-                .arg(result.filledPixels)
-                .arg(result.detectedAreaRatio * 100.0, 0, 'f', 1));
+            QString::fromUtf8("黑边去除完成：上 %1 / 下 %2 / 左 %3 / 右 %4 像素，纸张灰度 %5，阈值 %6")
+                .arg(result.topPixels)
+                .arg(result.bottomPixels)
+                .arg(result.leftPixels)
+                .arg(result.rightPixels)
+                .arg(result.paperGray, 0, 'f', 1)
+                .arg(result.darkThreshold, 0, 'f', 1));
     }
 }
 

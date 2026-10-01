@@ -3,13 +3,212 @@
 #include <opencv2/imgproc.hpp>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 
 namespace process {
+
+double BlackEdge::estimatePaperGray(const cv::Mat &gray,
+                                     const BlackEdgeOptions &options)
+{
+    const int W = gray.cols;
+    const int H = gray.rows;
+
+    // 取中间区域
+    const int marginX = static_cast<int>(W * (1.0 - options.paperSampleRatio) / 2.0);
+    const int marginY = static_cast<int>(H * (1.0 - options.paperSampleRatio) / 2.0);
+
+    const int x0 = std::max(0, marginX);
+    const int y0 = std::max(0, marginY);
+    const int x1 = std::min(W, W - marginX);
+    const int y1 = std::min(H, H - marginY);
+
+    if (x1 <= x0 || y1 <= y0) {
+        // 退化情况，直接用整图
+        cv::Scalar m = cv::mean(gray);
+        return m[0];
+    }
+
+    // 收集中间区域像素
+    std::vector<uchar> pixels;
+    pixels.reserve(static_cast<size_t>(x1 - x0) * (y1 - y0) / 4);
+
+    // 采样：每隔 2 像素取一个，加速
+    for (int y = y0; y < y1; y += 2) {
+        const uchar *row = gray.ptr<uchar>(y);
+        for (int x = x0; x < x1; x += 2) {
+            pixels.push_back(row[x]);
+        }
+    }
+
+    if (pixels.empty()) {
+        cv::Scalar m = cv::mean(gray);
+        return m[0];
+    }
+
+    // 排序取百分位
+    const size_t idx = static_cast<size_t>(
+        std::min<double>(pixels.size() - 1,
+                         pixels.size() * options.paperPercentile));
+    std::nth_element(pixels.begin(), pixels.begin() + idx, pixels.end());
+    return static_cast<double>(pixels[idx]);
+}
+
+namespace {
+
+// 判断一行是否够"黑"（暗像素比例 >= 阈值）
+bool isDarkRow(const cv::Mat &gray, int y, double darkThreshold, double darkPixelRatio)
+{
+    if (y < 0 || y >= gray.rows) {
+        return false;
+    }
+    const uchar *row = gray.ptr<uchar>(y);
+    const int W = gray.cols;
+    const int need = static_cast<int>(W * darkPixelRatio);
+
+    int darkCount = 0;
+    for (int x = 0; x < W; ++x) {
+        if (row[x] < darkThreshold) {
+            ++darkCount;
+            if (darkCount >= need) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// 判断一列是否够"黑"
+bool isDarkCol(const cv::Mat &gray, int x, double darkThreshold, double darkPixelRatio)
+{
+    if (x < 0 || x >= gray.cols) {
+        return false;
+    }
+    const int H = gray.rows;
+    const int need = static_cast<int>(H * darkPixelRatio);
+
+    int darkCount = 0;
+    for (int y = 0; y < H; ++y) {
+        if (gray.at<uchar>(y, x) < darkThreshold) {
+            ++darkCount;
+            if (darkCount >= need) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+int BlackEdge::scanTop(const cv::Mat &gray,
+                       double darkThreshold,
+                       const BlackEdgeOptions &options)
+{
+    const int maxScan = static_cast<int>(gray.rows * options.maxScanRatio);
+    int count = 0;
+    int gap = 0;
+
+    for (int y = 0; y < maxScan && y < gray.rows; ++y) {
+        if (isDarkRow(gray, y, darkThreshold, options.darkPixelRatio)) {
+            ++count;
+            gap = 0;
+        } else {
+            ++gap;
+            if (gap > options.gapTolerance) {
+                break;
+            }
+            // 允许间隙：不计数，但继续
+        }
+    }
+    return count;
+}
+
+int BlackEdge::scanBottom(const cv::Mat &gray,
+                          double darkThreshold,
+                          const BlackEdgeOptions &options)
+{
+    const int maxScan = static_cast<int>(gray.rows * options.maxScanRatio);
+    int count = 0;
+    int gap = 0;
+
+    for (int i = 0; i < maxScan && i < gray.rows; ++i) {
+        const int y = gray.rows - 1 - i;
+        if (isDarkRow(gray, y, darkThreshold, options.darkPixelRatio)) {
+            ++count;
+            gap = 0;
+        } else {
+            ++gap;
+            if (gap > options.gapTolerance) {
+                break;
+            }
+        }
+    }
+    return count;
+}
+
+int BlackEdge::scanLeft(const cv::Mat &gray,
+                        double darkThreshold,
+                        const BlackEdgeOptions &options)
+{
+    const int maxScan = static_cast<int>(gray.cols * options.maxScanRatio);
+    int count = 0;
+    int gap = 0;
+
+    for (int x = 0; x < maxScan && x < gray.cols; ++x) {
+        if (isDarkCol(gray, x, darkThreshold, options.darkPixelRatio)) {
+            ++count;
+            gap = 0;
+        } else {
+            ++gap;
+            if (gap > options.gapTolerance) {
+                break;
+            }
+        }
+    }
+    return count;
+}
+
+int BlackEdge::scanRight(const cv::Mat &gray,
+                         double darkThreshold,
+                         const BlackEdgeOptions &options)
+{
+    const int maxScan = static_cast<int>(gray.cols * options.maxScanRatio);
+    int count = 0;
+    int gap = 0;
+
+    for (int i = 0; i < maxScan && i < gray.cols; ++i) {
+        const int x = gray.cols - 1 - i;
+        if (isDarkCol(gray, x, darkThreshold, options.darkPixelRatio)) {
+            ++count;
+            gap = 0;
+        } else {
+            ++gap;
+            if (gap > options.gapTolerance) {
+                break;
+            }
+        }
+    }
+    return count;
+}
+
+void BlackEdge::smoothMask(cv::Mat &mask, int kernelSize)
+{
+    if (kernelSize <= 1) {
+        return;
+    }
+    if (kernelSize % 2 == 0) {
+        kernelSize += 1;
+    }
+    cv::Mat kernel = cv::getStructuringElement(
+        cv::MORPH_RECT, cv::Size(kernelSize, kernelSize));
+    cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
+}
 
 BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
                                             const BlackEdgeOptions &options)
 {
     BlackEdgeResult result;
+
     if (src.empty()) {
         return result;
     }
@@ -27,131 +226,89 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
         gray = src.clone();
     }
 
-    // 2. 降采样加速
-    cv::Mat small;
-    double scale = 1.0;
-    const int maxDim = std::max(W, H);
-    if (maxDim > 1200) {
-        scale = 1200.0 / maxDim;
-        cv::resize(gray, small, cv::Size(), scale, scale, cv::INTER_AREA);
-    } else {
-        small = gray;
-    }
+    // 2. 估算纸张灰度
+    const double paperGray = estimatePaperGray(gray, options);
+    result.paperGray = paperGray;
 
-    // 3. 高斯模糊
-    cv::GaussianBlur(small, small, cv::Size(5, 5), 0);
+    // 3. 黑边阈值 = 纸张灰度 × darkRatio
+    const double darkThreshold = paperGray * options.darkRatio;
+    result.darkThreshold = darkThreshold;
 
-    // 4. 二值化：Otsu，但如果阈值太低（图整体偏暗）用固定 200
-    cv::Mat binary;
-    double otsuThresh = cv::threshold(small, binary, 0, 255,
-                                      cv::THRESH_BINARY | cv::THRESH_OTSU);
-    if (otsuThresh < 180.0) {
-        cv::threshold(small, binary, 200, 255, cv::THRESH_BINARY);
-    }
+    // 4. 四边独立扫描
+    const int top    = scanTop(gray, darkThreshold, options);
+    const int bottom = scanBottom(gray, darkThreshold, options);
+    const int left   = scanLeft(gray, darkThreshold, options);
+    const int right  = scanRight(gray, darkThreshold, options);
 
-    // 5. 轻量开运算去噪（3×3，不会吞掉黑边）
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
-    cv::morphologyEx(binary, binary, cv::MORPH_OPEN, kernel);
+    result.topPixels = top;
+    result.bottomPixels = bottom;
+    result.leftPixels = left;
+    result.rightPixels = right;
 
-    // 6. 找轮廓
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(binary, contours, cv::RETR_EXTERNAL,
-                     cv::CHAIN_APPROX_SIMPLE);
-
-    if (contours.empty()) {
+    // 5. 四边都很小 → 跳过
+    const int minEdge = 2;
+    if (top <= minEdge && bottom <= minEdge &&
+        left <= minEdge && right <= minEdge) {
         result.image = src.clone();
         result.ok = true;
         result.skipped = true;
         return result;
     }
 
-    // 7. 找最大轮廓（纸张）
-    double maxArea = 0.0;
-    int maxIdx = -1;
-    for (size_t i = 0; i < contours.size(); ++i) {
-        const double area = cv::contourArea(contours[i]);
-        if (area > maxArea) {
-            maxArea = area;
-            maxIdx = static_cast<int>(i);
+    // 6. 构建黑边掩膜（黑边=255，纸张=0）
+    cv::Mat edgeMask = cv::Mat::zeros(H, W, CV_8UC1);
+
+    if (top > 0) {
+        cv::rectangle(edgeMask, cv::Rect(0, 0, W, top),
+                      cv::Scalar(255), cv::FILLED);
+    }
+    if (bottom > 0) {
+        cv::rectangle(edgeMask, cv::Rect(0, H - bottom, W, bottom),
+                      cv::Scalar(255), cv::FILLED);
+    }
+    if (left > 0) {
+        cv::rectangle(edgeMask, cv::Rect(0, 0, left, H),
+                      cv::Scalar(255), cv::FILLED);
+    }
+    if (right > 0) {
+        cv::rectangle(edgeMask, cv::Rect(W - right, 0, right, H),
+                      cv::Scalar(255), cv::FILLED);
+    }
+
+    // 7. 平滑掩膜（去斜边锯齿）
+    if (options.smoothKernelSize > 1) {
+        smoothMask(edgeMask, options.smoothKernelSize);
+    }
+
+    // 8. 处理
+    if (options.fillWhite) {
+        // 填白
+        cv::Mat dst = src.clone();
+        cv::Scalar white;
+        if (dst.channels() == 4) {
+            white = cv::Scalar(255, 255, 255, 255);
+        } else {
+            white = cv::Scalar(255, 255, 255);
         }
-    }
-
-    if (maxIdx < 0) {
-        result.image = src.clone();
-        result.ok = true;
-        result.skipped = true;
-        return result;
-    }
-
-    // 8. 面积占比
-    const double imgAreaSmall = static_cast<double>(small.cols) * small.rows;
-    result.detectedAreaRatio = maxArea / imgAreaSmall;
-
-    if (result.detectedAreaRatio < options.minAreaRatio) {
-        result.image = src.clone();
-        result.ok = true;
-        result.skipped = true;
-        return result;
-    }
-
-    // 9. 多边形近似：让纸张轮廓更平滑、贴边
-    std::vector<cv::Point> paperContour = contours[maxIdx];
-    const double peri = cv::arcLength(paperContour, true);
-    std::vector<cv::Point> approx;
-    cv::approxPolyDP(paperContour, approx, peri * 0.001, true);
-
-    if (approx.size() < 3) {
-        result.image = src.clone();
-        result.ok = true;
-        result.skipped = true;
-        return result;
-    }
-
-    // 10. 还原坐标到原图
-    if (scale != 1.0) {
-        for (auto &pt : approx) {
-            pt.x = static_cast<int>(pt.x / scale);
-            pt.y = static_cast<int>(pt.y / scale);
-        }
-    }
-
-    // 11. 构建掩膜：多边形 = 纸张区域
-    cv::Mat mask = cv::Mat::zeros(H, W, CV_8UC1);
-    std::vector<std::vector<cv::Point>> polys = { approx };
-    cv::fillPoly(mask, polys, cv::Scalar(255));
-
-    // 12. 掩膜膨胀：向外扩展几个像素，覆盖黑边
-    if (options.expandPixels > 0) {
-        const int ksize = options.expandPixels * 2 + 1;
-        cv::Mat expandKernel = cv::getStructuringElement(
-            cv::MORPH_ELLIPSE, cv::Size(ksize, ksize));
-        cv::dilate(mask, mask, expandKernel);
-    }
-
-    // 13. 计算掩膜外区域
-    cv::Mat invMask;
-    cv::bitwise_not(mask, invMask);
-    const int nonZeroCount = cv::countNonZero(invMask);
-
-    if (nonZeroCount < static_cast<int>(static_cast<double>(W) * H * 0.001)) {
-        result.image = src.clone();
-        result.ok = true;
-        result.skipped = true;
-        return result;
-    }
-
-    // 14. 掩膜外填白
-    cv::Mat dst = src.clone();
-    cv::Scalar white;
-    if (dst.channels() == 4) {
-        white = cv::Scalar(255, 255, 255, 255);
+        dst.setTo(white, edgeMask);
+        result.image = dst;
     } else {
-        white = cv::Scalar(255, 255, 255);
-    }
-    dst.setTo(white, invMask);
+        // 裁切：只裁掉四边黑边区域
+        int x0 = (left > 0) ? left : 0;
+        int y0 = (top > 0) ? top : 0;
+        int x1 = W - ((right > 0) ? right : 0);
+        int y1 = H - ((bottom > 0) ? bottom : 0);
 
-    result.image = dst;
-    result.filledPixels = nonZeroCount;
+        int w = x1 - x0;
+        int h = y1 - y0;
+        if (w < 1) w = 1;
+        if (h < 1) h = 1;
+
+        cv::Rect roi(x0, y0, w, h);
+        roi &= cv::Rect(0, 0, W, H);
+        result.image = src(roi).clone();
+    }
+
     result.ok = true;
     return result;
 }
