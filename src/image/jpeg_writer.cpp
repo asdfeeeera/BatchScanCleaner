@@ -15,7 +15,6 @@ bool JpegWriter::write(const QString &path,
         return false;
     }
 
-    // 确保是 8 位
     cv::Mat toSave;
     if (image.depth() != CV_8U) {
         image.convertTo(toSave, CV_8U);
@@ -23,22 +22,17 @@ bool JpegWriter::write(const QString &path,
         toSave = image;
     }
 
-    // 编码参数：质量 98 + 4:4:4 色度抽样
+    // 编码参数：仅设置 JPG 质量
+    // OpenCV imencode 默认使用 4:4:4 色度抽样，不会降低彩色细节
     std::vector<int> params;
     params.push_back(cv::IMWRITE_JPEG_QUALITY);
     params.push_back(options.quality);
-
-    if (options.use444Sampling && toSave.channels() == 3) {
-        params.push_back(cv::IMWRITE_JPEG_SAMPLING_FACTOR);
-        params.push_back(cv::IMWRITE_JPEG_SAMPLING_FACTOR_444);
-    }
 
     std::vector<uchar> buffer;
     if (!cv::imencode(".jpg", toSave, buffer, params)) {
         return false;
     }
 
-    // 用 Qt 写文件，支持中文路径
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly)) {
         return false;
@@ -51,7 +45,6 @@ bool JpegWriter::write(const QString &path,
         return false;
     }
 
-    // 写入 DPI 到 JFIF 密度字段
     if (options.dpiX > 0 && options.dpiY > 0) {
         patchJfifDensity(path, options.dpiX, options.dpiY);
     }
@@ -69,7 +62,6 @@ bool JpegWriter::patchJfifDensity(const QString &path, double dpiX, double dpiY)
     QByteArray data = file.readAll();
     const int size = data.size();
 
-    // 跳过 SOI (FF D8)
     int pos = 2;
 
     while (pos + 4 < size) {
@@ -81,24 +73,15 @@ bool JpegWriter::patchJfifDensity(const QString &path, double dpiX, double dpiY)
         }
 
         if (type == 0xE0) {
-            // APP0 段，检查是否为 JFIF
             if (pos + 9 <= size &&
                 data.mid(pos + 4, 5) == QByteArray("JFIF\0", 5)) {
 
-                // JFIF 段布局：
-                // pos+0~1: FF E0
-                // pos+2~3: 段长度
-                // pos+4~8: "JFIF\0"
-                // pos+9~10: 版本
-                // pos+11: 单位(0=无,1=DPI,2=dpcm)
-                // pos+12~13: Xdensity
-                // pos+14~15: Ydensity
                 const int unitPos = pos + 11;
                 const int xPos    = pos + 12;
                 const int yPos    = pos + 14;
 
                 if (yPos + 1 < size) {
-                    data[unitPos] = 1; // 1 = 每英寸点数
+                    data[unitPos] = 1;
 
                     const unsigned short xd = static_cast<unsigned short>(dpiX + 0.5);
                     const unsigned short yd = static_cast<unsigned short>(dpiY + 0.5);
@@ -117,7 +100,6 @@ bool JpegWriter::patchJfifDensity(const QString &path, double dpiX, double dpiY)
             break;
         }
 
-        // 其他段：跳过
         if (pos + 4 > size) {
             break;
         }
