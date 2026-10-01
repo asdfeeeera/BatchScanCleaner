@@ -19,16 +19,14 @@ jobs:
       run: |
         $url = "https://github.com/opencv/opencv/releases/download/4.5.5/opencv-4.5.5-vc14_vc15.exe"
         $out = "$env:RUNNER_TEMP\opencv.exe"
-        Write-Host "Downloading OpenCV..."
         Invoke-WebRequest -Uri $url -OutFile $out
-        Write-Host "Downloaded: $((Get-Item $out).Length) bytes"
         & 7z x $out "-oC:\" -y
-        $config = Get-ChildItem C:\opencv -Recurse -Filter OpenCVConfig.cmake -ErrorAction SilentlyContinue | Select-Object -First 1
-        if (-not $config) { Write-Error "OpenCVConfig.cmake not found"; exit 1 }
-        Write-Host "OpenCV Config: $($config.FullName)"
-        $opencvDir = $config.DirectoryName
-        echo "OpenCV_DIR=$opencvDir" >> $env:GITHUB_ENV
-        echo "$opencvDir" >> $env:GITHUB_PATH
+        $config = "C:\opencv\build\x64\vc15\lib"
+        if (-not (Test-Path "$config\OpenCVConfig.cmake")) { Write-Error "OpenCVConfig.cmake not found"; exit 1 }
+        Write-Host "OpenCV Config: $config"
+        echo "OpenCV_DIR=$config" >> $env:GITHUB_ENV
+        echo "$config" >> $env:GITHUB_PATH
+        echo "C:\opencv\build\x64\vc15\bin" >> $env:GITHUB_PATH
 
     - name: Install Qt 5.15.2
       uses: jurplel/install-qt-action@v4
