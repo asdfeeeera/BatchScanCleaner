@@ -3,8 +3,9 @@ add_library(ui STATIC
     main_window.cpp
 )
 
-target_include_directories(ui PUBLIC
+target_include_directories(ui PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src/image
 )
 
 target_link_libraries(ui PUBLIC
