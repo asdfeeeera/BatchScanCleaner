@@ -7,6 +7,7 @@ target_include_directories(ui PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/src/image
     ${CMAKE_SOURCE_DIR}/src/core
+    ${CMAKE_SOURCE_DIR}/src/process
 )
 
 target_link_libraries(ui PUBLIC
@@ -15,4 +16,5 @@ target_link_libraries(ui PUBLIC
     Qt5::Widgets
     image
     core
+    process
 )
