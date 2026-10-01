@@ -31,6 +31,7 @@
 #include "jpeg_writer.h"
 #include "file_scanner.h"
 #include "deskew.h"
+#include "blackedge.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -98,10 +99,14 @@ void MainWindow::setupToolBar()
     QAction *saveAsAction = toolBar->addAction(QString::fromUtf8("另存为"));
     connect(saveAsAction, &QAction::triggered, this, &MainWindow::onSaveAs);
 
+    toolBar->addSeparator();
+
     QAction *deskewAction = toolBar->addAction(QString::fromUtf8("自动扶正"));
     connect(deskewAction, &QAction::triggered, this, &MainWindow::onDeskew);
 
-    toolBar->addAction(QString::fromUtf8("移除"));
+    QAction *blackEdgeAction = toolBar->addAction(QString::fromUtf8("黑边去除"));
+    connect(blackEdgeAction, &QAction::triggered, this, &MainWindow::onRemoveBlackEdge);
+
     toolBar->addSeparator();
     toolBar->addAction(QString::fromUtf8("输出设置"));
     toolBar->addAction(QString::fromUtf8("预设"));
@@ -339,6 +344,43 @@ void MainWindow::onDeskew()
 
     statusBar()->showMessage(
         QString::fromUtf8("自动扶正完成，旋转 %.2f 度").arg(result.angle));
+}
+
+void MainWindow::onRemoveBlackEdge()
+{
+    if (!m_hasImage || m_currentMat.empty()) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+                                 QString::fromUtf8("请先打开一张图片。"));
+        return;
+    }
+
+    statusBar()->showMessage(QString::fromUtf8("正在去除黑边..."));
+
+    process::BlackEdgeOptions options;
+    options.darkThreshold = 120;
+    options.darkRatio = 0.6;
+    options.maxScanRatio = 0.15;
+    options.fillWhite = true;
+
+    const process::BlackEdgeResult result =
+        process::BlackEdge::removeBlackEdge(m_currentMat, options);
+
+    if (!result.ok) {
+        QMessageBox::warning(this, QString::fromUtf8("错误"),
+                             QString::fromUtf8("黑边去除失败。"));
+        statusBar()->showMessage(QString::fromUtf8("黑边去除失败"));
+        return;
+    }
+
+    m_currentMat = result.image;
+    showMatOnPreview(m_currentMat);
+
+    statusBar()->showMessage(
+        QString::fromUtf8("黑边去除完成：上 %1 px，下 %2 px，左 %3 px，右 %4 px")
+            .arg(result.topPixels)
+            .arg(result.bottomPixels)
+            .arg(result.leftPixels)
+            .arg(result.rightPixels));
 }
 
 void MainWindow::showMatOnPreview(const cv::Mat &mat)
