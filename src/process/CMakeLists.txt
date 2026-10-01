@@ -1,3 +1,18 @@
-add_library(process STATIC)
-target_include_directories(process PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(process PUBLIC core image analyze Qt5::Core)
+add_library(process STATIC
+    deskew.h
+    deskew.cpp
+)
+
+target_include_directories(process PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src/core
+    ${CMAKE_SOURCE_DIR}/src/image
+    ${OpenCV_INCLUDE_DIRS}
+)
+
+target_link_libraries(process PUBLIC
+    Qt5::Core
+    core
+    image
+    ${OpenCV_LIBS}
+)

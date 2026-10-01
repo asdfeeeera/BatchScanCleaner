@@ -30,6 +30,7 @@
 #include "image_io.h"
 #include "jpeg_writer.h"
 #include "file_scanner.h"
+#include "deskew.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -96,6 +97,9 @@ void MainWindow::setupToolBar()
 
     QAction *saveAsAction = toolBar->addAction(QString::fromUtf8("另存为"));
     connect(saveAsAction, &QAction::triggered, this, &MainWindow::onSaveAs);
+
+    QAction *deskewAction = toolBar->addAction(QString::fromUtf8("自动扶正"));
+    connect(deskewAction, &QAction::triggered, this, &MainWindow::onDeskew);
 
     toolBar->addAction(QString::fromUtf8("移除"));
     toolBar->addSeparator();
@@ -279,7 +283,6 @@ void MainWindow::onSaveAs()
         return;
     }
 
-    // 默认文件名：原名_processed.jpg
     QString defaultName = QStringLiteral("processed.jpg");
     if (!m_currentImagePath.isEmpty()) {
         const QFileInfo info(m_currentImagePath);
@@ -312,18 +315,37 @@ void MainWindow::onSaveAs()
         QString::fromUtf8("已保存：%1").arg(savePath));
 }
 
-void MainWindow::showImageOnPreview(const QString &path)
+void MainWindow::onDeskew()
 {
-    cv::Mat mat;
-    image::ImageMeta meta;
-    if (!image::ImageIO::read(path, mat, meta)) {
-        QMessageBox::warning(this, QString::fromUtf8("错误"),
-                             QString::fromUtf8("无法读取图片：%1").arg(path));
+    if (!m_hasImage || m_currentMat.empty()) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+                                 QString::fromUtf8("请先打开一张图片。"));
         return;
     }
 
-    m_currentMat = mat;             // 保存原始 Mat，供另存为使用
-    m_currentImagePath = path;
+    statusBar()->showMessage(QString::fromUtf8("正在自动扶正..."));
+
+    const process::DeskewResult result = process::Deskew::autoDeskew(m_currentMat);
+
+    if (!result.ok) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+                                 QString::fromUtf8("无法判断倾斜角，或倾斜角过大，已跳过。"));
+        statusBar()->showMessage(QString::fromUtf8("扶正已跳过"));
+        return;
+    }
+
+    m_currentMat = result.image;
+    showMatOnPreview(m_currentMat);
+
+    statusBar()->showMessage(
+        QString::fromUtf8("自动扶正完成，旋转 %.2f 度").arg(result.angle));
+}
+
+void MainWindow::showMatOnPreview(const cv::Mat &mat)
+{
+    if (mat.empty()) {
+        return;
+    }
 
     cv::Mat rgb;
     if (mat.channels() == 3) {
@@ -347,6 +369,23 @@ void MainWindow::showImageOnPreview(const QString &path)
     QTimer::singleShot(0, this, [this]() {
         fitPreviewToWindow();
     });
+}
+
+void MainWindow::showImageOnPreview(const QString &path)
+{
+    cv::Mat mat;
+    image::ImageMeta meta;
+    if (!image::ImageIO::read(path, mat, meta)) {
+        QMessageBox::warning(this, QString::fromUtf8("错误"),
+                             QString::fromUtf8("无法读取图片：%1").arg(path));
+        return;
+    }
+
+    m_originalMat = mat.clone();
+    m_currentMat = mat;
+    m_currentImagePath = path;
+
+    showMatOnPreview(m_currentMat);
 
     statusBar()->showMessage(
         QString::fromUtf8("%1  |  %2 x %3  |  %4 通道")

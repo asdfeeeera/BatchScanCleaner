@@ -26,6 +26,7 @@ private slots:
     void onAddFolder();
     void onFileDoubleClicked(const QModelIndex &index);
     void onSaveAs();
+    void onDeskew();           // 自动扶正
 
 private:
     void setupMenuBar();
@@ -33,6 +34,7 @@ private:
     void setupCentralWidget();
     void setupStatusBar();
     void showImageOnPreview(const QString &path);
+    void showMatOnPreview(const cv::Mat &mat);
     void fitPreviewToWindow();
     void fillFileTable(const QStringList &files);
 
@@ -44,5 +46,6 @@ private:
     bool m_hasImage = false;
     QStringList m_currentFiles;
     QString m_currentImagePath;
-    cv::Mat m_currentMat;
+    cv::Mat m_currentMat;       // 当前处理中的 Mat
+    cv::Mat m_originalMat;      // 原始 Mat，用于"重置"
 };
