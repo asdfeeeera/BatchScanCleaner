@@ -7,6 +7,8 @@
 #include <QSplitter>
 #include <QTreeView>
 #include <QTableView>
+#include <QStandardItemModel>
+#include <QHeaderView>
 #include <QGraphicsView>
 #include <QGraphicsScene>
 #include <QGraphicsPixmapItem>
@@ -20,11 +22,13 @@
 #include <QFileInfo>
 #include <QResizeEvent>
 #include <QTimer>
+#include <QDir>
 #include <QDebug>
 
 #include <opencv2/imgproc.hpp>
 
 #include "image_io.h"
+#include "file_scanner.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -43,9 +47,13 @@ MainWindow::~MainWindow() = default;
 void MainWindow::setupMenuBar()
 {
     QMenu *fileMenu = menuBar()->addMenu(QString::fromUtf8("文件"));
+
     QAction *openImageAction = fileMenu->addAction(QString::fromUtf8("打开图片..."));
     connect(openImageAction, &QAction::triggered, this, &MainWindow::onOpenImage);
-    fileMenu->addAction(QString::fromUtf8("添加文件夹"));
+
+    QAction *addFolderAction = fileMenu->addAction(QString::fromUtf8("添加文件夹..."));
+    connect(addFolderAction, &QAction::triggered, this, &MainWindow::onAddFolder);
+
     fileMenu->addSeparator();
     fileMenu->addAction(QString::fromUtf8("退出"));
 
@@ -79,7 +87,9 @@ void MainWindow::setupToolBar()
     QAction *openAction = toolBar->addAction(QString::fromUtf8("打开图片"));
     connect(openAction, &QAction::triggered, this, &MainWindow::onOpenImage);
 
-    toolBar->addAction(QString::fromUtf8("添加文件夹"));
+    QAction *addFolderAction = toolBar->addAction(QString::fromUtf8("添加文件夹"));
+    connect(addFolderAction, &QAction::triggered, this, &MainWindow::onAddFolder);
+
     toolBar->addAction(QString::fromUtf8("移除"));
     toolBar->addSeparator();
     toolBar->addAction(QString::fromUtf8("输出设置"));
@@ -103,7 +113,22 @@ void MainWindow::setupCentralWidget()
     m_folderTree->setHeaderHidden(true);
     leftLayout->addWidget(m_folderTree);
 
+    m_fileModel = new QStandardItemModel(this);
+    m_fileModel->setHorizontalHeaderLabels({
+        QString::fromUtf8("文件名"),
+        QString::fromUtf8("大小"),
+        QString::fromUtf8("路径")
+    });
+
     m_fileTable = new QTableView(leftWidget);
+    m_fileTable->setModel(m_fileModel);
+    m_fileTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_fileTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_fileTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_fileTable->horizontalHeader()->setStretchLastSection(true);
+    m_fileTable->verticalHeader()->setVisible(false);
+    connect(m_fileTable, &QTableView::doubleClicked,
+            this, &MainWindow::onFileDoubleClicked);
     leftLayout->addWidget(m_fileTable);
 
     m_previewScene = new QGraphicsScene(this);
@@ -131,7 +156,7 @@ void MainWindow::setupCentralWidget()
     mainSplitter->addWidget(leftWidget);
     mainSplitter->addWidget(m_previewView);
     mainSplitter->addWidget(paramScroll);
-    mainSplitter->setStretchFactor(0, 1);
+    mainSplitter->setStretchFactor(0, 2);
     mainSplitter->setStretchFactor(1, 3);
     mainSplitter->setStretchFactor(2, 1);
 
@@ -162,6 +187,67 @@ void MainWindow::fitPreviewToWindow()
     }
     m_previewView->resetTransform();
     m_previewView->fitInView(rect, Qt::KeepAspectRatio);
+}
+
+void MainWindow::onAddFolder()
+{
+    const QString folder = QFileDialog::getExistingDirectory(
+        this,
+        QString::fromUtf8("选择图片文件夹"),
+        QString(),
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+
+    if (folder.isEmpty()) {
+        return;
+    }
+
+    statusBar()->showMessage(QString::fromUtf8("正在扫描：%1 ...").arg(folder));
+
+    const QStringList files = core::FileScanner::scanFolder(folder);
+    m_currentFiles = files;
+    fillFileTable(files);
+
+    statusBar()->showMessage(
+        QString::fromUtf8("扫描完成：%1 个文件，来自 %2")
+            .arg(files.size())
+            .arg(folder));
+}
+
+void MainWindow::fillFileTable(const QStringList &files)
+{
+    m_fileModel->removeRows(0, m_fileModel->rowCount());
+
+    for (const QString &path : files) {
+        const QFileInfo info(path);
+
+        QList<QStandardItem *> row;
+        row << new QStandardItem(info.fileName());
+        row << new QStandardItem(QString::number(info.size() / 1024) + QString::fromUtf8(" KB"));
+        row << new QStandardItem(info.absolutePath());
+
+        // 把完整路径存在第一列的用户数据里
+        row[0]->setData(path, Qt::UserRole);
+        row[0]->setToolTip(path);
+
+        m_fileModel->appendRow(row);
+    }
+
+    m_fileTable->resizeColumnsToContents();
+}
+
+void MainWindow::onFileDoubleClicked(const QModelIndex &index)
+{
+    if (!index.isValid()) {
+        return;
+    }
+
+    const QModelIndex firstColIndex = m_fileModel->index(index.row(), 0);
+    const QString path = m_fileModel->data(firstColIndex, Qt::UserRole).toString();
+    if (path.isEmpty()) {
+        return;
+    }
+
+    showImageOnPreview(path);
 }
 
 void MainWindow::onOpenImage()
@@ -208,7 +294,6 @@ void MainWindow::showImageOnPreview(const QString &path)
 
     m_hasImage = true;
 
-    // 延迟一帧再 fit，保证 view 已完成布局
     QTimer::singleShot(0, this, [this]() {
         fitPreviewToWindow();
     });
