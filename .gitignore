@@ -1,5 +1,7 @@
 build/
 output/
+output2/
+output3/
 *.user
 *.suo
 *.sdf
