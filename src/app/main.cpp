@@ -11,11 +11,11 @@ int main(int argc, char *argv[])
 
     QApplication app(argc, argv);
 
-    QApplication::setApplicationName(QStringLiteral("批量扫描图片净化增强软件"));
-    QApplication::setApplicationVersion(QStringLiteral("1.0.0.0"));
-    QApplication::setOrganizationName(QStringLiteral("BatchScanCleaner"));
+    QApplication::setApplicationName(QString::fromUtf8("批量扫描图片净化增强软件"));
+    QApplication::setApplicationVersion(QString::fromUtf8("1.0.0.0"));
+    QApplication::setOrganizationName(QString::fromUtf8("BatchScanCleaner"));
 
-    QIcon icon(QStringLiteral(":/icons/app.ico"));
+    QIcon icon(QString::fromUtf8(":/icons/app.ico"));
     if (!icon.isNull()) {
         QApplication::setWindowIcon(icon);
     }

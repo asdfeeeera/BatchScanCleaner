@@ -1,5 +1,4 @@
-﻿#pragma execution_character_set("utf-8")
-#include "main_window.h"
+﻿#include "main_window.h"
 
 #include <QMenuBar>
 #include <QToolBar>
@@ -18,15 +17,17 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QImage>
+#include <QFileInfo>
 #include <QDebug>
 
 #include <opencv2/imgproc.hpp>
+
 #include "image_io.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("����ɨ��ͼƬ������ǿ���"));
+    setWindowTitle(QString::fromUtf8("批量扫描图片净化增强软件"));
     resize(1280, 800);
 
     setupMenuBar();
@@ -39,53 +40,53 @@ MainWindow::~MainWindow() = default;
 
 void MainWindow::setupMenuBar()
 {
-    QMenu *fileMenu = menuBar()->addMenu(QStringLiteral("�ļ�"));
-    QAction *openImageAction = fileMenu->addAction(QStringLiteral("��ͼƬ..."));
+    QMenu *fileMenu = menuBar()->addMenu(QString::fromUtf8("文件"));
+    QAction *openImageAction = fileMenu->addAction(QString::fromUtf8("打开图片..."));
     connect(openImageAction, &QAction::triggered, this, &MainWindow::onOpenImage);
-    fileMenu->addAction(QStringLiteral("����ļ���"));
+    fileMenu->addAction(QString::fromUtf8("添加文件夹"));
     fileMenu->addSeparator();
-    fileMenu->addAction(QStringLiteral("�˳�"));
+    fileMenu->addAction(QString::fromUtf8("退出"));
 
-    QMenu *editMenu = menuBar()->addMenu(QStringLiteral("�༭"));
-    editMenu->addAction(QStringLiteral("ȫѡ"));
-    editMenu->addAction(QStringLiteral("��ѡ"));
+    QMenu *editMenu = menuBar()->addMenu(QString::fromUtf8("编辑"));
+    editMenu->addAction(QString::fromUtf8("全选"));
+    editMenu->addAction(QString::fromUtf8("反选"));
 
-    QMenu *viewMenu = menuBar()->addMenu(QStringLiteral("��ͼ"));
-    viewMenu->addAction(QStringLiteral("��ʾ/�����ļ���"));
-    viewMenu->addAction(QStringLiteral("��ʾ/����Ԥ����"));
-    viewMenu->addAction(QStringLiteral("��ʾ/���ز�����"));
+    QMenu *viewMenu = menuBar()->addMenu(QString::fromUtf8("视图"));
+    viewMenu->addAction(QString::fromUtf8("显示/隐藏文件区"));
+    viewMenu->addAction(QString::fromUtf8("显示/隐藏预览区"));
+    viewMenu->addAction(QString::fromUtf8("显示/隐藏参数区"));
 
-    QMenu *toolMenu = menuBar()->addMenu(QStringLiteral("����"));
-    toolMenu->addAction(QStringLiteral("��ȷ������"));
-    toolMenu->addAction(QStringLiteral("�������"));
-    toolMenu->addAction(QStringLiteral("��־�뱨��"));
-    toolMenu->addAction(QStringLiteral("���ݹ���"));
-    toolMenu->addAction(QStringLiteral("����"));
+    QMenu *toolMenu = menuBar()->addMenu(QString::fromUtf8("工具"));
+    toolMenu->addAction(QString::fromUtf8("待确认中心"));
+    toolMenu->addAction(QString::fromUtf8("任务队列"));
+    toolMenu->addAction(QString::fromUtf8("日志与报告"));
+    toolMenu->addAction(QString::fromUtf8("备份管理"));
+    toolMenu->addAction(QString::fromUtf8("设置"));
 
-    QMenu *helpMenu = menuBar()->addMenu(QStringLiteral("����"));
-    helpMenu->addAction(QStringLiteral("ʹ���ֲ�"));
-    helpMenu->addAction(QStringLiteral("��ݼ�"));
-    helpMenu->addAction(QStringLiteral("����"));
+    QMenu *helpMenu = menuBar()->addMenu(QString::fromUtf8("帮助"));
+    helpMenu->addAction(QString::fromUtf8("使用手册"));
+    helpMenu->addAction(QString::fromUtf8("快捷键"));
+    helpMenu->addAction(QString::fromUtf8("关于"));
 }
 
 void MainWindow::setupToolBar()
 {
-    QToolBar *toolBar = addToolBar(QStringLiteral("������"));
+    QToolBar *toolBar = addToolBar(QString::fromUtf8("工具栏"));
     toolBar->setMovable(false);
 
-    QAction *openAction = toolBar->addAction(QStringLiteral("��ͼƬ"));
+    QAction *openAction = toolBar->addAction(QString::fromUtf8("打开图片"));
     connect(openAction, &QAction::triggered, this, &MainWindow::onOpenImage);
 
-    toolBar->addAction(QStringLiteral("����ļ���"));
-    toolBar->addAction(QStringLiteral("�Ƴ�"));
+    toolBar->addAction(QString::fromUtf8("添加文件夹"));
+    toolBar->addAction(QString::fromUtf8("移除"));
     toolBar->addSeparator();
-    toolBar->addAction(QStringLiteral("�������"));
-    toolBar->addAction(QStringLiteral("Ԥ��"));
+    toolBar->addAction(QString::fromUtf8("输出设置"));
+    toolBar->addAction(QString::fromUtf8("预设"));
     toolBar->addSeparator();
-    toolBar->addAction(QStringLiteral("��ʼ"));
-    toolBar->addAction(QStringLiteral("��ͣ"));
-    toolBar->addAction(QStringLiteral("����"));
-    toolBar->addAction(QStringLiteral("ȡ��"));
+    toolBar->addAction(QString::fromUtf8("开始"));
+    toolBar->addAction(QString::fromUtf8("暂停"));
+    toolBar->addAction(QString::fromUtf8("继续"));
+    toolBar->addAction(QString::fromUtf8("取消"));
 }
 
 void MainWindow::setupCentralWidget()
@@ -111,15 +112,15 @@ void MainWindow::setupCentralWidget()
     QScrollArea *paramScroll = new QScrollArea(this);
     QWidget *paramWidget = new QWidget(paramScroll);
     QVBoxLayout *paramLayout = new QVBoxLayout(paramWidget);
-    paramLayout->addWidget(new QLabel(QStringLiteral("Ԥ��")));
-    paramLayout->addWidget(new QLabel(QStringLiteral("�۵�ȥ��")));
-    paramLayout->addWidget(new QLabel(QStringLiteral("�ڱ�ȥ��")));
-    paramLayout->addWidget(new QLabel(QStringLiteral("�Զ�����")));
-    paramLayout->addWidget(new QLabel(QStringLiteral("ǳɫ���ּ���")));
-    paramLayout->addWidget(new QLabel(QStringLiteral("��ɫ����ϸ��")));
-    paramLayout->addWidget(new QLabel(QStringLiteral("ǩ��ӡ�±���")));
-    paramLayout->addWidget(new QLabel(QStringLiteral("��ɫ����")));
-    paramLayout->addWidget(new QLabel(QStringLiteral("�������")));
+    paramLayout->addWidget(new QLabel(QString::fromUtf8("预设")));
+    paramLayout->addWidget(new QLabel(QString::fromUtf8("污点去除")));
+    paramLayout->addWidget(new QLabel(QString::fromUtf8("黑边去除")));
+    paramLayout->addWidget(new QLabel(QString::fromUtf8("自动扶正")));
+    paramLayout->addWidget(new QLabel(QString::fromUtf8("浅色文字加深")));
+    paramLayout->addWidget(new QLabel(QString::fromUtf8("彩色故障细线")));
+    paramLayout->addWidget(new QLabel(QString::fromUtf8("签名印章保护")));
+    paramLayout->addWidget(new QLabel(QString::fromUtf8("底色处理")));
+    paramLayout->addWidget(new QLabel(QString::fromUtf8("输出设置")));
     paramLayout->addStretch();
     paramScroll->setWidget(paramWidget);
     paramScroll->setWidgetResizable(true);
@@ -136,16 +137,16 @@ void MainWindow::setupCentralWidget()
 
 void MainWindow::setupStatusBar()
 {
-    statusBar()->showMessage(QStringLiteral("����"));
+    statusBar()->showMessage(QString::fromUtf8("就绪"));
 }
 
 void MainWindow::onOpenImage()
 {
     const QString path = QFileDialog::getOpenFileName(
         this,
-        QStringLiteral("ѡ��ͼƬ"),
+        QString::fromUtf8("选择图片"),
         QString(),
-        QStringLiteral("ͼƬ�ļ� (*.jpg *.jpeg *.png *.bmp *.tif *.tiff)"));
+        QString::fromUtf8("图片文件 (*.jpg *.jpeg *.png *.bmp *.tif *.tiff)"));
 
     if (path.isEmpty()) {
         return;
@@ -159,8 +160,8 @@ void MainWindow::showImageOnPreview(const QString &path)
     cv::Mat mat;
     image::ImageMeta meta;
     if (!image::ImageIO::read(path, mat, meta)) {
-        QMessageBox::warning(this, QStringLiteral("����"),
-                             QStringLiteral("�޷���ȡͼƬ��%1").arg(path));
+        QMessageBox::warning(this, QString::fromUtf8("错误"),
+                             QString::fromUtf8("无法读取图片：%1").arg(path));
         return;
     }
 
@@ -183,7 +184,7 @@ void MainWindow::showImageOnPreview(const QString &path)
     m_previewView->fitInView(pix.rect(), Qt::KeepAspectRatio);
 
     statusBar()->showMessage(
-        QStringLiteral("%1  |  %2 �� %3  |  %4 ͨ��")
+        QString::fromUtf8("%1  |  %2 x %3  |  %4 通道")
             .arg(QFileInfo(path).fileName())
             .arg(meta.width)
             .arg(meta.height)
