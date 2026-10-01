@@ -1,4 +1,4 @@
-ï»¿#include "main_window.h"
+#include "main_window.h"
 
 #include <QMenuBar>
 #include <QToolBar>
@@ -8,15 +8,23 @@
 #include <QTreeView>
 #include <QTableView>
 #include <QGraphicsView>
+#include <QGraphicsScene>
+#include <QGraphicsPixmapItem>
 #include <QScrollArea>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QAction>
+#include <QFileDialog>
+#include <QMessageBox>
+#include <QImage>
+#include <QDebug>
+
+#include "image_io.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("æ‰¹é‡æ‰«æå›¾ç‰‡å‡€åŒ–å¢žå¼ºè½¯ä»¶"));
+    setWindowTitle(QStringLiteral("ÅúÁ¿É¨ÃèÍ¼Æ¬¾»»¯ÔöÇ¿Èí¼þ"));
     resize(1280, 800);
 
     setupMenuBar();
@@ -29,92 +37,96 @@ MainWindow::~MainWindow() = default;
 
 void MainWindow::setupMenuBar()
 {
-    QMenu *fileMenu = menuBar()->addMenu(QStringLiteral("æ–‡ä»¶"));
-    fileMenu->addAction(QStringLiteral("æ·»åŠ æ–‡ä»¶å¤¹"));
-    fileMenu->addAction(QStringLiteral("ç§»é™¤æ–‡ä»¶å¤¹"));
+    QMenu *fileMenu = menuBar()->addMenu(QStringLiteral("ÎÄ¼þ"));
+    QAction *openImageAction = fileMenu->addAction(QStringLiteral("´ò¿ªÍ¼Æ¬..."));
+    connect(openImageAction, &QAction::triggered, this, &MainWindow::onOpenImage);
+    fileMenu->addAction(QStringLiteral("Ìí¼ÓÎÄ¼þ¼Ð"));
     fileMenu->addSeparator();
-    fileMenu->addAction(QStringLiteral("é€€å‡º"));
+    fileMenu->addAction(QStringLiteral("ÍË³ö"));
 
-    QMenu *editMenu = menuBar()->addMenu(QStringLiteral("ç¼–è¾‘"));
-    editMenu->addAction(QStringLiteral("å…¨é€‰"));
-    editMenu->addAction(QStringLiteral("åé€‰"));
+    QMenu *editMenu = menuBar()->addMenu(QStringLiteral("±à¼­"));
+    editMenu->addAction(QStringLiteral("È«Ñ¡"));
+    editMenu->addAction(QStringLiteral("·´Ñ¡"));
 
-    QMenu *viewMenu = menuBar()->addMenu(QStringLiteral("è§†å›¾"));
-    viewMenu->addAction(QStringLiteral("æ˜¾ç¤º/éšè—æ–‡ä»¶åŒº"));
-    viewMenu->addAction(QStringLiteral("æ˜¾ç¤º/éšè—é¢„è§ˆåŒº"));
-    viewMenu->addAction(QStringLiteral("æ˜¾ç¤º/éšè—å‚æ•°åŒº"));
+    QMenu *viewMenu = menuBar()->addMenu(QStringLiteral("ÊÓÍ¼"));
+    viewMenu->addAction(QStringLiteral("ÏÔÊ¾/Òþ²ØÎÄ¼þÇø"));
+    viewMenu->addAction(QStringLiteral("ÏÔÊ¾/Òþ²ØÔ¤ÀÀÇø"));
+    viewMenu->addAction(QStringLiteral("ÏÔÊ¾/Òþ²Ø²ÎÊýÇø"));
 
-    QMenu *toolMenu = menuBar()->addMenu(QStringLiteral("å·¥å…·"));
-    toolMenu->addAction(QStringLiteral("å¾…ç¡®è®¤ä¸­å¿ƒ"));
-    toolMenu->addAction(QStringLiteral("ä»»åŠ¡é˜Ÿåˆ—"));
-    toolMenu->addAction(QStringLiteral("æ—¥å¿—ä¸ŽæŠ¥å‘Š"));
-    toolMenu->addAction(QStringLiteral("å¤‡ä»½ç®¡ç†"));
-    toolMenu->addAction(QStringLiteral("è®¾ç½®"));
+    QMenu *toolMenu = menuBar()->addMenu(QStringLiteral("¹¤¾ß"));
+    toolMenu->addAction(QStringLiteral("´ýÈ·ÈÏÖÐÐÄ"));
+    toolMenu->addAction(QStringLiteral("ÈÎÎñ¶ÓÁÐ"));
+    toolMenu->addAction(QStringLiteral("ÈÕÖ¾Óë±¨¸æ"));
+    toolMenu->addAction(QStringLiteral("±¸·Ý¹ÜÀí"));
+    toolMenu->addAction(QStringLiteral("ÉèÖÃ"));
 
-    QMenu *helpMenu = menuBar()->addMenu(QStringLiteral("å¸®åŠ©"));
-    helpMenu->addAction(QStringLiteral("ä½¿ç”¨æ‰‹å†Œ"));
-    helpMenu->addAction(QStringLiteral("å¿«æ·é”®"));
-    helpMenu->addAction(QStringLiteral("å…³äºŽ"));
+    QMenu *helpMenu = menuBar()->addMenu(QStringLiteral("°ïÖú"));
+    helpMenu->addAction(QStringLiteral("Ê¹ÓÃÊÖ²á"));
+    helpMenu->addAction(QStringLiteral("¿ì½Ý¼ü"));
+    helpMenu->addAction(QStringLiteral("¹ØÓÚ"));
 }
 
 void MainWindow::setupToolBar()
 {
-    QToolBar *toolBar = addToolBar(QStringLiteral("å·¥å…·æ "));
+    QToolBar *toolBar = addToolBar(QStringLiteral("¹¤¾ßÀ¸"));
     toolBar->setMovable(false);
 
-    toolBar->addAction(QStringLiteral("æ·»åŠ æ–‡ä»¶å¤¹"));
-    toolBar->addAction(QStringLiteral("ç§»é™¤"));
+    QAction *openAction = toolBar->addAction(QStringLiteral("´ò¿ªÍ¼Æ¬"));
+    connect(openAction, &QAction::triggered, this, &MainWindow::onOpenImage);
+
+    toolBar->addAction(QStringLiteral("Ìí¼ÓÎÄ¼þ¼Ð"));
+    toolBar->addAction(QStringLiteral("ÒÆ³ý"));
     toolBar->addSeparator();
-    toolBar->addAction(QStringLiteral("è¾“å‡ºè®¾ç½®"));
-    toolBar->addAction(QStringLiteral("é¢„è®¾"));
+    toolBar->addAction(QStringLiteral("Êä³öÉèÖÃ"));
+    toolBar->addAction(QStringLiteral("Ô¤Éè"));
     toolBar->addSeparator();
-    toolBar->addAction(QStringLiteral("å¼€å§‹"));
-    toolBar->addAction(QStringLiteral("æš‚åœ"));
-    toolBar->addAction(QStringLiteral("ç»§ç»­"));
-    toolBar->addAction(QStringLiteral("å–æ¶ˆ"));
+    toolBar->addAction(QStringLiteral("¿ªÊ¼"));
+    toolBar->addAction(QStringLiteral("ÔÝÍ£"));
+    toolBar->addAction(QStringLiteral("¼ÌÐø"));
+    toolBar->addAction(QStringLiteral("È¡Ïû"));
 }
 
 void MainWindow::setupCentralWidget()
 {
     QSplitter *mainSplitter = new QSplitter(Qt::Horizontal, this);
 
-    // å·¦ä¾§æ–‡ä»¶åŒº
     QWidget *leftWidget = new QWidget(this);
     QVBoxLayout *leftLayout = new QVBoxLayout(leftWidget);
     leftLayout->setContentsMargins(0, 0, 0, 0);
 
-    QTreeView *folderTree = new QTreeView(leftWidget);
-    folderTree->setHeaderHidden(true);
-    leftLayout->addWidget(folderTree);
+    m_folderTree = new QTreeView(leftWidget);
+    m_folderTree->setHeaderHidden(true);
+    leftLayout->addWidget(m_folderTree);
 
-    QTableView *fileTable = new QTableView(leftWidget);
-    leftLayout->addWidget(fileTable);
+    m_fileTable = new QTableView(leftWidget);
+    leftLayout->addWidget(m_fileTable);
 
-    // ä¸­é—´é¢„è§ˆåŒº
-    QGraphicsView *previewView = new QGraphicsView(this);
+    m_previewScene = new QGraphicsScene(this);
+    m_previewView = new QGraphicsView(m_previewScene, this);
+    m_previewView->setRenderHint(QPainter::SmoothPixmapTransform);
+    m_previewView->setDragMode(QGraphicsView::ScrollHandDrag);
 
-    // å³ä¾§å‚æ•°åŒº
     QScrollArea *paramScroll = new QScrollArea(this);
     QWidget *paramWidget = new QWidget(paramScroll);
     QVBoxLayout *paramLayout = new QVBoxLayout(paramWidget);
-    paramLayout->addWidget(new QLabel(QStringLiteral("é¢„è®¾")));
-    paramLayout->addWidget(new QLabel(QStringLiteral("æ±¡ç‚¹åŽ»é™¤")));
-    paramLayout->addWidget(new QLabel(QStringLiteral("é»‘è¾¹åŽ»é™¤")));
-    paramLayout->addWidget(new QLabel(QStringLiteral("è‡ªåŠ¨æ‰¶æ­£")));
-    paramLayout->addWidget(new QLabel(QStringLiteral("æµ…è‰²æ–‡å­—åŠ æ·±")));
-    paramLayout->addWidget(new QLabel(QStringLiteral("å½©è‰²æ•…éšœç»†çº¿")));
-    paramLayout->addWidget(new QLabel(QStringLiteral("ç­¾åå°ç« ä¿æŠ¤")));
-    paramLayout->addWidget(new QLabel(QStringLiteral("åº•è‰²å¤„ç†")));
-    paramLayout->addWidget(new QLabel(QStringLiteral("è¾“å‡ºè®¾ç½®")));
+    paramLayout->addWidget(new QLabel(QStringLiteral("Ô¤Éè")));
+    paramLayout->addWidget(new QLabel(QStringLiteral("ÎÛµãÈ¥³ý")));
+    paramLayout->addWidget(new QLabel(QStringLiteral("ºÚ±ßÈ¥³ý")));
+    paramLayout->addWidget(new QLabel(QStringLiteral("×Ô¶¯·öÕý")));
+    paramLayout->addWidget(new QLabel(QStringLiteral("Ç³É«ÎÄ×Ö¼ÓÉî")));
+    paramLayout->addWidget(new QLabel(QStringLiteral("²ÊÉ«¹ÊÕÏÏ¸Ïß")));
+    paramLayout->addWidget(new QLabel(QStringLiteral("Ç©ÃûÓ¡ÕÂ±£»¤")));
+    paramLayout->addWidget(new QLabel(QStringLiteral("µ×É«´¦Àí")));
+    paramLayout->addWidget(new QLabel(QStringLiteral("Êä³öÉèÖÃ")));
     paramLayout->addStretch();
     paramScroll->setWidget(paramWidget);
     paramScroll->setWidgetResizable(true);
 
     mainSplitter->addWidget(leftWidget);
-    mainSplitter->addWidget(previewView);
+    mainSplitter->addWidget(m_previewView);
     mainSplitter->addWidget(paramScroll);
     mainSplitter->setStretchFactor(0, 1);
-    mainSplitter->setStretchFactor(1, 2);
+    mainSplitter->setStretchFactor(1, 3);
     mainSplitter->setStretchFactor(2, 1);
 
     setCentralWidget(mainSplitter);
@@ -122,5 +134,56 @@ void MainWindow::setupCentralWidget()
 
 void MainWindow::setupStatusBar()
 {
-    statusBar()->showMessage(QStringLiteral("å°±ç»ª"));
+    statusBar()->showMessage(QStringLiteral("¾ÍÐ÷"));
+}
+
+void MainWindow::onOpenImage()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Ñ¡ÔñÍ¼Æ¬"),
+        QString(),
+        QStringLiteral("Í¼Æ¬ÎÄ¼þ (*.jpg *.jpeg *.png *.bmp *.tif *.tiff)"));
+
+    if (path.isEmpty()) {
+        return;
+    }
+
+    showImageOnPreview(path);
+}
+
+void MainWindow::showImageOnPreview(const QString &path)
+{
+    cv::Mat mat;
+    image::ImageMeta meta;
+    if (!image::ImageIO::read(path, mat, meta)) {
+        QMessageBox::warning(this, QStringLiteral("´íÎó"),
+                             QStringLiteral("ÎÞ·¨¶ÁÈ¡Í¼Æ¬£º%1").arg(path));
+        return;
+    }
+
+    cv::Mat rgb;
+    if (mat.channels() == 3) {
+        cv::cvtColor(mat, rgb, cv::COLOR_BGR2RGB);
+    } else if (mat.channels() == 4) {
+        cv::cvtColor(mat, rgb, cv::COLOR_BGRA2RGB);
+    } else {
+        cv::cvtColor(mat, rgb, cv::COLOR_GRAY2RGB);
+    }
+
+    QImage qimg(rgb.data, rgb.cols, rgb.rows,
+                static_cast<int>(rgb.step), QImage::Format_RGB888);
+    QPixmap pix = QPixmap::fromImage(qimg.copy());
+
+    m_previewScene->clear();
+    m_previewScene->addPixmap(pix);
+    m_previewScene->setSceneRect(pix.rect());
+    m_previewView->fitInView(pix.rect(), Qt::KeepAspectRatio);
+
+    statusBar()->showMessage(
+        QStringLiteral("%1  |  %2 ¡Á %3  |  %4 Í¨µÀ")
+            .arg(QFileInfo(path).fileName())
+            .arg(meta.width)
+            .arg(meta.height)
+            .arg(meta.channels));
 }

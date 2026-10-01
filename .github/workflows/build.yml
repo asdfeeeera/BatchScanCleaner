@@ -1,4 +1,4 @@
-﻿name: Build Windows EXE
+name: Build Windows EXE
 
 on:
   push:
@@ -7,11 +7,21 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2019
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Install OpenCV 4.5.5
+      shell: pwsh
+      run: |
+        $url = "https://github.com/opencv/opencv/releases/download/4.5.5/opencv-4.5.5-vc14_vc15.exe"
+        $out = "$env:RUNNER_TEMP\opencv.exe"
+        Invoke-WebRequest -Uri $url -OutFile $out
+        7z x $out -oC:\ -y | Out-Null
+        echo "OpenCV_DIR=C:\opencv\build" >> $env:GITHUB_ENV
+        echo "C:\opencv\build\x64\vc15\bin" >> $env:GITHUB_PATH
 
     - name: Install Qt 5.15.2
       uses: jurplel/install-qt-action@v4
@@ -21,7 +31,7 @@ jobs:
         cache: true
 
     - name: Configure CMake
-      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DOpenCV_DIR=C:/opencv/build
 
     - name: Build
       run: cmake --build build --config Release
@@ -30,4 +40,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: BatchScanCleaner-Windows
-        path: build/bin/Release/BatchScanCleaner.exe
+        path: build/bin/Release/
