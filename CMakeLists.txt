@@ -35,7 +35,13 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
 # Qt 5.14.2 路径
-set(Qt5_DIR "E:/Qt/5.14.2/msvc2017_64/lib/cmake/Qt5" CACHE PATH "Qt5 CMake 配置目录")
+# 本地路径存在则使用；云端交给 find_package 自动查找
+if(EXISTS "E:/Qt/5.14.2/msvc2017_64/lib/cmake/Qt5")
+# 本地路径存在则使用；云端交给 find_package 自动查找
+if(EXISTS "E:/Qt/5.14.2/msvc2017_64/lib/cmake/Qt5")
+    set(Qt5_DIR "E:/Qt/5.14.2/msvc2017_64/lib/cmake/Qt5" CACHE PATH "Qt5 CMake 配置目录")
+endif()
+endif()
 
 # 查找 Qt5
 find_package(Qt5 5.14 REQUIRED COMPONENTS
