@@ -2,6 +2,7 @@
 
 #include <QMainWindow>
 #include <QStringList>
+#include <opencv2/core.hpp>
 
 class QGraphicsScene;
 class QGraphicsView;
@@ -24,6 +25,7 @@ private slots:
     void onOpenImage();
     void onAddFolder();
     void onFileDoubleClicked(const QModelIndex &index);
+    void onSaveAs();
 
 private:
     void setupMenuBar();
@@ -41,4 +43,6 @@ private:
     QGraphicsScene *m_previewScene = nullptr;
     bool m_hasImage = false;
     QStringList m_currentFiles;
+    QString m_currentImagePath;
+    cv::Mat m_currentMat;
 };

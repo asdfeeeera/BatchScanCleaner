@@ -1,6 +1,8 @@
 add_library(image STATIC
     image_io.h
     image_io.cpp
+    jpeg_writer.h
+    jpeg_writer.cpp
 )
 
 target_include_directories(image PUBLIC

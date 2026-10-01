@@ -28,6 +28,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "image_io.h"
+#include "jpeg_writer.h"
 #include "file_scanner.h"
 
 MainWindow::MainWindow(QWidget *parent)
@@ -53,6 +54,9 @@ void MainWindow::setupMenuBar()
 
     QAction *addFolderAction = fileMenu->addAction(QString::fromUtf8("添加文件夹..."));
     connect(addFolderAction, &QAction::triggered, this, &MainWindow::onAddFolder);
+
+    QAction *saveAsAction = fileMenu->addAction(QString::fromUtf8("另存为..."));
+    connect(saveAsAction, &QAction::triggered, this, &MainWindow::onSaveAs);
 
     fileMenu->addSeparator();
     fileMenu->addAction(QString::fromUtf8("退出"));
@@ -89,6 +93,9 @@ void MainWindow::setupToolBar()
 
     QAction *addFolderAction = toolBar->addAction(QString::fromUtf8("添加文件夹"));
     connect(addFolderAction, &QAction::triggered, this, &MainWindow::onAddFolder);
+
+    QAction *saveAsAction = toolBar->addAction(QString::fromUtf8("另存为"));
+    connect(saveAsAction, &QAction::triggered, this, &MainWindow::onSaveAs);
 
     toolBar->addAction(QString::fromUtf8("移除"));
     toolBar->addSeparator();
@@ -225,7 +232,6 @@ void MainWindow::fillFileTable(const QStringList &files)
         row << new QStandardItem(QString::number(info.size() / 1024) + QString::fromUtf8(" KB"));
         row << new QStandardItem(info.absolutePath());
 
-        // 把完整路径存在第一列的用户数据里
         row[0]->setData(path, Qt::UserRole);
         row[0]->setToolTip(path);
 
@@ -265,6 +271,47 @@ void MainWindow::onOpenImage()
     showImageOnPreview(path);
 }
 
+void MainWindow::onSaveAs()
+{
+    if (!m_hasImage || m_currentMat.empty()) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+                                 QString::fromUtf8("请先打开一张图片。"));
+        return;
+    }
+
+    // 默认文件名：原名_processed.jpg
+    QString defaultName = QStringLiteral("processed.jpg");
+    if (!m_currentImagePath.isEmpty()) {
+        const QFileInfo info(m_currentImagePath);
+        defaultName = info.completeBaseName() + QStringLiteral("_processed.jpg");
+    }
+
+    const QString savePath = QFileDialog::getSaveFileName(
+        this,
+        QString::fromUtf8("另存为"),
+        defaultName,
+        QString::fromUtf8("JPG 图片 (*.jpg *.jpeg)"));
+
+    if (savePath.isEmpty()) {
+        return;
+    }
+
+    image::JpegSaveOptions options;
+    options.quality = 98;
+    options.dpiX = 300.0;
+    options.dpiY = 300.0;
+    options.use444Sampling = true;
+
+    if (!image::JpegWriter::write(savePath, m_currentMat, options)) {
+        QMessageBox::warning(this, QString::fromUtf8("错误"),
+                             QString::fromUtf8("保存失败：%1").arg(savePath));
+        return;
+    }
+
+    statusBar()->showMessage(
+        QString::fromUtf8("已保存：%1").arg(savePath));
+}
+
 void MainWindow::showImageOnPreview(const QString &path)
 {
     cv::Mat mat;
@@ -274,6 +321,9 @@ void MainWindow::showImageOnPreview(const QString &path)
                              QString::fromUtf8("无法读取图片：%1").arg(path));
         return;
     }
+
+    m_currentMat = mat;             // 保存原始 Mat，供另存为使用
+    m_currentImagePath = path;
 
     cv::Mat rgb;
     if (mat.channels() == 3) {
