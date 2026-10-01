@@ -1,4 +1,4 @@
-#include "image_io.h"
+﻿#include "image_io.h"
 
 #include <QFileInfo>
 #include <opencv2/imgcodecs.hpp>
