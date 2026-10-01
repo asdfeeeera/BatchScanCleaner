@@ -5,6 +5,9 @@ on:
     branches: [ master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-2022
@@ -22,7 +25,7 @@ jobs:
         Invoke-WebRequest -Uri $url -OutFile $out
         & 7z x $out "-oC:\" -y
         $config = "C:\opencv\build\x64\vc15\lib"
-        if (-not (Test-Path "$config\OpenCVConfig.cmake")) { Write-Error "OpenCVConfig.cmake not found"; exit 1 }
+        if (-not (Test-Path "$config\OpenCVConfig.cmake")) { Write-Error "not found"; exit 1 }
         echo "OpenCV_DIR=$config" >> $env:GITHUB_ENV
         echo "$config" >> $env:GITHUB_PATH
         echo "C:\opencv\build\x64\vc15\bin" >> $env:GITHUB_PATH
@@ -45,10 +48,19 @@ jobs:
       run: |
         Copy-Item "C:\opencv\build\x64\vc15\bin\opencv_world455.dll" -Destination "build\bin\Release\" -Force
         Copy-Item "C:\opencv\build\x64\vc15\bin\opencv_videoio_ffmpeg455_64.dll" -Destination "build\bin\Release\" -Force -ErrorAction SilentlyContinue
-        Write-Host "OpenCV DLL bundled."
 
     - name: Upload EXE artifact
       uses: actions/upload-artifact@v4
       with:
         name: BatchScanCleaner-Windows
         path: build/bin/Release/
+        compression-level: 0
+
+    - name: Publish to Release
+      if: github.event_name == 'push'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: build-${{ github.run_number }}
+        name: Build ${{ github.run_number }}
+        files: build/bin/Release/BatchScanCleaner.exe
+        generate_release_notes: false
