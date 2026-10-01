@@ -20,6 +20,7 @@
 #include <QImage>
 #include <QDebug>
 
+#include <opencv2/imgproc.hpp>
 #include "image_io.h"
 
 MainWindow::MainWindow(QWidget *parent)
