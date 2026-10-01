@@ -27,38 +27,71 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
         gray = src.clone();
     }
 
-    // 2. 高斯模糊
-    cv::Mat blurred;
-    cv::GaussianBlur(gray, blurred, cv::Size(5, 5), 0);
-
-    // 3. 降采样，加速检测
-    cv::Mat detectImage;
+    // 2. 降采样加速
+    cv::Mat small;
     double scale = 1.0;
     const int maxDim = std::max(W, H);
-    if (maxDim > 1500) {
-        scale = 1500.0 / maxDim;
-        cv::resize(blurred, detectImage, cv::Size(), scale, scale, cv::INTER_AREA);
+    if (maxDim > 1200) {
+        scale = 1200.0 / maxDim;
+        cv::resize(gray, small, cv::Size(), scale, scale, cv::INTER_AREA);
     } else {
-        detectImage = blurred;
+        small = gray;
     }
 
-    // 4. 自适应二值化：纸张白，黑边黑
+    // 3. 高斯模糊
+    cv::GaussianBlur(small, small, cv::Size(5, 5), 0);
+
+    // 4. Otsu 二值化，阈值兜底（防止整体偏暗时误判）
     cv::Mat binary;
-    cv::adaptiveThreshold(detectImage, binary, 255,
-                          cv::ADAPTIVE_THRESH_GAUSSIAN_C,
-                          cv::THRESH_BINARY,
-                          options.blockSize,
-                          options.adaptiveC);
+    double otsuThresh = cv::threshold(small, binary, 0, 255,
+                                      cv::THRESH_BINARY | cv::THRESH_OTSU);
+    if (otsuThresh < 100.0) {
+        // 阈值太低，强行提高到 150，保证纸张被识别为白色
+        cv::threshold(small, binary, 150, 255, cv::THRESH_BINARY);
+    }
 
-    // 5. 形态学处理
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT,
-                                               cv::Size(options.morphSize, options.morphSize));
-    cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, kernel);
-    cv::morphologyEx(binary, binary, cv::MORPH_OPEN, kernel);
+    // 5. 大核闭运算，把文字、条纹并入纸张区域
+    cv::Mat closeKernel = cv::getStructuringElement(
+        cv::MORPH_RECT, cv::Size(15, 15));
+    cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, closeKernel);
 
-    // 6. 找轮廓
+    // 6. 找最大白色连通域（纸张）
+    cv::Mat labels, stats, centroids;
+    int numLabels = cv::connectedComponentsWithStats(
+        binary, labels, stats, centroids, 8, CV_32S);
+
+    if (numLabels <= 1) {
+        result.image = src.clone();
+        result.ok = true;
+        result.skipped = true;
+        return result;
+    }
+
+    int maxLabel = -1;
+    int maxArea = 0;
+    for (int i = 1; i < numLabels; ++i) {
+        const int area = stats.at<int>(i, cv::CC_STAT_AREA);
+        if (area > maxArea) {
+            maxArea = area;
+            maxLabel = i;
+        }
+    }
+
+    if (maxLabel < 0) {
+        result.image = src.clone();
+        result.ok = true;
+        result.skipped = true;
+        return result;
+    }
+
+    // 7. 只保留最大连通域
+    cv::Mat paperMask = (labels == maxLabel);
+    paperMask.convertTo(paperMask, CV_8UC1, 255);
+
+    // 8. 找最大轮廓
     std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    cv::findContours(paperMask, contours, cv::RETR_EXTERNAL,
+                     cv::CHAIN_APPROX_SIMPLE);
 
     if (contours.empty()) {
         result.image = src.clone();
@@ -67,13 +100,12 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
         return result;
     }
 
-    // 7. 找最大轮廓（纸张）
-    double maxArea = 0.0;
+    double maxContourArea = 0.0;
     int maxIdx = -1;
     for (size_t i = 0; i < contours.size(); ++i) {
-        const double area = cv::contourArea(contours[i]);
-        if (area > maxArea) {
-            maxArea = area;
+        const double a = cv::contourArea(contours[i]);
+        if (a > maxContourArea) {
+            maxContourArea = a;
             maxIdx = static_cast<int>(i);
         }
     }
@@ -85,75 +117,52 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
         return result;
     }
 
-    // 8. 面积检查
-    const double totalAreaDetect = static_cast<double>(detectImage.cols) * detectImage.rows;
-    const double areaRatio = maxArea / totalAreaDetect;
-    result.detectedAreaRatio = areaRatio;
+    // 9. 得到斜矩形边界
+    cv::RotatedRect rotRect = cv::minAreaRect(contours[maxIdx]);
 
-    if (areaRatio < options.minAreaRatio) {
+    // 10. 面积占比
+    const double imgAreaSmall = static_cast<double>(small.cols) * small.rows;
+    result.detectedAreaRatio = maxContourArea / imgAreaSmall;
+
+    if (result.detectedAreaRatio < options.minAreaRatio) {
         result.image = src.clone();
         result.ok = true;
         result.skipped = true;
         return result;
     }
 
-    // 9. 多边形近似
-    std::vector<cv::Point> paperContour = contours[maxIdx];
-    const double peri = cv::arcLength(paperContour, true);
-    std::vector<cv::Point> approx;
-    cv::approxPolyDP(paperContour, approx, peri * options.approxEpsilonRatio, true);
-
-    if (approx.size() < 3) {
-        result.image = src.clone();
-        result.ok = true;
-        result.skipped = true;
-        return result;
-    }
-
-    // 10. 坐标还原到原图尺寸
+    // 11. 还原坐标到原图
     if (scale != 1.0) {
-        for (auto &pt : approx) {
-            pt.x = static_cast<int>(pt.x / scale);
-            pt.y = static_cast<int>(pt.y / scale);
-        }
+        rotRect.center.x /= static_cast<float>(scale);
+        rotRect.center.y /= static_cast<float>(scale);
+        rotRect.size.width  /= static_cast<float>(scale);
+        rotRect.size.height /= static_cast<float>(scale);
     }
 
-    // 11. 检查是否贴合图像边缘
-    cv::Rect paperBounding = cv::boundingRect(approx);
-    const int marginX = static_cast<int>(W * options.edgeMarginRatio);
-    const int marginY = static_cast<int>(H * options.edgeMarginRatio);
+    // 12. 向外扩展几个像素，避免切割纸张边缘
+    const float expand = static_cast<float>(options.expandPixels);
+    rotRect.size.width  += expand * 2.0f;
+    rotRect.size.height += expand * 2.0f;
 
-    const bool touchesLeft = paperBounding.x <= marginX;
-    const bool touchesRight = (paperBounding.x + paperBounding.width) >= (W - marginX);
-    const bool touchesTop = paperBounding.y <= marginY;
-    const bool touchesBottom = (paperBounding.y + paperBounding.height) >= (H - marginY);
-
-    if (touchesLeft && touchesRight && touchesTop && touchesBottom) {
-        result.image = src.clone();
-        result.ok = true;
-        result.skipped = true;
-        return result;
-    }
-
-    // 12. 构建掩膜
+    // 13. 构建斜矩形掩膜
     cv::Mat mask = cv::Mat::zeros(H, W, CV_8UC1);
-    std::vector<std::vector<cv::Point>> paperPoly = { approx };
-    cv::fillPoly(mask, paperPoly, cv::Scalar(255));
-
-    // 13. 膨胀掩膜
-    if (options.expandPixels > 0) {
-        const int ksize = options.expandPixels * 2 + 1;
-        cv::Mat expandKernel = cv::getStructuringElement(cv::MORPH_ELLIPSE,
-                                                         cv::Size(ksize, ksize));
-        cv::dilate(mask, mask, expandKernel);
+    cv::Point2f vertices[4];
+    rotRect.points(vertices);
+    std::vector<cv::Point> pts;
+    for (int i = 0; i < 4; ++i) {
+        pts.push_back(cv::Point(
+            static_cast<int>(vertices[i].x),
+            static_cast<int>(vertices[i].y)));
     }
+    std::vector<std::vector<cv::Point>> polys = { pts };
+    cv::fillPoly(mask, polys, cv::Scalar(255));
 
-    // 14. 计算需填白区域
+    // 14. 计算填白区域
     cv::Mat invMask;
     cv::bitwise_not(mask, invMask);
     const int nonZeroCount = cv::countNonZero(invMask);
 
-    if (nonZeroCount < static_cast<int>(static_cast<double>(W) * H * 0.005)) {
+    if (nonZeroCount < static_cast<int>(static_cast<double>(W) * H * 0.001)) {
         result.image = src.clone();
         result.ok = true;
         result.skipped = true;
