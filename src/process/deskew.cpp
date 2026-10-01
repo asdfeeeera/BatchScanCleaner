@@ -5,6 +5,23 @@
 
 namespace process {
 
+namespace {
+
+// 旋转图像（不扩展画布，用于投影法中间步骤）
+cv::Mat rotateForProjection(const cv::Mat &src, double angle)
+{
+    const cv::Point2f center(src.cols / 2.0f, src.rows / 2.0f);
+    cv::Mat rot = cv::getRotationMatrix2D(center, angle, 1.0);
+    cv::Mat dst;
+    cv::warpAffine(src, dst, rot, src.size(),
+                   cv::INTER_NEAREST,
+                   cv::BORDER_CONSTANT,
+                   cv::Scalar(0));
+    return dst;
+}
+
+} // namespace
+
 double Deskew::detectAngle(const cv::Mat &src)
 {
     if (src.empty()) {
@@ -26,32 +43,40 @@ double Deskew::detectAngle(const cv::Mat &src)
     cv::threshold(gray, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    // 3. 轻微膨胀，让文字连成块，便于角度检测
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
-    cv::dilate(binary, binary, kernel);
-
-    // 4. 找所有前景像素点
-    std::vector<cv::Point> points;
-    cv::findNonZero(binary, points);
-
-    if (points.size() < 100) {
-        // 前景太少，无法判断
-        return 0.0;
+    // 3. 降采样，加速迭代（最多 800 像素长边）
+    cv::Mat small;
+    const int maxDim = std::max(binary.cols, binary.rows);
+    if (maxDim > 800) {
+        const double scale = 800.0 / maxDim;
+        cv::resize(binary, small, cv::Size(), scale, scale, cv::INTER_AREA);
+    } else {
+        small = binary;
     }
 
-    // 5. 计算最小外接矩形，得到角度
-    cv::RotatedRect rect = cv::minAreaRect(points);
-    double angle = rect.angle;
+    // 4. 投影法：找让水平投影方差最大的角度
+    //    文字行水平时，行与行的空白会让投影方差最大
+    double bestAngle = 0.0;
+    double bestScore = -1.0;
 
-    // minAreaRect 返回的角度范围是 [-90, 0)
-    // 转换为 [-45, 45] 区间，表示相对水平的倾斜角
-    if (angle < -45.0) {
-        angle += 90.0;
-    } else if (angle > 45.0) {
-        angle -= 90.0;
+    for (double angle = -10.0; angle <= 10.0; angle += 0.1) {
+        const cv::Mat rotated = rotateForProjection(small, angle);
+
+        // 水平方向投影（每行的前景像素总数）
+        cv::Mat projection;
+        cv::reduce(rotated, projection, 1, cv::REDUCE_SUM, CV_32S);
+
+        // 计算投影的方差
+        cv::Scalar mean, stddev;
+        cv::meanStdDev(projection, mean, stddev);
+        const double score = stddev[0] * stddev[0];
+
+        if (score > bestScore) {
+            bestScore = score;
+            bestAngle = angle;
+        }
     }
 
-    return angle;
+    return bestAngle;
 }
 
 cv::Mat Deskew::rotateKeepAll(const cv::Mat &src, double angle)
@@ -97,16 +122,14 @@ DeskewResult Deskew::autoDeskew(const cv::Mat &src)
 
     const double angle = detectAngle(src);
 
-    // 倾斜角太小，跳过
-    if (std::abs(angle) < 0.3) {
+    if (std::abs(angle) < 0.2) {
         result.image = src.clone();
         result.angle = 0.0;
         result.ok = true;
         return result;
     }
 
-    // 角度过大（超过 30 度），可能识别错误，跳过
-    if (std::abs(angle) > 30.0) {
+    if (std::abs(angle) > 10.0) {
         result.image = src.clone();
         result.angle = 0.0;
         result.ok = false;
