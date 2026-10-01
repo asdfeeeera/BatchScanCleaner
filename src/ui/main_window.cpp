@@ -357,9 +357,8 @@ void MainWindow::onRemoveBlackEdge()
     statusBar()->showMessage(QString::fromUtf8("正在去除黑边..."));
 
     process::BlackEdgeOptions options;
-    options.darkThreshold = 120;
-    options.darkRatio = 0.6;
-    options.maxScanRatio = 0.15;
+    options.relativeDarkRatio = 0.75;
+    options.maxScanRatio = 0.25;
     options.fillWhite = true;
 
     const process::BlackEdgeResult result =
