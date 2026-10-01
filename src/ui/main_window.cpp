@@ -18,6 +18,8 @@
 #include <QMessageBox>
 #include <QImage>
 #include <QFileInfo>
+#include <QResizeEvent>
+#include <QTimer>
 #include <QDebug>
 
 #include <opencv2/imgproc.hpp>
@@ -108,6 +110,7 @@ void MainWindow::setupCentralWidget()
     m_previewView = new QGraphicsView(m_previewScene, this);
     m_previewView->setRenderHint(QPainter::SmoothPixmapTransform);
     m_previewView->setDragMode(QGraphicsView::ScrollHandDrag);
+    m_previewView->setAlignment(Qt::AlignCenter);
 
     QScrollArea *paramScroll = new QScrollArea(this);
     QWidget *paramWidget = new QWidget(paramScroll);
@@ -138,6 +141,27 @@ void MainWindow::setupCentralWidget()
 void MainWindow::setupStatusBar()
 {
     statusBar()->showMessage(QString::fromUtf8("就绪"));
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event)
+{
+    QMainWindow::resizeEvent(event);
+    if (m_hasImage) {
+        fitPreviewToWindow();
+    }
+}
+
+void MainWindow::fitPreviewToWindow()
+{
+    if (!m_previewScene || !m_previewView) {
+        return;
+    }
+    const QRectF rect = m_previewScene->itemsBoundingRect();
+    if (rect.isEmpty()) {
+        return;
+    }
+    m_previewView->resetTransform();
+    m_previewView->fitInView(rect, Qt::KeepAspectRatio);
 }
 
 void MainWindow::onOpenImage()
@@ -181,7 +205,13 @@ void MainWindow::showImageOnPreview(const QString &path)
     m_previewScene->clear();
     m_previewScene->addPixmap(pix);
     m_previewScene->setSceneRect(pix.rect());
-    m_previewView->fitInView(pix.rect(), Qt::KeepAspectRatio);
+
+    m_hasImage = true;
+
+    // 延迟一帧再 fit，保证 view 已完成布局
+    QTimer::singleShot(0, this, [this]() {
+        fitPreviewToWindow();
+    });
 
     statusBar()->showMessage(
         QString::fromUtf8("%1  |  %2 x %3  |  %4 通道")
