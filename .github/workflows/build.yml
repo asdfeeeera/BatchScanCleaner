@@ -27,11 +27,11 @@ jobs:
         echo "$config" >> $env:GITHUB_PATH
         echo "C:\opencv\build\x64\vc15\bin" >> $env:GITHUB_PATH
 
-    - name: Install Qt 5.15.2
+    - name: Install Qt 5.14.2
       uses: jurplel/install-qt-action@v4
       with:
-        version: '5.15.2'
-        arch: 'win64_msvc2019_64'
+        version: '5.14.2'
+        arch: 'win64_msvc2017_64'
         cache: true
 
     - name: Configure CMake
