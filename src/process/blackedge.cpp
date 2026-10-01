@@ -41,56 +41,21 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
     // 3. 高斯模糊
     cv::GaussianBlur(small, small, cv::Size(5, 5), 0);
 
-    // 4. Otsu 二值化，阈值兜底（防止整体偏暗时误判）
+    // 4. 二值化：Otsu，但如果阈值太低（图整体偏暗）用固定 200
     cv::Mat binary;
     double otsuThresh = cv::threshold(small, binary, 0, 255,
                                       cv::THRESH_BINARY | cv::THRESH_OTSU);
-    if (otsuThresh < 100.0) {
-        // 阈值太低，强行提高到 150，保证纸张被识别为白色
-        cv::threshold(small, binary, 150, 255, cv::THRESH_BINARY);
+    if (otsuThresh < 180.0) {
+        cv::threshold(small, binary, 200, 255, cv::THRESH_BINARY);
     }
 
-    // 5. 轻量开运算去噪（去掉大核闭运算，避免吞掉黑边）
-    cv::Mat openKernel = cv::getStructuringElement(
-        cv::MORPH_RECT, cv::Size(3, 3));
-    cv::morphologyEx(binary, binary, cv::MORPH_OPEN, openKernel);
+    // 5. 轻量开运算去噪（3×3，不会吞掉黑边）
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
+    cv::morphologyEx(binary, binary, cv::MORPH_OPEN, kernel);
 
-    // 6. 找最大白色连通域（纸张）
-    cv::Mat labels, stats, centroids;
-    int numLabels = cv::connectedComponentsWithStats(
-        binary, labels, stats, centroids, 8, CV_32S);
-
-    if (numLabels <= 1) {
-        result.image = src.clone();
-        result.ok = true;
-        result.skipped = true;
-        return result;
-    }
-
-    int maxLabel = -1;
-    int maxArea = 0;
-    for (int i = 1; i < numLabels; ++i) {
-        const int area = stats.at<int>(i, cv::CC_STAT_AREA);
-        if (area > maxArea) {
-            maxArea = area;
-            maxLabel = i;
-        }
-    }
-
-    if (maxLabel < 0) {
-        result.image = src.clone();
-        result.ok = true;
-        result.skipped = true;
-        return result;
-    }
-
-    // 7. 只保留最大连通域
-    cv::Mat paperMask = (labels == maxLabel);
-    paperMask.convertTo(paperMask, CV_8UC1, 255);
-
-    // 8. 找最大轮廓
+    // 6. 找轮廓
     std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(paperMask, contours, cv::RETR_EXTERNAL,
+    cv::findContours(binary, contours, cv::RETR_EXTERNAL,
                      cv::CHAIN_APPROX_SIMPLE);
 
     if (contours.empty()) {
@@ -100,12 +65,13 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
         return result;
     }
 
-    double maxContourArea = 0.0;
+    // 7. 找最大轮廓（纸张）
+    double maxArea = 0.0;
     int maxIdx = -1;
     for (size_t i = 0; i < contours.size(); ++i) {
-        const double a = cv::contourArea(contours[i]);
-        if (a > maxContourArea) {
-            maxContourArea = a;
+        const double area = cv::contourArea(contours[i]);
+        if (area > maxArea) {
+            maxArea = area;
             maxIdx = static_cast<int>(i);
         }
     }
@@ -117,12 +83,9 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
         return result;
     }
 
-    // 9. 得到斜矩形边界
-    cv::RotatedRect rotRect = cv::minAreaRect(contours[maxIdx]);
-
-    // 10. 面积占比
+    // 8. 面积占比
     const double imgAreaSmall = static_cast<double>(small.cols) * small.rows;
-    result.detectedAreaRatio = maxContourArea / imgAreaSmall;
+    result.detectedAreaRatio = maxArea / imgAreaSmall;
 
     if (result.detectedAreaRatio < options.minAreaRatio) {
         result.image = src.clone();
@@ -131,33 +94,41 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
         return result;
     }
 
-    // 11. 还原坐标到原图
+    // 9. 多边形近似：让纸张轮廓更平滑、贴边
+    std::vector<cv::Point> paperContour = contours[maxIdx];
+    const double peri = cv::arcLength(paperContour, true);
+    std::vector<cv::Point> approx;
+    cv::approxPolyDP(paperContour, approx, peri * 0.001, true);
+
+    if (approx.size() < 3) {
+        result.image = src.clone();
+        result.ok = true;
+        result.skipped = true;
+        return result;
+    }
+
+    // 10. 还原坐标到原图
     if (scale != 1.0) {
-        rotRect.center.x /= static_cast<float>(scale);
-        rotRect.center.y /= static_cast<float>(scale);
-        rotRect.size.width  /= static_cast<float>(scale);
-        rotRect.size.height /= static_cast<float>(scale);
+        for (auto &pt : approx) {
+            pt.x = static_cast<int>(pt.x / scale);
+            pt.y = static_cast<int>(pt.y / scale);
+        }
     }
 
-    // 12. 向外扩展几个像素，避免切割纸张边缘
-    const float expand = static_cast<float>(options.expandPixels);
-    rotRect.size.width  += expand * 2.0f;
-    rotRect.size.height += expand * 2.0f;
-
-    // 13. 构建斜矩形掩膜
+    // 11. 构建掩膜：多边形 = 纸张区域
     cv::Mat mask = cv::Mat::zeros(H, W, CV_8UC1);
-    cv::Point2f vertices[4];
-    rotRect.points(vertices);
-    std::vector<cv::Point> pts;
-    for (int i = 0; i < 4; ++i) {
-        pts.push_back(cv::Point(
-            static_cast<int>(vertices[i].x),
-            static_cast<int>(vertices[i].y)));
-    }
-    std::vector<std::vector<cv::Point>> polys = { pts };
+    std::vector<std::vector<cv::Point>> polys = { approx };
     cv::fillPoly(mask, polys, cv::Scalar(255));
 
-    // 14. 计算填白区域
+    // 12. 掩膜膨胀：向外扩展几个像素，覆盖黑边
+    if (options.expandPixels > 0) {
+        const int ksize = options.expandPixels * 2 + 1;
+        cv::Mat expandKernel = cv::getStructuringElement(
+            cv::MORPH_ELLIPSE, cv::Size(ksize, ksize));
+        cv::dilate(mask, mask, expandKernel);
+    }
+
+    // 13. 计算掩膜外区域
     cv::Mat invMask;
     cv::bitwise_not(mask, invMask);
     const int nonZeroCount = cv::countNonZero(invMask);
@@ -169,7 +140,7 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
         return result;
     }
 
-    // 15. 填白
+    // 14. 掩膜外填白
     cv::Mat dst = src.clone();
     cv::Scalar white;
     if (dst.channels() == 4) {
