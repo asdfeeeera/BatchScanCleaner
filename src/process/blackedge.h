@@ -7,24 +7,21 @@ namespace process {
 struct BlackEdgeResult
 {
     cv::Mat image;
-    int topPixels = 0;
-    int bottomPixels = 0;
-    int leftPixels = 0;
-    int rightPixels = 0;
+    int filledPixels = 0;
+    double detectedAreaRatio = 0.0;
     bool ok = false;
+    bool skipped = false;
 };
 
 struct BlackEdgeOptions
 {
-    // 边缘行/列的平均灰度低于整图平均灰度的多少倍，才算黑边
-    // 0.75 表示比整图平均暗 25% 以上
-    double relativeDarkRatio = 0.75;
-
-    // 最多扫描的深度（占页面比例），避免误伤正文
-    double maxScanRatio = 0.25;
-
-    // 填白还是裁切
-    bool fillWhite = true;
+    int blockSize = 51;              // 自适应二值化窗口
+    double adaptiveC = 10.0;         // 自适应二值化常数
+    int morphSize = 5;               // 形态学核大小
+    double minAreaRatio = 0.3;       // 纸张最小面积占比
+    double edgeMarginRatio = 0.02;   // 边缘贴合判定
+    double approxEpsilonRatio = 0.02;// 多边形近似精度
+    int expandPixels = 3;            // 掩膜外扩像素
 };
 
 class BlackEdge
@@ -32,12 +29,6 @@ class BlackEdge
 public:
     static BlackEdgeResult removeBlackEdge(const cv::Mat &src,
                                             const BlackEdgeOptions &options = BlackEdgeOptions());
-
-private:
-    static int detectTop(const cv::Mat &gray, const BlackEdgeOptions &options, double globalMean);
-    static int detectBottom(const cv::Mat &gray, const BlackEdgeOptions &options, double globalMean);
-    static int detectLeft(const cv::Mat &gray, const BlackEdgeOptions &options, double globalMean);
-    static int detectRight(const cv::Mat &gray, const BlackEdgeOptions &options, double globalMean);
 };
 
 } // namespace process
