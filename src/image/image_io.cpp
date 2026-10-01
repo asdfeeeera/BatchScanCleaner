@@ -1,6 +1,8 @@
 ﻿#include "image_io.h"
 
+#include <QFile>
 #include <QFileInfo>
+#include <vector>
 #include <opencv2/imgcodecs.hpp>
 
 namespace image {
@@ -21,16 +23,29 @@ bool ImageIO::isSupportedExtension(const QString &path)
 
 bool ImageIO::read(const QString &path, cv::Mat &outImage, ImageMeta &outMeta)
 {
-    cv::Mat buffer = cv::imread(path.toStdString(), cv::IMREAD_UNCHANGED);
-    if (buffer.empty()) {
+    // 用 Qt 读取文件字节流，避免 OpenCV 中文路径问题
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    const QByteArray data = file.readAll();
+    file.close();
+
+    if (data.isEmpty()) {
         return false;
     }
 
-    outImage = buffer;
+    std::vector<uchar> buffer(data.begin(), data.end());
+    cv::Mat mat = cv::imdecode(buffer, cv::IMREAD_UNCHANGED);
+    if (mat.empty()) {
+        return false;
+    }
+
+    outImage = mat;
     outMeta.sourcePath = path;
-    outMeta.width = buffer.cols;
-    outMeta.height = buffer.rows;
-    outMeta.channels = buffer.channels();
+    outMeta.width = mat.cols;
+    outMeta.height = mat.rows;
+    outMeta.channels = mat.channels();
     return true;
 }
 
