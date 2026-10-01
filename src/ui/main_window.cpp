@@ -372,12 +372,16 @@ void MainWindow::onRemoveBlackEdge()
     m_currentMat = result.image;
     showMatOnPreview(m_currentMat);
 
-    statusBar()->showMessage(
-        QString::fromUtf8("黑边去除完成：上 %1 px，下 %2 px，左 %3 px，右 %4 px")
-            .arg(result.topPixels)
-            .arg(result.bottomPixels)
-            .arg(result.leftPixels)
-            .arg(result.rightPixels));
+    if (result.skipped) {
+        statusBar()->showMessage(
+            QString::fromUtf8("黑边去除：未检测到明显黑边，已跳过（纸张占比 %1%）")
+                .arg(result.detectedAreaRatio * 100.0, 0, 'f', 1));
+    } else {
+        statusBar()->showMessage(
+            QString::fromUtf8("黑边去除完成：填白 %1 像素，纸张占比 %2%")
+                .arg(result.filledPixels)
+                .arg(result.detectedAreaRatio * 100.0, 0, 'f', 1));
+    }
 }
 
 void MainWindow::showMatOnPreview(const cv::Mat &mat)
