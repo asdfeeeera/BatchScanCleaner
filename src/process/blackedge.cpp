@@ -13,7 +13,6 @@ double BlackEdge::estimatePaperGray(const cv::Mat &gray,
     const int W = gray.cols;
     const int H = gray.rows;
 
-    // 取中间区域
     const int marginX = static_cast<int>(W * (1.0 - options.paperSampleRatio) / 2.0);
     const int marginY = static_cast<int>(H * (1.0 - options.paperSampleRatio) / 2.0);
 
@@ -23,16 +22,13 @@ double BlackEdge::estimatePaperGray(const cv::Mat &gray,
     const int y1 = std::min(H, H - marginY);
 
     if (x1 <= x0 || y1 <= y0) {
-        // 退化情况，直接用整图
         cv::Scalar m = cv::mean(gray);
         return m[0];
     }
 
-    // 收集中间区域像素
     std::vector<uchar> pixels;
     pixels.reserve(static_cast<size_t>(x1 - x0) * (y1 - y0) / 4);
 
-    // 采样：每隔 2 像素取一个，加速
     for (int y = y0; y < y1; y += 2) {
         const uchar *row = gray.ptr<uchar>(y);
         for (int x = x0; x < x1; x += 2) {
@@ -45,7 +41,6 @@ double BlackEdge::estimatePaperGray(const cv::Mat &gray,
         return m[0];
     }
 
-    // 排序取百分位
     const size_t idx = static_cast<size_t>(
         std::min<double>(pixels.size() - 1,
                          pixels.size() * options.paperPercentile));
@@ -55,150 +50,122 @@ double BlackEdge::estimatePaperGray(const cv::Mat &gray,
 
 namespace {
 
-// 判断一行是否够"黑"（暗像素比例 >= 阈值）
-bool isDarkRow(const cv::Mat &gray, int y, double darkThreshold, double darkPixelRatio)
+// 从 (x, y) 沿 (dx, dy) 方向扫描，返回从起点开始的连续暗像素深度
+// 允许小间隙（gapTolerance）
+int scanDepth(const cv::Mat &gray, int x, int y, int dx, int dy,
+              int maxScan, double darkThreshold, int gapTolerance)
 {
-    if (y < 0 || y >= gray.rows) {
-        return false;
-    }
-    const uchar *row = gray.ptr<uchar>(y);
     const int W = gray.cols;
-    const int need = static_cast<int>(W * darkPixelRatio);
+    const int H = gray.rows;
+    int lastDark = -1;
+    int gapCount = 0;
 
-    int darkCount = 0;
-    for (int x = 0; x < W; ++x) {
-        if (row[x] < darkThreshold) {
-            ++darkCount;
-            if (darkCount >= need) {
-                return true;
-            }
+    for (int i = 0; i < maxScan; ++i) {
+        const int px = x + dx * i;
+        const int py = y + dy * i;
+        if (px < 0 || px >= W || py < 0 || py >= H) break;
+
+        if (gray.at<uchar>(py, px) < darkThreshold) {
+            lastDark = i;
+            gapCount = 0;
+        } else {
+            ++gapCount;
+            if (gapCount > gapTolerance) break;
         }
     }
-    return false;
+
+    return (lastDark >= 0) ? (lastDark + 1) : 0;
 }
 
-// 判断一列是否够"黑"
-bool isDarkCol(const cv::Mat &gray, int x, double darkThreshold, double darkPixelRatio)
+int medianOf(std::vector<int> &values)
 {
-    if (x < 0 || x >= gray.cols) {
-        return false;
-    }
-    const int H = gray.rows;
-    const int need = static_cast<int>(H * darkPixelRatio);
-
-    int darkCount = 0;
-    for (int y = 0; y < H; ++y) {
-        if (gray.at<uchar>(y, x) < darkThreshold) {
-            ++darkCount;
-            if (darkCount >= need) {
-                return true;
-            }
-        }
-    }
-    return false;
+    if (values.empty()) return 0;
+    std::sort(values.begin(), values.end());
+    return values[values.size() / 2];
 }
 
 } // namespace
 
+// 上边：对每一列 x，从 y=0 向下扫描
 int BlackEdge::scanTop(const cv::Mat &gray,
                        double darkThreshold,
                        const BlackEdgeOptions &options)
 {
-    const int maxScan = static_cast<int>(gray.rows * options.maxScanRatio);
-    int count = 0;
-    int gap = 0;
+    const int H = gray.rows;
+    const int W = gray.cols;
+    const int maxScan = static_cast<int>(H * options.maxScanRatio);
 
-    for (int y = 0; y < maxScan && y < gray.rows; ++y) {
-        if (isDarkRow(gray, y, darkThreshold, options.darkPixelRatio)) {
-            ++count;
-            gap = 0;
-        } else {
-            ++gap;
-            if (gap > options.gapTolerance) {
-                break;
-            }
-            // 允许间隙：不计数，但继续
-        }
+    std::vector<int> depths;
+    depths.reserve(W);
+    for (int x = 0; x < W; ++x) {
+        const int d = scanDepth(gray, x, 0, 0, 1, maxScan,
+                                darkThreshold, options.gapTolerance);
+        depths.push_back(d);
     }
-    return count;
+    return medianOf(depths);
 }
 
+// 下边：对每一列 x，从 y=H-1 向上扫描
 int BlackEdge::scanBottom(const cv::Mat &gray,
                           double darkThreshold,
                           const BlackEdgeOptions &options)
 {
-    const int maxScan = static_cast<int>(gray.rows * options.maxScanRatio);
-    int count = 0;
-    int gap = 0;
+    const int H = gray.rows;
+    const int W = gray.cols;
+    const int maxScan = static_cast<int>(H * options.maxScanRatio);
 
-    for (int i = 0; i < maxScan && i < gray.rows; ++i) {
-        const int y = gray.rows - 1 - i;
-        if (isDarkRow(gray, y, darkThreshold, options.darkPixelRatio)) {
-            ++count;
-            gap = 0;
-        } else {
-            ++gap;
-            if (gap > options.gapTolerance) {
-                break;
-            }
-        }
+    std::vector<int> depths;
+    depths.reserve(W);
+    for (int x = 0; x < W; ++x) {
+        const int d = scanDepth(gray, x, H - 1, 0, -1, maxScan,
+                                darkThreshold, options.gapTolerance);
+        depths.push_back(d);
     }
-    return count;
+    return medianOf(depths);
 }
 
+// 左边：对每一行 y，从 x=0 向右扫描
 int BlackEdge::scanLeft(const cv::Mat &gray,
                         double darkThreshold,
                         const BlackEdgeOptions &options)
 {
-    const int maxScan = static_cast<int>(gray.cols * options.maxScanRatio);
-    int count = 0;
-    int gap = 0;
+    const int H = gray.rows;
+    const int W = gray.cols;
+    const int maxScan = static_cast<int>(W * options.maxScanRatio);
 
-    for (int x = 0; x < maxScan && x < gray.cols; ++x) {
-        if (isDarkCol(gray, x, darkThreshold, options.darkPixelRatio)) {
-            ++count;
-            gap = 0;
-        } else {
-            ++gap;
-            if (gap > options.gapTolerance) {
-                break;
-            }
-        }
+    std::vector<int> depths;
+    depths.reserve(H);
+    for (int y = 0; y < H; ++y) {
+        const int d = scanDepth(gray, 0, y, 1, 0, maxScan,
+                                darkThreshold, options.gapTolerance);
+        depths.push_back(d);
     }
-    return count;
+    return medianOf(depths);
 }
 
+// 右边：对每一行 y，从 x=W-1 向左扫描
 int BlackEdge::scanRight(const cv::Mat &gray,
                          double darkThreshold,
                          const BlackEdgeOptions &options)
 {
-    const int maxScan = static_cast<int>(gray.cols * options.maxScanRatio);
-    int count = 0;
-    int gap = 0;
+    const int H = gray.rows;
+    const int W = gray.cols;
+    const int maxScan = static_cast<int>(W * options.maxScanRatio);
 
-    for (int i = 0; i < maxScan && i < gray.cols; ++i) {
-        const int x = gray.cols - 1 - i;
-        if (isDarkCol(gray, x, darkThreshold, options.darkPixelRatio)) {
-            ++count;
-            gap = 0;
-        } else {
-            ++gap;
-            if (gap > options.gapTolerance) {
-                break;
-            }
-        }
+    std::vector<int> depths;
+    depths.reserve(H);
+    for (int y = 0; y < H; ++y) {
+        const int d = scanDepth(gray, W - 1, y, -1, 0, maxScan,
+                                darkThreshold, options.gapTolerance);
+        depths.push_back(d);
     }
-    return count;
+    return medianOf(depths);
 }
 
 void BlackEdge::smoothMask(cv::Mat &mask, int kernelSize)
 {
-    if (kernelSize <= 1) {
-        return;
-    }
-    if (kernelSize % 2 == 0) {
-        kernelSize += 1;
-    }
+    if (kernelSize <= 1) return;
+    if (kernelSize % 2 == 0) kernelSize += 1;
     cv::Mat kernel = cv::getStructuringElement(
         cv::MORPH_RECT, cv::Size(kernelSize, kernelSize));
     cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
@@ -216,7 +183,6 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
     const int W = src.cols;
     const int H = src.rows;
 
-    // 1. 转灰度
     cv::Mat gray;
     if (src.channels() == 3) {
         cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
@@ -226,15 +192,12 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
         gray = src.clone();
     }
 
-    // 2. 估算纸张灰度
     const double paperGray = estimatePaperGray(gray, options);
     result.paperGray = paperGray;
 
-    // 3. 黑边阈值 = 纸张灰度 × darkRatio
     const double darkThreshold = paperGray * options.darkRatio;
     result.darkThreshold = darkThreshold;
 
-    // 4. 四边独立扫描
     const int top    = scanTop(gray, darkThreshold, options);
     const int bottom = scanBottom(gray, darkThreshold, options);
     const int left   = scanLeft(gray, darkThreshold, options);
@@ -245,8 +208,8 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
     result.leftPixels = left;
     result.rightPixels = right;
 
-    // 5. 四边都很小 → 跳过
-    const int minEdge = 2;
+    // 使用 minEdge = 5（放宽门槛）
+    const int minEdge = 5;
     if (top <= minEdge && bottom <= minEdge &&
         left <= minEdge && right <= minEdge) {
         result.image = src.clone();
@@ -255,7 +218,6 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
         return result;
     }
 
-    // 6. 构建黑边掩膜（黑边=255，纸张=0）
     cv::Mat edgeMask = cv::Mat::zeros(H, W, CV_8UC1);
 
     if (top > 0) {
@@ -275,14 +237,11 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
                       cv::Scalar(255), cv::FILLED);
     }
 
-    // 7. 平滑掩膜（去斜边锯齿）
     if (options.smoothKernelSize > 1) {
         smoothMask(edgeMask, options.smoothKernelSize);
     }
 
-    // 8. 处理
     if (options.fillWhite) {
-        // 填白
         cv::Mat dst = src.clone();
         cv::Scalar white;
         if (dst.channels() == 4) {
@@ -293,7 +252,6 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
         dst.setTo(white, edgeMask);
         result.image = dst;
     } else {
-        // 裁切：只裁掉四边黑边区域
         int x0 = (left > 0) ? left : 0;
         int y0 = (top > 0) ? top : 0;
         int x1 = W - ((right > 0) ? right : 0);
