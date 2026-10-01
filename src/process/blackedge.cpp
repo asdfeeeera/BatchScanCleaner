@@ -50,10 +50,10 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
         cv::threshold(small, binary, 150, 255, cv::THRESH_BINARY);
     }
 
-    // 5. 大核闭运算，把文字、条纹并入纸张区域
-    cv::Mat closeKernel = cv::getStructuringElement(
-        cv::MORPH_RECT, cv::Size(15, 15));
-    cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, closeKernel);
+    // 5. 轻量开运算去噪（去掉大核闭运算，避免吞掉黑边）
+    cv::Mat openKernel = cv::getStructuringElement(
+        cv::MORPH_RECT, cv::Size(3, 3));
+    cv::morphologyEx(binary, binary, cv::MORPH_OPEN, openKernel);
 
     // 6. 找最大白色连通域（纸张）
     cv::Mat labels, stats, centroids;
