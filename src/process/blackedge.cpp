@@ -50,8 +50,6 @@ double BlackEdge::estimatePaperGray(const cv::Mat &gray,
 
 namespace {
 
-// 从 (x, y) 沿 (dx, dy) 方向扫描，返回从起点开始的连续暗像素深度
-// 允许小间隙（gapTolerance）
 int scanDepth(const cv::Mat &gray, int x, int y, int dx, int dy,
               int maxScan, double darkThreshold, int gapTolerance)
 {
@@ -77,16 +75,17 @@ int scanDepth(const cv::Mat &gray, int x, int y, int dx, int dy,
     return (lastDark >= 0) ? (lastDark + 1) : 0;
 }
 
-int medianOf(std::vector<int> &values)
+int percentileOf(std::vector<int> &values, double p)
 {
     if (values.empty()) return 0;
     std::sort(values.begin(), values.end());
-    return values[values.size() / 2];
+    const size_t idx = static_cast<size_t>(
+        std::min<double>(values.size() - 1, values.size() * p));
+    return values[idx];
 }
 
 } // namespace
 
-// 上边：对每一列 x，从 y=0 向下扫描
 int BlackEdge::scanTop(const cv::Mat &gray,
                        double darkThreshold,
                        const BlackEdgeOptions &options)
@@ -102,10 +101,9 @@ int BlackEdge::scanTop(const cv::Mat &gray,
                                 darkThreshold, options.gapTolerance);
         depths.push_back(d);
     }
-    return medianOf(depths);
+    return percentileOf(depths, 0.80);
 }
 
-// 下边：对每一列 x，从 y=H-1 向上扫描
 int BlackEdge::scanBottom(const cv::Mat &gray,
                           double darkThreshold,
                           const BlackEdgeOptions &options)
@@ -121,10 +119,9 @@ int BlackEdge::scanBottom(const cv::Mat &gray,
                                 darkThreshold, options.gapTolerance);
         depths.push_back(d);
     }
-    return medianOf(depths);
+    return percentileOf(depths, 0.80);
 }
 
-// 左边：对每一行 y，从 x=0 向右扫描
 int BlackEdge::scanLeft(const cv::Mat &gray,
                         double darkThreshold,
                         const BlackEdgeOptions &options)
@@ -140,10 +137,9 @@ int BlackEdge::scanLeft(const cv::Mat &gray,
                                 darkThreshold, options.gapTolerance);
         depths.push_back(d);
     }
-    return medianOf(depths);
+    return percentileOf(depths, 0.80);
 }
 
-// 右边：对每一行 y，从 x=W-1 向左扫描
 int BlackEdge::scanRight(const cv::Mat &gray,
                          double darkThreshold,
                          const BlackEdgeOptions &options)
@@ -159,7 +155,7 @@ int BlackEdge::scanRight(const cv::Mat &gray,
                                 darkThreshold, options.gapTolerance);
         depths.push_back(d);
     }
-    return medianOf(depths);
+    return percentileOf(depths, 0.80);
 }
 
 void BlackEdge::smoothMask(cv::Mat &mask, int kernelSize)
@@ -208,7 +204,6 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
     result.leftPixels = left;
     result.rightPixels = right;
 
-    // 使用 minEdge = 5（放宽门槛）
     const int minEdge = 5;
     if (top <= minEdge && bottom <= minEdge &&
         left <= minEdge && right <= minEdge) {
