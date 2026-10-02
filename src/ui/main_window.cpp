@@ -713,6 +713,9 @@ void MainWindow::onClearColorLine()
             .arg(result.clearedPixels));
 }
 
+// ============================================================
+// Wrong page number processing
+// ============================================================
 void MainWindow::onProcessErrPage()
 {
     if (!m_hasImage || m_currentMat.empty()) {
@@ -748,7 +751,7 @@ void MainWindow::onProcessErrPage()
     options.fillWhite              = true;
     options.tesseractPath          = QString();
 
-    // 备份原图（用于抠缩略图）
+    // Backup source for thumbnails
     const cv::Mat srcForThumb = m_currentMat.clone();
 
     const process::ErrPageResult result =
@@ -764,7 +767,24 @@ void MainWindow::onProcessErrPage()
     m_currentMat = result.image;
     showMatOnPreview(result.markedImage);
 
-    // ★ 收集待确认项：OCR 失败 或 识别值 != 正确页码
+    // ★ Step 1: clear old pending items for this file (avoid duplicates)
+    {
+        const QList<analyze::PendingItem> allItems =
+            analyze::PendingCenter::instance().allItems();
+        QList<int> idsToDrop;
+        for (const analyze::PendingItem &x : allItems) {
+            if (x.sourceImagePath == m_currentImagePath) {
+                idsToDrop.append(x.id);
+            }
+        }
+        if (!idsToDrop.isEmpty()) {
+            analyze::PendingCenter::instance().setDecisionByIds(
+                idsToDrop, analyze::PendingDecision::Rejected);
+            analyze::PendingCenter::instance().clearDecided();
+        }
+    }
+
+    // ★ Step 2: collect new items with tighter filter
     const QFileInfo fi(m_currentImagePath);
     int addedCount = 0;
     for (const auto &it : result.items) {
@@ -773,9 +793,11 @@ void MainWindow::onProcessErrPage()
             (result.correctPage >= 0 &&
              it.recognizedNumber == result.correctPage);
 
+        // Skip: matches the correct page number
         if (matchesCorrect) continue;
-        if (!ocrFailed && !it.isCrossed) continue;   // 非划线且能识别，跳过
-        if (!ocrFailed && it.recognizedNumber == result.correctPage) continue;
+
+        // Skip: OCR failed AND no cross line -> likely noise, not a page number
+        if (ocrFailed && !it.isCrossed) continue;
 
         analyze::PendingItem p;
         p.type = analyze::PendingType::WrongPageNumber;
@@ -793,7 +815,6 @@ void MainWindow::onProcessErrPage()
                        .arg(it.recognizedNumber)
                        .arg(result.correctPage);
 
-        // 抠缩略图
         cv::Rect safe = it.boundingBox &
                         cv::Rect(0, 0, srcForThumb.cols, srcForThumb.rows);
         if (safe.width > 0 && safe.height > 0) {
