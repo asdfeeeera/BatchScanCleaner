@@ -19,9 +19,6 @@
 
 namespace process {
 
-// ============================================================
-// 从文件名解析正确页码
-// ============================================================
 int ErrPage::parseCorrectPage(const QString &sourcePath)
 {
     const QFileInfo info(sourcePath);
@@ -40,9 +37,6 @@ int ErrPage::parseCorrectPage(const QString &sourcePath)
     return -1;
 }
 
-// ============================================================
-// 匿名命名空间
-// ============================================================
 namespace {
 
 std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
@@ -330,9 +324,6 @@ bool recognizeSingleChar(const cv::Mat &charImage,
 
 } // namespace
 
-// ============================================================
-// Tesseract OCR 识别
-// ============================================================
 int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
                                      QString &outText,
@@ -533,9 +524,6 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     return -1;
 }
 
-// ============================================================
-// 在指定区域检测数字块
-// ============================================================
 void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
                                     const cv::Rect &region,
                                     const ErrPageOptions &options,
@@ -604,17 +592,18 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
 }
 
 // ============================================================
-// 划线检测（逐行黑像素统计，对虚线也有效）
+// 划线检测（★ 只看数字 bbox 内部 ±3 像素范围）
 // ============================================================
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
                                double crossLineRatio)
 {
+    // ★ 只扩 3 像素，不再把数字上方/下方的页眉线算进去
     cv::Rect expanded = digitBox;
-    expanded.x -= 10;
-    expanded.y -= 10;
-    expanded.width += 20;
-    expanded.height += 20;
+    expanded.x -= 3;
+    expanded.y -= 3;
+    expanded.width += 6;
+    expanded.height += 6;
     expanded &= cv::Rect(0, 0, gray.cols, gray.rows);
 
     if (expanded.width <= 0 || expanded.height <= 0) return false;
@@ -624,10 +613,13 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     cv::threshold(roi, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    const int yStart = 10;
-    const int yEnd = std::min(binary.rows - 10, binary.rows);
+    // 避开边缘 3 行
+    const int yStart = 3;
+    const int yEnd = binary.rows - 3;
+    if (yEnd <= yStart) return false;
 
-    const int minCount = static_cast<int>(binary.cols * 0.6);
+    // ★ 每行黑像素数超过宽度的 70% → 认为有横线
+    const int minCount = static_cast<int>(binary.cols * 0.7);
 
     for (int y = yStart; y < yEnd; ++y) {
         const uchar *row = binary.ptr<uchar>(y);
@@ -642,9 +634,6 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     return false;
 }
 
-// ============================================================
-// 主流程
-// ============================================================
 ErrPageResult ErrPage::process(const cv::Mat &src,
                                 const QString &sourcePath,
                                 const ErrPageOptions &options)
@@ -673,6 +662,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
     writeDiag(QString::fromUtf8("----- process() -----"));
     writeDiag(QString::fromUtf8("文件名：%1").arg(sourcePath));
     writeDiag(QString::fromUtf8("正确页码：%1").arg(result.correctPage));
+    writeDiag(QString::fromUtf8("页面尺寸：%1 x %2").arg(W).arg(H));
 
     cv::Mat gray;
     if (src.channels() == 3) {
@@ -685,17 +675,26 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     std::vector<PageNumberItem> allItems;
 
+    // ★ 检测区域高度至少 600 像素，确保 066 在范围内
+    const int minRegionH = 600;
+
     if (options.detectTopLeft) {
         const int w = static_cast<int>(W * options.topLeftWidthRatio);
-        const int h = static_cast<int>(H * options.topLeftHeightRatio);
+        int h = static_cast<int>(H * options.topLeftHeightRatio);
+        if (h < minRegionH) h = std::min(minRegionH, H);
         cv::Rect region(0, 0, w, h);
+        writeDiag(QString::fromUtf8("左上区域：(%1,%2,%3x%4)")
+                      .arg(region.x).arg(region.y).arg(region.width).arg(region.height));
         detectDigitsInRegion(gray, region, options, allItems);
     }
 
     if (options.detectTopRight) {
         const int w = static_cast<int>(W * options.topRightWidthRatio);
-        const int h = static_cast<int>(H * options.topRightHeightRatio);
+        int h = static_cast<int>(H * options.topRightHeightRatio);
+        if (h < minRegionH) h = std::min(minRegionH, H);
         cv::Rect region(W - w, 0, w, h);
+        writeDiag(QString::fromUtf8("右上区域：(%1,%2,%3x%4)")
+                      .arg(region.x).arg(region.y).arg(region.width).arg(region.height));
         detectDigitsInRegion(gray, region, options, allItems);
     }
 
