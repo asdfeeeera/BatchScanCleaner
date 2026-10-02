@@ -742,7 +742,7 @@ void MainWindow::onProcessErrPage()
 }
 
 // ============================================================
-// ★ 临时：签名印章保护测试
+// Stamp + Signature Protection Test (temporary)
 // ============================================================
 void MainWindow::onStampProtectTest()
 {
@@ -767,15 +767,15 @@ void MainWindow::onStampProtectTest()
 
     const QString desktop = QDir::homePath() + QStringLiteral("/Desktop");
 
-    // 1. 保存纯掩膜
     const QString maskPath = desktop + QStringLiteral("/stamp_mask.png");
     cv::imwrite(maskPath.toStdString(), result.mask);
 
-    // 2. 保存彩色掩膜
     const QString colorMaskPath = desktop + QStringLiteral("/stamp_colormask.png");
     cv::imwrite(colorMaskPath.toStdString(), result.colorMask);
 
-    // 3. 保存叠加图：原图 + 半透明绿色覆盖保护区域
+    const QString hwMaskPath = desktop + QStringLiteral("/stamp_handwriting.png");
+    cv::imwrite(hwMaskPath.toStdString(), result.handwritingMask);
+
     cv::Mat bgr;
     if (m_currentMat.channels() == 3) {
         bgr = m_currentMat.clone();
@@ -798,12 +798,16 @@ void MainWindow::onStampProtectTest()
     const double ratio = totalPixels > 0
         ? (100.0 * result.protectedPixels / totalPixels)
         : 0.0;
+    const double hwRatio = totalPixels > 0
+        ? (100.0 * result.handwritingPixels / totalPixels)
+        : 0.0;
 
     statusBar()->showMessage(
-        QString::fromUtf8("签名印章检测完成：保护 %1 像素（占 %2%）。"
-                          "已保存 stamp_mask.png / stamp_colormask.png / stamp_overlay.png 到桌面")
+        QString::fromUtf8("签名印章检测完成：保护 %1 像素（占 %2%），其中手写签名 %3% 。"
+                          "已保存 4 张图到桌面")
             .arg(result.protectedPixels)
-            .arg(ratio, 0, 'f', 2));
+            .arg(ratio, 0, 'f', 2)
+            .arg(hwRatio, 0, 'f', 2));
 }
 
 void MainWindow::showMatOnPreview(const cv::Mat &mat)
