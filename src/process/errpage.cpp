@@ -526,7 +526,7 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
 
 // ============================================================
 // 在指定区域检测数字块
-// ★ 关键修复：先对 ROI 去横线，再做连通域分析
+// ★ 直接对原始 ROI 做检测（不去横线，避免破坏 066）
 // ============================================================
 void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
                                     const cv::Rect &region,
@@ -538,17 +538,13 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
 
     cv::Mat roi = gray(r);
 
-    // ★ 先对 ROI 去横线，避免横线把 066 粘连或切分导致漏检
-    cv::Mat roiNoLines = removeHorizontalLinesByMask(roi);
-
     cv::Mat binary;
-    cv::threshold(roiNoLines, binary, 0, 255,
+    cv::threshold(roi, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
     std::vector<cv::Rect> digitBoxes = findDigitBoxes(binary, options);
     std::vector<cv::Rect> pageBoxes = mergeAdjacentDigits(digitBoxes);
 
-    // 保存调试图
     {
         cv::Mat dbg;
         cv::cvtColor(roi, dbg, cv::COLOR_GRAY2BGR);
@@ -578,7 +574,6 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
         PageNumberItem item;
         item.boundingBox = cv::Rect(box.x + r.x, box.y + r.y,
                                      box.width, box.height);
-        // ★ 划线检测在原始灰度图上做（不是去横线后的）
         item.isCrossed = detectCrossLine(gray, item.boundingBox,
                                           options.crossLineRatio);
 
