@@ -751,7 +751,6 @@ void MainWindow::onProcessErrPage()
     options.fillWhite              = true;
     options.tesseractPath          = QString();
 
-    // Backup source for thumbnails
     const cv::Mat srcForThumb = m_currentMat.clone();
 
     const process::ErrPageResult result =
@@ -767,7 +766,7 @@ void MainWindow::onProcessErrPage()
     m_currentMat = result.image;
     showMatOnPreview(result.markedImage);
 
-    // ★ Step 1: clear old pending items for this file (avoid duplicates)
+    // Step 1: clear old pending items for this file
     {
         const QList<analyze::PendingItem> allItems =
             analyze::PendingCenter::instance().allItems();
@@ -784,33 +783,27 @@ void MainWindow::onProcessErrPage()
         }
     }
 
-    // ★ Step 2: collect new items with tighter filter
+    // Step 2: collect new items - only crossed ones (real wrong page numbers)
     const QFileInfo fi(m_currentImagePath);
     int addedCount = 0;
     for (const auto &it : result.items) {
-        const bool ocrFailed = (it.recognizedNumber < 0);
         const bool matchesCorrect =
             (result.correctPage >= 0 &&
              it.recognizedNumber == result.correctPage);
 
-        // Skip: matches the correct page number
         if (matchesCorrect) continue;
 
-        // Skip: OCR failed AND no cross line -> likely noise, not a page number
-        if (ocrFailed && !it.isCrossed) continue;
+        // ★ Only add items with a cross line - real wrong page number
+        if (!it.isCrossed) continue;
 
         analyze::PendingItem p;
         p.type = analyze::PendingType::WrongPageNumber;
-        p.suggestedAction = it.isCrossed
-                                ? analyze::PendingAction::Remove
-                                : analyze::PendingAction::ManualReview;
+        p.suggestedAction = analyze::PendingAction::Remove;
         p.sourceImagePath = m_currentImagePath;
         p.fileName = fi.fileName();
         p.boundingBox = it.boundingBox;
         p.confidence = it.confidence;
-        p.reason = it.isCrossed
-                       ? QString::fromUtf8("检测到划线数字，与正确页码不符")
-                       : QString::fromUtf8("OCR 识别失败或与正确页码不符");
+        p.reason = QString::fromUtf8("检测到划线数字，与正确页码不符");
         p.detail = QString::fromUtf8("识别结果：%1，正确页码：%2")
                        .arg(it.recognizedNumber)
                        .arg(result.correctPage);
