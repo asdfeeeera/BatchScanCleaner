@@ -16,6 +16,7 @@ double BlackEdge::estimatePaperGray(const cv::Mat &gray,
     const int my = static_cast<int>(H * 0.25);
 
     std::vector<uchar> pixels;
+    pixels.reserve(static_cast<size_t>(W) * H / 8);
     for (int y = my; y < H - my; y += 2) {
         const uchar *row = gray.ptr<uchar>(y);
         for (int x = mx; x < W - mx; x += 2) {
@@ -33,7 +34,7 @@ double BlackEdge::estimatePaperGray(const cv::Mat &gray,
 
 namespace {
 
-// 从 (x, y) 沿 (dx, dy) 扫，允许前面有 whiteTolerance 个白像素
+// 从 (x, y) 沿 (dx, dy) 扫描，允许前面有 whiteTolerance 个白像素
 int scanEdgeDepth(const cv::Mat &gray, int x, int y, int dx, int dy,
                   int maxScan, double darkThreshold,
                   int whiteTolerance, int gapTolerance)
@@ -59,7 +60,7 @@ int scanEdgeDepth(const cv::Mat &gray, int x, int y, int dx, int dy,
             if (firstDark >= 0) {
                 if (whiteRun > gapTolerance) break;
             } else {
-                if (whiteRun > whiteTolerance) break;  // 前面白太多
+                if (whiteRun > whiteTolerance) break;
             }
         }
     }
@@ -67,18 +68,24 @@ int scanEdgeDepth(const cv::Mat &gray, int x, int y, int dx, int dy,
     return (lastDark < 0) ? 0 : (lastDark + 1);
 }
 
-int percentileOf(std::vector<int> &v, double p)
+// 稳健最大值：剔除超过 maxAllowed 的异常值，剩余取最大
+int robustMax(std::vector<int> &v, int maxAllowed)
 {
     if (v.empty()) return 0;
     std::sort(v.begin(), v.end());
-    const size_t idx = static_cast<size_t>(
-        std::min<double>(v.size() - 1, v.size() * p));
-    return v[idx];
+
+    for (int i = static_cast<int>(v.size()) - 1; i >= 0; --i) {
+        if (v[i] <= maxAllowed) {
+            return v[i];
+        }
+    }
+    return 0;
 }
 
 } // namespace
 
-int BlackEdge::scanTop(const cv::Mat &gray, double darkThreshold, const BlackEdgeOptions &options)
+int BlackEdge::scanTop(const cv::Mat &gray, double darkThreshold,
+                       const BlackEdgeOptions &options)
 {
     const int maxScan = static_cast<int>(gray.rows * options.maxScanRatio);
     std::vector<int> depths;
@@ -87,10 +94,12 @@ int BlackEdge::scanTop(const cv::Mat &gray, double darkThreshold, const BlackEdg
         depths.push_back(scanEdgeDepth(gray, x, 0, 0, 1, maxScan,
                                        darkThreshold, 30, options.gapTolerance));
     }
-    return percentileOf(depths, 0.80);
+    const int maxAllowed = static_cast<int>(gray.rows * options.maxScanRatio * 0.8);
+    return robustMax(depths, maxAllowed);
 }
 
-int BlackEdge::scanBottom(const cv::Mat &gray, double darkThreshold, const BlackEdgeOptions &options)
+int BlackEdge::scanBottom(const cv::Mat &gray, double darkThreshold,
+                          const BlackEdgeOptions &options)
 {
     const int maxScan = static_cast<int>(gray.rows * options.maxScanRatio);
     std::vector<int> depths;
@@ -99,10 +108,12 @@ int BlackEdge::scanBottom(const cv::Mat &gray, double darkThreshold, const Black
         depths.push_back(scanEdgeDepth(gray, x, gray.rows - 1, 0, -1, maxScan,
                                        darkThreshold, 30, options.gapTolerance));
     }
-    return percentileOf(depths, 0.80);
+    const int maxAllowed = static_cast<int>(gray.rows * options.maxScanRatio * 0.8);
+    return robustMax(depths, maxAllowed);
 }
 
-int BlackEdge::scanLeft(const cv::Mat &gray, double darkThreshold, const BlackEdgeOptions &options)
+int BlackEdge::scanLeft(const cv::Mat &gray, double darkThreshold,
+                        const BlackEdgeOptions &options)
 {
     const int maxScan = static_cast<int>(gray.cols * options.maxScanRatio);
     std::vector<int> depths;
@@ -111,10 +122,12 @@ int BlackEdge::scanLeft(const cv::Mat &gray, double darkThreshold, const BlackEd
         depths.push_back(scanEdgeDepth(gray, 0, y, 1, 0, maxScan,
                                        darkThreshold, 30, options.gapTolerance));
     }
-    return percentileOf(depths, 0.80);
+    const int maxAllowed = static_cast<int>(gray.cols * options.maxScanRatio * 0.8);
+    return robustMax(depths, maxAllowed);
 }
 
-int BlackEdge::scanRight(const cv::Mat &gray, double darkThreshold, const BlackEdgeOptions &options)
+int BlackEdge::scanRight(const cv::Mat &gray, double darkThreshold,
+                         const BlackEdgeOptions &options)
 {
     const int maxScan = static_cast<int>(gray.cols * options.maxScanRatio);
     std::vector<int> depths;
@@ -123,7 +136,8 @@ int BlackEdge::scanRight(const cv::Mat &gray, double darkThreshold, const BlackE
         depths.push_back(scanEdgeDepth(gray, gray.cols - 1, y, -1, 0, maxScan,
                                        darkThreshold, 30, options.gapTolerance));
     }
-    return percentileOf(depths, 0.80);
+    const int maxAllowed = static_cast<int>(gray.cols * options.maxScanRatio * 0.8);
+    return robustMax(depths, maxAllowed);
 }
 
 void BlackEdge::smoothMask(cv::Mat &mask, int kernelSize)
@@ -155,6 +169,7 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
 
     const double paperGray = estimatePaperGray(gray, options);
     result.paperGray = paperGray;
+
     const double darkThreshold = paperGray * options.darkRatio;
     result.darkThreshold = darkThreshold;
 
@@ -178,17 +193,22 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
     }
 
     cv::Mat mask = cv::Mat::zeros(H, W, CV_8UC1);
+
     if (top > 0) {
-        cv::rectangle(mask, cv::Rect(0, 0, W, top), cv::Scalar(255), cv::FILLED);
+        cv::rectangle(mask, cv::Rect(0, 0, W, top),
+                      cv::Scalar(255), cv::FILLED);
     }
     if (bottom > 0) {
-        cv::rectangle(mask, cv::Rect(0, H - bottom, W, bottom), cv::Scalar(255), cv::FILLED);
+        cv::rectangle(mask, cv::Rect(0, H - bottom, W, bottom),
+                      cv::Scalar(255), cv::FILLED);
     }
     if (left > 0) {
-        cv::rectangle(mask, cv::Rect(0, 0, left, H), cv::Scalar(255), cv::FILLED);
+        cv::rectangle(mask, cv::Rect(0, 0, left, H),
+                      cv::Scalar(255), cv::FILLED);
     }
     if (right > 0) {
-        cv::rectangle(mask, cv::Rect(W - right, 0, right, H), cv::Scalar(255), cv::FILLED);
+        cv::rectangle(mask, cv::Rect(W - right, 0, right, H),
+                      cv::Scalar(255), cv::FILLED);
     }
 
     if (options.smoothKernelSize > 1) {
