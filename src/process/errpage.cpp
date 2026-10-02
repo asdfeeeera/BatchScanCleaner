@@ -71,6 +71,11 @@ std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
         if (aspect < 0.15) continue;
         if (aspect > 4.0) continue;
 
+        // ★ 填充率过滤：排除实心块（箭头、印章、粗黑块等）
+        const double fillRatio = static_cast<double>(area) /
+                                  std::max(1, w * h);
+        if (fillRatio > 0.55) continue;
+
         cv::Rect r(stats.at<int>(i, cv::CC_STAT_LEFT),
                    stats.at<int>(i, cv::CC_STAT_TOP),
                    w, h);
@@ -148,8 +153,7 @@ bool isPageMatch(int recognized, int correctPage)
 }
 
 // ============================================================
-// ★ 用 mask 涂白横线区域（不再用 subtract 减，避免破坏字符笔画）
-// 输入：灰度图；输出：灰度图（横线区域被涂白）
+// 用 mask 涂白横线区域
 // ============================================================
 cv::Mat removeHorizontalLinesByMask(const cv::Mat &gray)
 {
@@ -157,29 +161,24 @@ cv::Mat removeHorizontalLinesByMask(const cv::Mat &gray)
     cv::threshold(gray, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    // 提取长横线：核宽度用 max(25, cols * 0.4)
     const int kernelW = std::max(25, static_cast<int>(gray.cols * 0.4));
     cv::Mat hKernel = cv::getStructuringElement(
         cv::MORPH_RECT, cv::Size(kernelW, 1));
     cv::Mat hLines;
     cv::morphologyEx(binary, hLines, cv::MORPH_OPEN, hKernel);
 
-    // 膨胀横线 mask，确保覆盖横线
     cv::Mat dKernel = cv::getStructuringElement(
         cv::MORPH_RECT, cv::Size(3, 3));
     cv::Mat hLinesDilated;
     cv::dilate(hLines, hLinesDilated, dKernel);
 
-    // 在原灰度图上涂白横线区域
     cv::Mat result = gray.clone();
     result.setTo(255, hLinesDilated);
-
     return result;
 }
 
 // ============================================================
-// ★ 垂直投影分割（输入是白字黑底的二值图）
-// 用 5% 阈值，即使字符间有轻微凹陷也能分割
+// 垂直投影分割
 // ============================================================
 std::vector<cv::Rect> splitByVerticalProjection(const cv::Mat &binary)
 {
@@ -288,8 +287,7 @@ OcrAttempt tryRecognize(const cv::Mat &image, const QString &tessExe,
 }
 
 // ============================================================
-// ★ 识别单个字符（输入是白底黑字的灰度/二值图）
-// 尝试 3 种垂直闭运算核高度，命中一次即返回
+// 识别单个字符
 // ============================================================
 bool recognizeSingleChar(const cv::Mat &charImage,
                           const QString &tessExe,
@@ -305,7 +303,6 @@ bool recognizeSingleChar(const cv::Mat &charImage,
         gray = charImage.clone();
     }
 
-    // 二值化：白字黑底
     cv::Mat binary;
     cv::threshold(gray, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
@@ -325,7 +322,7 @@ bool recognizeSingleChar(const cv::Mat &charImage,
         cv::morphologyEx(repaired1, repaired2, cv::MORPH_CLOSE, k3);
 
         cv::Mat out;
-        cv::bitwise_not(repaired2, out); // 白底黑字
+        cv::bitwise_not(repaired2, out);
 
         const QStringList modes = {
             QStringLiteral("10"),
@@ -347,7 +344,7 @@ bool recognizeSingleChar(const cv::Mat &charImage,
 } // namespace
 
 // ============================================================
-// Tesseract OCR 识别（多方案竞争，选位数最多的成功结果）
+// Tesseract OCR 识别
 // ============================================================
 int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
@@ -393,7 +390,6 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     const QString tessDir = QFileInfo(tessExe).absolutePath();
     const QString tessdataDir = tessDir + QStringLiteral("/tessdata");
 
-    // 灰度化
     cv::Mat grayOrig;
     if (digitImage.channels() == 3) {
         cv::cvtColor(digitImage, grayOrig, cv::COLOR_BGR2GRAY);
@@ -401,20 +397,17 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         grayOrig = digitImage.clone();
     }
 
-    // ★ 涂白横线（不破坏字符笔画）
     cv::Mat noLinesGray = removeHorizontalLinesByMask(grayOrig);
 
-    // 转成白底黑字（给 Tesseract）
     cv::Mat cleaned;
     cv::threshold(noLinesGray, cleaned, 0, 255,
                   cv::THRESH_BINARY | cv::THRESH_OTSU);
 
-    // 转成白字黑底（给分割用）
     cv::Mat cleanedBinary;
     cv::threshold(noLinesGray, cleanedBinary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    // ---------- 方案 1：原图 psm7 直接识别 ----------
+    // 方案 1：原图 psm7
     {
         OcrAttempt r = tryRecognize(digitImage, tessExe, tessdataDir,
                                      QStringLiteral("7"));
@@ -430,14 +423,13 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         }
     }
 
-    // 保存调试图（涂白横线后）
     {
         const QString dbgPath = QDir::homePath() +
             QStringLiteral("/Desktop/ocr_debug_input.png");
         cv::imwrite(dbgPath.toStdString(), cleaned);
     }
 
-    // ---------- 方案 2：涂白横线后整体识别（多 PSM，记录位数最多的） ----------
+    // 方案 2：涂白横线后整体识别
     int bestNumber = -1;
     QString bestText;
     int bestDigits = 0;
@@ -467,14 +459,13 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         }
     }
 
-    // ---------- 方案 3：涂白横线 + 垂直分割 + 单字符识别 ----------
+    // 方案 3：分割 + 单字符识别
     {
         std::vector<cv::Rect> charBoxes = splitByVerticalProjection(cleanedBinary);
         const int rawCount = static_cast<int>(charBoxes.size());
 
         writeDiag(QString::fromUtf8("分割得到 %1 个块").arg(rawCount));
 
-        // 保存分割调试图
         {
             cv::Mat dbg;
             cv::cvtColor(cleaned, dbg, cv::COLOR_GRAY2BGR);
@@ -563,6 +554,24 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
 
     std::vector<cv::Rect> digitBoxes = findDigitBoxes(binary, options);
     std::vector<cv::Rect> pageBoxes = mergeAdjacentDigits(digitBoxes);
+
+    // ★ 保存调试图：ROI + 原始候选（蓝）+ 合并后（红）
+    {
+        cv::Mat dbg;
+        cv::cvtColor(roi, dbg, cv::COLOR_GRAY2BGR);
+        for (const auto &b : digitBoxes) {
+            cv::rectangle(dbg, b, cv::Scalar(255, 0, 0), 1);
+        }
+        for (const auto &b : pageBoxes) {
+            cv::rectangle(dbg, b, cv::Scalar(0, 0, 255), 1);
+        }
+        static int regionIdx = 0;
+        const int idxMod = regionIdx % 4;
+        ++regionIdx;
+        const QString dbgPath = QDir::homePath() +
+            QStringLiteral("/Desktop/ocr_debug_candidates_%1.png").arg(idxMod);
+        cv::imwrite(dbgPath.toStdString(), dbg);
+    }
 
     for (const auto &box : pageBoxes) {
         cv::Rect expandedBox = box;
