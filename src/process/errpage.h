@@ -6,66 +6,69 @@
 
 namespace process {
 
-// 单个页码项
 struct PageNumberItem
 {
-    cv::Rect boundingBox;     // 外接矩形
-    bool isCrossed = false;   // 是否有划线/打叉
-    int recognizedNumber = -1; // OCR 识别出的数字（-1=未识别）
-    QString recognizedText;   // OCR 原始文本
-    double confidence = 0.0;  // OCR 置信度 0-1
+    cv::Rect boundingBox;
+    bool isCrossed = false;
+    int recognizedNumber = -1;
+    QString recognizedText;
+    double confidence = 0.0;
 };
 
 struct ErrPageResult
 {
-    cv::Mat image;                                // 处理后的图
-    cv::Mat markedImage;                          // 标记后的图
-    std::vector<PageNumberItem> items;            // 检测到的所有页码
-    int correctPage = -1;                         // 从文件名解析的正确页码
-    int crossedRemoved = 0;                       // 自动删除的划线错误页码数
-    int pendingCount = 0;                         // 待确认数量
+    cv::Mat image;
+    cv::Mat markedImage;
+    std::vector<PageNumberItem> items;
+    int correctPage = -1;
+    int crossedRemoved = 0;
+    int pendingCount = 0;
     bool ok = false;
     bool skipped = false;
 };
 
 struct ErrPageOptions
 {
-    // 页码区域检测范围（占页面的比例）
-    double regionWidthRatio = 0.25;
-    double regionHeightRatio = 0.15;
-
-    // 是否检测左上角
+    // 左上角（小部分文件）
     bool detectTopLeft = true;
+    double topLeftWidthRatio = 0.12;
+    double topLeftHeightRatio = 0.08;
+
+    // 右上角（大部分文件）
     bool detectTopRight = true;
+    double topRightWidthRatio = 0.25;
+    double topRightHeightRatio = 0.15;
 
-    // 数字区域最小/最大尺寸（像素）
-    int minDigitHeight = 15;
-    int maxDigitHeight = 120;
-    int minDigitWidth = 8;
-    int maxDigitWidth = 120;
+    // 右下角（横向文件）
+    bool detectBottomRight = true;
+    double bottomRightWidthRatio = 0.25;
+    double bottomRightHeightRatio = 0.15;
 
-    // 划线判定：横线穿过数字区域的比例
-    double crossLineRatio = 0.6;
+    // 左下角（可选，默认关闭）
+    bool detectBottomLeft = false;
+    double bottomLeftWidthRatio = 0.12;
+    double bottomLeftHeightRatio = 0.08;
 
-    // 删除填充色
+    // 数字区域最小/最大尺寸
+    int minDigitHeight = 20;
+    int maxDigitHeight = 100;
+    int minDigitWidth = 10;
+    int maxDigitWidth = 100;
+
+    double crossLineRatio = 0.5;
     bool fillWhite = true;
-
-    // Tesseract 可执行文件路径（默认 exe 同目录下的 tesseract\tesseract.exe）
     QString tesseractPath;
 };
 
 class ErrPage
 {
 public:
-    // 处理错误页码
     static ErrPageResult process(const cv::Mat &src,
                                   const QString &sourcePath,
                                   const ErrPageOptions &options = ErrPageOptions());
 
-    // 从文件名解析正确页码
     static int parseCorrectPage(const QString &sourcePath);
 
-    // 用 Tesseract OCR 识别数字块
     static int recognizeWithTesseract(const cv::Mat &digitImage,
                                        const QString &tesseractPath,
                                        QString &outText,

@@ -684,17 +684,23 @@ void MainWindow::onProcessErrPage()
     statusBar()->showMessage(QString::fromUtf8("正在处理错误页码..."));
 
     process::ErrPageOptions options;
-    options.regionWidthRatio  = 0.25;
-    options.regionHeightRatio = 0.15;
-    options.detectTopLeft     = true;
-    options.detectTopRight    = true;
-    options.minDigitHeight    = 15;
-    options.maxDigitHeight    = 120;
-    options.minDigitWidth     = 8;
-    options.maxDigitWidth     = 120;
-    options.crossLineRatio    = 0.6;
-    options.fillWhite         = true;
-    options.tesseractPath     = QString();   // 空 = 自动查找 exe 同目录
+    options.detectTopLeft          = true;
+    options.topLeftWidthRatio      = 0.12;
+    options.topLeftHeightRatio     = 0.08;
+    options.detectTopRight         = true;
+    options.topRightWidthRatio     = 0.25;
+    options.topRightHeightRatio    = 0.15;
+    options.detectBottomRight      = true;    // ★ 新增
+    options.bottomRightWidthRatio  = 0.25;    // ★ 新增
+    options.bottomRightHeightRatio = 0.15;    // ★ 新增
+    options.detectBottomLeft       = false;
+    options.minDigitHeight         = 20;
+    options.maxDigitHeight         = 100;
+    options.minDigitWidth          = 10;
+    options.maxDigitWidth          = 100;
+    options.crossLineRatio         = 0.5;
+    options.fillWhite              = true;
+    options.tesseractPath          = QString();   // 空 = 自动查找 exe 同目录
 
     const process::ErrPageResult result =
         process::ErrPage::process(m_currentMat, m_currentImagePath, options);

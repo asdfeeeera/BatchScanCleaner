@@ -315,10 +315,8 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
     const int W = src.cols;
     const int H = src.rows;
 
-    // 1. 从文件名解析正确页码
     result.correctPage = parseCorrectPage(sourcePath);
 
-    // 2. 转灰度
     cv::Mat gray;
     if (src.channels() == 3) {
         cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
@@ -328,22 +326,40 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         gray = src.clone();
     }
 
-    // 3. 检测区域
-    const int regionW = static_cast<int>(W * options.regionWidthRatio);
-    const int regionH = static_cast<int>(H * options.regionHeightRatio);
-
     std::vector<PageNumberItem> allItems;
 
+    // 左上角
     if (options.detectTopLeft) {
-        cv::Rect topLeft(0, 0, regionW, regionH);
-        detectDigitsInRegion(gray, topLeft, options, allItems);
-    }
-    if (options.detectTopRight) {
-        cv::Rect topRight(W - regionW, 0, regionW, regionH);
-        detectDigitsInRegion(gray, topRight, options, allItems);
+        const int w = static_cast<int>(W * options.topLeftWidthRatio);
+        const int h = static_cast<int>(H * options.topLeftHeightRatio);
+        cv::Rect region(0, 0, w, h);
+        detectDigitsInRegion(gray, region, options, allItems);
     }
 
-    // 4. 应用规则
+    // 右上角
+    if (options.detectTopRight) {
+        const int w = static_cast<int>(W * options.topRightWidthRatio);
+        const int h = static_cast<int>(H * options.topRightHeightRatio);
+        cv::Rect region(W - w, 0, w, h);
+        detectDigitsInRegion(gray, region, options, allItems);
+    }
+
+    // 右下角（横向文件）
+    if (options.detectBottomRight) {
+        const int w = static_cast<int>(W * options.bottomRightWidthRatio);
+        const int h = static_cast<int>(H * options.bottomRightHeightRatio);
+        cv::Rect region(W - w, H - h, w, h);
+        detectDigitsInRegion(gray, region, options, allItems);
+    }
+
+    // 左下角
+    if (options.detectBottomLeft) {
+        const int w = static_cast<int>(W * options.bottomLeftWidthRatio);
+        const int h = static_cast<int>(H * options.bottomLeftHeightRatio);
+        cv::Rect region(0, H - h, w, h);
+        detectDigitsInRegion(gray, region, options, allItems);
+    }
+
     cv::Mat dst = src.clone();
     cv::Scalar white;
     if (dst.channels() == 4) {
@@ -353,18 +369,17 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
     }
 
     for (auto &item : allItems) {
-        const bool matchesCorrectPage =
-            (result.correctPage >= 0 &&
-             item.recognizedNumber == result.correctPage);
+        const bool ocrFailed = (item.recognizedNumber < 0);
+        const bool matchesCorrect = isPageMatch(item.recognizedNumber,
+                                                 result.correctPage);
 
-        if (matchesCorrectPage) {
-            // 正确页码 → 保留
+        if (matchesCorrect) continue;
+        if (ocrFailed) {
+            ++result.pendingCount;
             continue;
         }
 
-        // 非正确页码
         if (item.isCrossed) {
-            // 有划线 → 自动删除
             cv::Rect r = item.boundingBox;
             r.x -= 3;
             r.y -= 3;
@@ -374,33 +389,28 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             cv::rectangle(dst, r, white, cv::FILLED);
             ++result.crossedRemoved;
         } else {
-            // 无划线 → 待确认
             ++result.pendingCount;
         }
     }
 
-    // 5. 标记图
     cv::Mat marked = src.clone();
     for (const auto &item : allItems) {
-        const bool matchesCorrectPage =
-            (result.correctPage >= 0 &&
-             item.recognizedNumber == result.correctPage);
+        const bool ocrFailed = (item.recognizedNumber < 0);
+        const bool matchesCorrect = isPageMatch(item.recognizedNumber,
+                                                 result.correctPage);
 
         cv::Scalar color;
-        if (matchesCorrectPage) {
-            color = cv::Scalar(0, 255, 0);       // 绿 = 正确页码
-        } else if (item.isCrossed) {
-            color = cv::Scalar(0, 0, 255);       // 红 = 自动删除
-        } else {
-            color = cv::Scalar(0, 165, 255);     // 橙 = 待确认
-        }
+        if (matchesCorrect)      color = cv::Scalar(0, 255, 0);
+        else if (ocrFailed)      color = cv::Scalar(255, 0, 255);
+        else if (item.isCrossed) color = cv::Scalar(0, 0, 255);
+        else                     color = cv::Scalar(0, 165, 255);
+
         cv::rectangle(marked, item.boundingBox, color, 2);
 
-        // 在框下方显示识别结果
-        QString label = QString::fromUtf8("?");
-        if (item.recognizedNumber >= 0) {
-            label = QString::number(item.recognizedNumber);
-        }
+        QString label;
+        if (item.recognizedNumber >= 0) label = QString::number(item.recognizedNumber);
+        else                            label = QString::fromUtf8("?");
+
         cv::putText(marked, label.toStdString(),
                     cv::Point(item.boundingBox.x,
                               item.boundingBox.y + item.boundingBox.height + 15),
@@ -417,5 +427,3 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
     }
     return result;
 }
-
-} // namespace process
