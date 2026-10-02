@@ -5,6 +5,8 @@ add_library(process STATIC
     blackedge.cpp
     denoise.h
     denoise.cpp
+    enhance.h
+    enhance.cpp
 )
 
 target_include_directories(process PUBLIC

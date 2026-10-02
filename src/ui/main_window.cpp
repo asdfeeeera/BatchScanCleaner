@@ -33,6 +33,7 @@
 #include "deskew.h"
 #include "blackedge.h"
 #include "denoise.h"
+#include "enhance.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -110,6 +111,9 @@ void MainWindow::setupToolBar()
 
     QAction *denoiseAction = toolBar->addAction(QString::fromUtf8("污点去除"));
     connect(denoiseAction, &QAction::triggered, this, &MainWindow::onDenoise);
+
+    QAction *enhanceAction = toolBar->addAction(QString::fromUtf8("文字加深"));
+    connect(enhanceAction, &QAction::triggered, this, &MainWindow::onEnhance);
 
     toolBar->addSeparator();
     toolBar->addAction(QString::fromUtf8("输出设置"));
@@ -392,13 +396,11 @@ void MainWindow::onRemoveBlackEdge()
                 .arg(result.darkThreshold, 0, 'f', 1));
     } else {
         statusBar()->showMessage(
-            QString::fromUtf8("黑边去除完成：上 %1 / 下 %2 / 左 %3 / 右 %4 像素，纸张灰度 %5，阈值 %6")
+            QString::fromUtf8("黑边去除完成：上 %1 / 下 %2 / 左 %3 / 右 %4 像素")
                 .arg(result.topPixels)
                 .arg(result.bottomPixels)
                 .arg(result.leftPixels)
-                .arg(result.rightPixels)
-                .arg(result.paperGray, 0, 'f', 1)
-                .arg(result.darkThreshold, 0, 'f', 1));
+                .arg(result.rightPixels));
     }
 }
 
@@ -418,7 +420,7 @@ void MainWindow::onDenoise()
     options.maxSpotHeight = 30;
     options.darkRatio     = 0.60;
     options.protectRadius = 2;
-    options.strengthLevel = 1;   // 标准
+    options.strengthLevel = 1;
     options.useInpaint    = true;
 
     const process::DenoiseResult result =
@@ -442,6 +444,49 @@ void MainWindow::onDenoise()
             QString::fromUtf8("污点去除完成：检测到 %1 处污点，修补 %2 像素")
                 .arg(result.spotCount)
                 .arg(result.cleanedPixels));
+    }
+}
+
+void MainWindow::onEnhance()
+{
+    if (!m_hasImage || m_currentMat.empty()) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+                                 QString::fromUtf8("请先打开一张图片。"));
+        return;
+    }
+
+    statusBar()->showMessage(QString::fromUtf8("正在加深浅色文字..."));
+
+    process::EnhanceOptions options;
+    options.strengthLevel = 1;
+    options.protectColor = true;
+    options.targetDarkGray = 0;
+    options.targetPaperGray = 255;
+    options.colorSaturationThreshold = 40;
+
+    const process::EnhanceResult result =
+        process::Enhance::enhanceText(m_currentMat, options);
+
+    if (!result.ok) {
+        QMessageBox::warning(this, QString::fromUtf8("错误"),
+                             QString::fromUtf8("文字加深失败。"));
+        statusBar()->showMessage(QString::fromUtf8("文字加深失败"));
+        return;
+    }
+
+    m_currentMat = result.image;
+    showMatOnPreview(m_currentMat);
+
+    if (result.skipped) {
+        statusBar()->showMessage(
+            QString::fromUtf8("文字加深：纸张过暗，已跳过（纸张灰度 %1）")
+                .arg(result.paperGray, 0, 'f', 1));
+    } else {
+        statusBar()->showMessage(
+            QString::fromUtf8("文字加深完成：纸张灰度 %1，文字灰度 %2，加深 %3 像素")
+                .arg(result.paperGray, 0, 'f', 1)
+                .arg(result.darkGray, 0, 'f', 1)
+                .arg(result.enhancedPixels));
     }
 }
 
