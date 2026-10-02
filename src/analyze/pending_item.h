@@ -52,6 +52,7 @@ struct PendingItem
     PendingDecision decision = PendingDecision::Pending;
 
     QString sourceImagePath;   // full path of the image
+    QString fileName;          // ★ file name only (for display)
     cv::Rect boundingBox;      // location inside image (for overlay)
     cv::Mat thumbnail;         // small preview (BGR or GRAY)
     QString reason;            // human-readable reason
