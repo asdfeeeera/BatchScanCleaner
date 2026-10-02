@@ -524,6 +524,10 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     return -1;
 }
 
+// ============================================================
+// 在指定区域检测数字块
+// ★ 关键修复：先对 ROI 去横线，再做连通域分析
+// ============================================================
 void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
                                     const cv::Rect &region,
                                     const ErrPageOptions &options,
@@ -534,13 +538,17 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
 
     cv::Mat roi = gray(r);
 
+    // ★ 先对 ROI 去横线，避免横线把 066 粘连或切分导致漏检
+    cv::Mat roiNoLines = removeHorizontalLinesByMask(roi);
+
     cv::Mat binary;
-    cv::threshold(roi, binary, 0, 255,
+    cv::threshold(roiNoLines, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
     std::vector<cv::Rect> digitBoxes = findDigitBoxes(binary, options);
     std::vector<cv::Rect> pageBoxes = mergeAdjacentDigits(digitBoxes);
 
+    // 保存调试图
     {
         cv::Mat dbg;
         cv::cvtColor(roi, dbg, cv::COLOR_GRAY2BGR);
@@ -570,6 +578,7 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
         PageNumberItem item;
         item.boundingBox = cv::Rect(box.x + r.x, box.y + r.y,
                                      box.width, box.height);
+        // ★ 划线检测在原始灰度图上做（不是去横线后的）
         item.isCrossed = detectCrossLine(gray, item.boundingBox,
                                           options.crossLineRatio);
 
@@ -592,13 +601,12 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
 }
 
 // ============================================================
-// 划线检测（★ 只看数字 bbox 内部 ±3 像素范围）
+// 划线检测（只看数字 bbox 内部 ±3 像素范围）
 // ============================================================
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
                                double crossLineRatio)
 {
-    // ★ 只扩 3 像素，不再把数字上方/下方的页眉线算进去
     cv::Rect expanded = digitBox;
     expanded.x -= 3;
     expanded.y -= 3;
@@ -613,12 +621,10 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     cv::threshold(roi, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    // 避开边缘 3 行
     const int yStart = 3;
     const int yEnd = binary.rows - 3;
     if (yEnd <= yStart) return false;
 
-    // ★ 每行黑像素数超过宽度的 70% → 认为有横线
     const int minCount = static_cast<int>(binary.cols * 0.7);
 
     for (int y = yStart; y < yEnd; ++y) {
@@ -675,7 +681,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     std::vector<PageNumberItem> allItems;
 
-    // ★ 检测区域高度至少 600 像素，确保 066 在范围内
     const int minRegionH = 600;
 
     if (options.detectTopLeft) {
