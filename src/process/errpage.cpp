@@ -6,6 +6,7 @@
 #include <QRegularExpression>
 #include <QDir>
 #include <QFile>
+#include <QTextStream>
 #include <QProcess>
 #include <QCoreApplication>
 #include <QTemporaryDir>
@@ -150,7 +151,7 @@ bool isPageMatch(int recognized, int correctPage)
 } // namespace
 
 // ============================================================
-// Tesseract OCR 识别数字块（诊断版）
+// Tesseract OCR 识别（含诊断，写入桌面 ocr_debug.txt）
 // ============================================================
 int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
@@ -160,20 +161,49 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     outText.clear();
     outConfidence = 0.0;
 
+    // 打开桌面诊断文件
+    const QString diagPath = QDir::homePath() +
+                             QStringLiteral("/Desktop/ocr_debug.txt");
+    QFile diagFile(diagPath);
+    diagFile.open(QIODevice::Append | QIODevice::Text);
+    QTextStream diag(&diagFile);
+
+    auto writeDiag = [&](const QString &msg) {
+        if (diagFile.isOpen()) {
+            diag << msg << "\n";
+            diag.flush();
+        }
+    };
+
+    static int callIndex = 0;
+    const int myIndex = ++callIndex;
+    writeDiag(QString::fromUtf8("========== 第 %1 次调用 ==========").arg(myIndex));
+
     if (digitImage.empty()) {
+        writeDiag(QString::fromUtf8("错误：输入图像为空"));
         outText = QString::fromUtf8("空图");
+        diagFile.close();
         return -1;
     }
+    writeDiag(QString::fromUtf8("输入尺寸：%1 x %2，通道 %3")
+                  .arg(digitImage.cols).arg(digitImage.rows).arg(digitImage.channels()));
 
     const QString tessExe = locateTesseract(tesseractPath);
     if (tessExe.isEmpty()) {
+        writeDiag(QString::fromUtf8("错误：未找到 tesseract.exe"));
+        writeDiag(QString::fromUtf8("  exe目录：") +
+                  QCoreApplication::applicationDirPath());
         outText = QString::fromUtf8("未找到tesseract");
+        diagFile.close();
         return -1;
     }
+    writeDiag(QString::fromUtf8("tesseract 路径：") + tessExe);
 
     QTemporaryDir tempDir;
     if (!tempDir.isValid()) {
+        writeDiag(QString::fromUtf8("错误：临时目录创建失败"));
         outText = QString::fromUtf8("临时目录失败");
+        diagFile.close();
         return -1;
     }
 
@@ -183,12 +213,19 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     cv::Mat enlarged;
     cv::resize(digitImage, enlarged, cv::Size(), 3.0, 3.0, cv::INTER_CUBIC);
     if (!cv::imwrite(tmpPng.toStdString(), enlarged)) {
+        writeDiag(QString::fromUtf8("错误：PNG 保存失败"));
         outText = QString::fromUtf8("PNG保存失败");
+        diagFile.close();
         return -1;
     }
+    writeDiag(QString::fromUtf8("PNG 已保存：") + tmpPng);
 
     const QString tessDir = QFileInfo(tessExe).absolutePath();
     const QString tessdataDir = tessDir + QStringLiteral("/tessdata");
+    writeDiag(QString::fromUtf8("TESSDATA_PREFIX：") + tessdataDir);
+    writeDiag(QString::fromUtf8("tessdata 存在：") +
+              (QFile::exists(tessdataDir + QStringLiteral("/eng.traineddata"))
+                   ? QString::fromUtf8("是") : QString::fromUtf8("否")));
 
     QProcess proc;
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -202,32 +239,47 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
          << QStringLiteral("--psm") << QStringLiteral("7")
          << QStringLiteral("-c")
          << QStringLiteral("tessedit_char_whitelist=0123456789");
+    writeDiag(QString::fromUtf8("命令：\"") + tessExe + QString::fromUtf8("\" ") +
+              args.join(QString::fromUtf8(" ")));
 
     proc.start(tessExe, args);
     if (!proc.waitForStarted(5000)) {
+        writeDiag(QString::fromUtf8("错误：进程启动失败"));
         outText = QString::fromUtf8("启动失败");
+        diagFile.close();
         return -1;
     }
     if (!proc.waitForFinished(10000)) {
         proc.kill();
+        writeDiag(QString::fromUtf8("错误：超时"));
         outText = QString::fromUtf8("超时");
+        diagFile.close();
         return -1;
     }
-    if (proc.exitCode() != 0) {
-        const QString errOut = QString::fromUtf8(proc.readAllStandardError());
-        outText = QString::fromUtf8("码%1:%2")
-                    .arg(proc.exitCode())
-                    .arg(errOut.left(30));
+
+    const int exitCode = proc.exitCode();
+    const QString stdOut = QString::fromUtf8(proc.readAllStandardOutput());
+    const QString stdErr = QString::fromUtf8(proc.readAllStandardError());
+    writeDiag(QString::fromUtf8("退出码：%1").arg(exitCode));
+    writeDiag(QString::fromUtf8("stdout：") + stdOut.left(200));
+    writeDiag(QString::fromUtf8("stderr：") + stdErr.left(200));
+
+    if (exitCode != 0) {
+        outText = QString::fromUtf8("码%1:%2").arg(exitCode).arg(stdErr.left(30));
+        diagFile.close();
         return -1;
     }
 
     QFile outFile(tmpOutBase + QStringLiteral(".txt"));
     if (!outFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        writeDiag(QString::fromUtf8("错误：输出文件打不开"));
         outText = QString::fromUtf8("输出打不开");
+        diagFile.close();
         return -1;
     }
     const QString rawText = QString::fromUtf8(outFile.readAll()).trimmed();
     outFile.close();
+    writeDiag(QString::fromUtf8("原始文本：[") + rawText + QString::fromUtf8("]"));
 
     QString digitsOnly;
     for (const QChar &c : rawText) {
@@ -235,19 +287,26 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     }
 
     if (digitsOnly.isEmpty()) {
-        QString preview = rawText.left(20);
-        if (preview.isEmpty()) preview = QString::fromUtf8("空");
-        outText = QString::fromUtf8("无数字[%1]").arg(preview);
+        writeDiag(QString::fromUtf8("结果：无数字"));
+        outText = QString::fromUtf8("无数字[%1]").arg(rawText.left(20));
+        diagFile.close();
         return -1;
     }
+
+    writeDiag(QString::fromUtf8("提取数字：") + digitsOnly);
 
     outText = digitsOnly;
     bool ok = false;
     const int num = outText.toInt(&ok);
     if (!ok) {
+        writeDiag(QString::fromUtf8("错误：转换为 int 失败"));
         outText = QString::fromUtf8("转换失败");
+        diagFile.close();
         return -1;
     }
+
+    writeDiag(QString::fromUtf8("成功识别：%1").arg(num));
+    diagFile.close();
 
     outConfidence = 0.9;
     return num;
@@ -435,9 +494,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         }
     }
 
-    // ============================================================
-    // 生成标记图（带彩色框 + 诊断信息）
-    // ============================================================
+    // 标记图
     cv::Mat marked = src.clone();
     int idx = 0;
     for (const auto &item : allItems) {
@@ -453,7 +510,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
         cv::rectangle(marked, item.boundingBox, color, 2);
 
-        // ★ 显示诊断信息在框上方
         QString info = QString::fromUtf8("块%1:").arg(idx++);
         if (item.recognizedNumber >= 0) {
             info += QString::number(item.recognizedNumber);
