@@ -148,67 +148,38 @@ bool isPageMatch(int recognized, int correctPage)
 }
 
 // ============================================================
-// ★ 去横线（只去横线，不做任何闭运算，保留字符原始形状）
-// 输入：灰度图；输出：白字黑底的二值图
-// 核宽度：max(25, cols * 0.45)，比字符笔画宽，比横线窄
+// ★ 用 mask 涂白横线区域（不再用 subtract 减，避免破坏字符笔画）
+// 输入：灰度图；输出：灰度图（横线区域被涂白）
 // ============================================================
-cv::Mat removeHorizontalLines(const cv::Mat &gray)
+cv::Mat removeHorizontalLinesByMask(const cv::Mat &gray)
 {
     cv::Mat binary;
     cv::threshold(gray, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    const int kernelW = std::max(25, static_cast<int>(gray.cols * 0.45));
+    // 提取长横线：核宽度用 max(25, cols * 0.4)
+    const int kernelW = std::max(25, static_cast<int>(gray.cols * 0.4));
     cv::Mat hKernel = cv::getStructuringElement(
         cv::MORPH_RECT, cv::Size(kernelW, 1));
     cv::Mat hLines;
     cv::morphologyEx(binary, hLines, cv::MORPH_OPEN, hKernel);
 
-    cv::Mat noLines;
-    cv::subtract(binary, hLines, noLines);
-    return noLines; // 白字黑底
-}
+    // 膨胀横线 mask，确保覆盖横线
+    cv::Mat dKernel = cv::getStructuringElement(
+        cv::MORPH_RECT, cv::Size(3, 3));
+    cv::Mat hLinesDilated;
+    cv::dilate(hLines, hLinesDilated, dKernel);
 
-// ============================================================
-// ★ 把"同一个字符的上下碎片"合并回来
-// 如果两个块的 x 范围有 >=30% 重叠，合并为一个字符
-// ============================================================
-std::vector<cv::Rect> mergeOverlappingHorizontally(std::vector<cv::Rect> boxes)
-{
-    if (boxes.size() < 2) return boxes;
+    // 在原灰度图上涂白横线区域
+    cv::Mat result = gray.clone();
+    result.setTo(255, hLinesDilated);
 
-    std::sort(boxes.begin(), boxes.end(),
-              [](const cv::Rect &a, const cv::Rect &b) { return a.x < b.x; });
-
-    std::vector<cv::Rect> merged;
-    cv::Rect current = boxes[0];
-
-    for (size_t i = 1; i < boxes.size(); ++i) {
-        const cv::Rect &next = boxes[i];
-
-        const int overlapLeft = std::max(current.x, next.x);
-        const int overlapRight = std::min(current.x + current.width,
-                                           next.x + next.width);
-        const int overlap = overlapRight - overlapLeft;
-        const int minW = std::min(current.width, next.width);
-
-        if (minW > 0 && overlap > minW * 0.3) {
-            const int x1 = std::min(current.x, next.x);
-            const int x2 = std::max(current.x + current.width,
-                                     next.x + next.width);
-            current = cv::Rect(x1, 0, x2 - x1,
-                                std::max(current.height, next.height));
-        } else {
-            merged.push_back(current);
-            current = next;
-        }
-    }
-    merged.push_back(current);
-    return merged;
+    return result;
 }
 
 // ============================================================
 // ★ 垂直投影分割（输入是白字黑底的二值图）
+// 用 5% 阈值，即使字符间有轻微凹陷也能分割
 // ============================================================
 std::vector<cv::Rect> splitByVerticalProjection(const cv::Mat &binary)
 {
@@ -218,14 +189,21 @@ std::vector<cv::Rect> splitByVerticalProjection(const cv::Mat &binary)
     cv::Mat proj;
     cv::reduce(binary, proj, 0, cv::REDUCE_SUM, CV_32S);
 
+    int maxSum = 0;
+    for (int x = 0; x < binary.cols; ++x) {
+        const int s = proj.at<int>(0, x);
+        if (s > maxSum) maxSum = s;
+    }
+    const int threshold = std::max(1, maxSum / 20);
+
     bool inChar = false;
     int start = 0;
     for (int x = 0; x < binary.cols; ++x) {
         const int colSum = proj.at<int>(0, x);
-        if (!inChar && colSum > 0) {
+        if (!inChar && colSum > threshold) {
             inChar = true;
             start = x;
-        } else if (inChar && colSum == 0) {
+        } else if (inChar && colSum <= threshold) {
             inChar = false;
             if (x - start >= 3) {
                 boxes.push_back(cv::Rect(start, 0, x - start, binary.rows));
@@ -310,24 +288,36 @@ OcrAttempt tryRecognize(const cv::Mat &image, const QString &tessExe,
 }
 
 // ============================================================
-// ★ 识别单个字符（输入是白字黑底的二值图，输出 0-9）
+// ★ 识别单个字符（输入是白底黑字的灰度/二值图）
 // 尝试 3 种垂直闭运算核高度，命中一次即返回
 // ============================================================
-bool recognizeSingleChar(const cv::Mat &charBinary,
+bool recognizeSingleChar(const cv::Mat &charImage,
                           const QString &tessExe,
                           const QString &tessdataDir,
                           int &outDigit)
 {
-    if (charBinary.empty()) return false;
+    if (charImage.empty()) return false;
+
+    cv::Mat gray;
+    if (charImage.channels() == 3) {
+        cv::cvtColor(charImage, gray, cv::COLOR_BGR2GRAY);
+    } else {
+        gray = charImage.clone();
+    }
+
+    // 二值化：白字黑底
+    cv::Mat binary;
+    cv::threshold(gray, binary, 0, 255,
+                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
     const double ratios[] = { 0.15, 0.25, 0.35 };
 
     for (double ratio : ratios) {
-        const int vH = std::max(3, static_cast<int>(charBinary.rows * ratio));
+        const int vH = std::max(3, static_cast<int>(binary.rows * ratio));
         cv::Mat vKernel = cv::getStructuringElement(
             cv::MORPH_RECT, cv::Size(1, vH));
         cv::Mat repaired1;
-        cv::morphologyEx(charBinary, repaired1, cv::MORPH_CLOSE, vKernel);
+        cv::morphologyEx(binary, repaired1, cv::MORPH_CLOSE, vKernel);
 
         cv::Mat k3 = cv::getStructuringElement(
             cv::MORPH_RECT, cv::Size(3, 3));
@@ -411,14 +401,18 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         grayOrig = digitImage.clone();
     }
 
-    // 公共预处理：去横线 + 3x3 闭运算（不做整体垂直闭运算）
-    cv::Mat noLines = removeHorizontalLines(grayOrig);
-    cv::Mat k3 = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
-    cv::Mat cleanedBinary; // 白字黑底
-    cv::morphologyEx(noLines, cleanedBinary, cv::MORPH_CLOSE, k3);
+    // ★ 涂白横线（不破坏字符笔画）
+    cv::Mat noLinesGray = removeHorizontalLinesByMask(grayOrig);
 
-    cv::Mat cleaned; // 白底黑字
-    cv::bitwise_not(cleanedBinary, cleaned);
+    // 转成白底黑字（给 Tesseract）
+    cv::Mat cleaned;
+    cv::threshold(noLinesGray, cleaned, 0, 255,
+                  cv::THRESH_BINARY | cv::THRESH_OTSU);
+
+    // 转成白字黑底（给分割用）
+    cv::Mat cleanedBinary;
+    cv::threshold(noLinesGray, cleanedBinary, 0, 255,
+                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
     // ---------- 方案 1：原图 psm7 直接识别 ----------
     {
@@ -436,7 +430,14 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         }
     }
 
-    // ---------- 方案 2：去横线后整体识别（多 PSM，记录位数最多的） ----------
+    // 保存调试图（涂白横线后）
+    {
+        const QString dbgPath = QDir::homePath() +
+            QStringLiteral("/Desktop/ocr_debug_input.png");
+        cv::imwrite(dbgPath.toStdString(), cleaned);
+    }
+
+    // ---------- 方案 2：涂白横线后整体识别（多 PSM，记录位数最多的） ----------
     int bestNumber = -1;
     QString bestText;
     int bestDigits = 0;
@@ -466,14 +467,24 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         }
     }
 
-    // ---------- 方案 3：去横线 + 3x3 闭运算 + 垂直分割 + 合并 + 单字符识别 ----------
+    // ---------- 方案 3：涂白横线 + 垂直分割 + 单字符识别 ----------
     {
         std::vector<cv::Rect> charBoxes = splitByVerticalProjection(cleanedBinary);
         const int rawCount = static_cast<int>(charBoxes.size());
-        charBoxes = mergeOverlappingHorizontally(charBoxes);
 
-        writeDiag(QString::fromUtf8("分割得到 %1 个块，合并重叠后 %2 个")
-                      .arg(rawCount).arg(static_cast<int>(charBoxes.size())));
+        writeDiag(QString::fromUtf8("分割得到 %1 个块").arg(rawCount));
+
+        // 保存分割调试图
+        {
+            cv::Mat dbg;
+            cv::cvtColor(cleaned, dbg, cv::COLOR_GRAY2BGR);
+            for (size_t i = 0; i < charBoxes.size(); ++i) {
+                cv::rectangle(dbg, charBoxes[i], cv::Scalar(0, 0, 255), 1);
+            }
+            const QString dbgPath = QDir::homePath() +
+                QStringLiteral("/Desktop/ocr_debug_split.png");
+            cv::imwrite(dbgPath.toStdString(), dbg);
+        }
 
         if (charBoxes.size() >= 2 && charBoxes.size() <= 6) {
             QString combined;
@@ -481,12 +492,12 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
 
             for (size_t i = 0; i < charBoxes.size(); ++i) {
                 cv::Rect safe = charBoxes[i] &
-                    cv::Rect(0, 0, cleanedBinary.cols, cleanedBinary.rows);
+                    cv::Rect(0, 0, cleaned.cols, cleaned.rows);
                 if (safe.width <= 0 || safe.height <= 0) {
                     allOk = false;
                     break;
                 }
-                cv::Mat cbImg = cleanedBinary(safe).clone();
+                cv::Mat cbImg = cleaned(safe).clone();
 
                 int digit = -1;
                 if (recognizeSingleChar(cbImg, tessExe, tessdataDir, digit)) {
