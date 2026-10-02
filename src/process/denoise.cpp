@@ -144,6 +144,24 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     cv::Mat protectMask;
     buildProtectMask(gray, protectMask, options.protectRadius);
 
+    // 1.1 ★ 合并外部传入的保护掩膜（签名印章保护）
+    if (!options.protectMask.empty()) {
+        cv::Mat ext = options.protectMask;
+        // 尺寸对齐
+        if (ext.size() != gray.size()) {
+            cv::Mat tmp;
+            cv::resize(ext, tmp, gray.size(), 0, 0, cv::INTER_NEAREST);
+            ext = tmp;
+        }
+        // 类型对齐
+        if (ext.type() != CV_8UC1) {
+            cv::Mat tmp;
+            ext.convertTo(tmp, CV_8UC1);
+            ext = tmp;
+        }
+        cv::bitwise_or(protectMask, ext, protectMask);
+    }
+
     // 2. 填底色（保护掩膜内的像素不动）
     cv::Mat whitened = whitenBackground(src, protectMask);
 

@@ -443,6 +443,16 @@ void MainWindow::onDenoise()
     options.strengthLevel = 1;
     options.useInpaint    = true;
 
+    // ★ 独立调用污点去除时，也检测一次印章签名保护
+    {
+        protect::StampProtectOptions protectOpt;
+        const protect::StampProtectResult pr =
+            protect::StampProtect::detect(m_currentMat, protectOpt);
+        if (pr.ok) {
+            options.protectMask = pr.mask;
+        }
+    }
+
     const process::DenoiseResult result =
         process::Denoise::removeSpots(m_currentMat, options);
 
@@ -553,6 +563,18 @@ void MainWindow::onOneClickProcess()
         }
     }
 
+    // ★ 检测签名印章保护掩膜
+    statusBar()->showMessage(QString::fromUtf8("一键处理：正在检测签名印章保护区..."));
+    cv::Mat protectMask;
+    {
+        protect::StampProtectOptions protectOpt;
+        const protect::StampProtectResult pr =
+            protect::StampProtect::detect(m_currentMat, protectOpt);
+        if (pr.ok) {
+            protectMask = pr.mask;
+        }
+    }
+
     statusBar()->showMessage(QString::fromUtf8("一键处理：正在去除污点..."));
     int spotCount = 0;
     {
@@ -564,6 +586,7 @@ void MainWindow::onOneClickProcess()
         opt.protectRadius = 2;
         opt.strengthLevel = 1;
         opt.useInpaint    = true;
+        opt.protectMask   = protectMask;   // ★ 传入保护掩膜
 
         const process::DenoiseResult r =
             process::Denoise::removeSpots(m_currentMat, opt);

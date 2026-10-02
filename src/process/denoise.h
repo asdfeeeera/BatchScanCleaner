@@ -37,6 +37,10 @@ struct DenoiseOptions
 
     // 用哪种方式填充：中值 / 背景
     bool useInpaint = true;
+
+    // 外部传入的额外保护掩膜（例如印章、签名）
+    // 255 = 保护，0 = 不保护。空 Mat 表示不使用。
+    cv::Mat protectMask;
 };
 
 class Denoise
