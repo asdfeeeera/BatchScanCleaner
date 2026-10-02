@@ -1,6 +1,7 @@
 ﻿#include "denoise.h"
 
 #include <opencv2/imgproc.hpp>
+#include <opencv2/photo.hpp>
 #include <vector>
 #include <algorithm>
 #include <cmath>
