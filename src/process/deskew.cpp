@@ -222,7 +222,7 @@ cv::Mat Deskew::rotateKeepAll(const cv::Mat &src, double angle)
     cv::warpAffine(src, dst, rot, cv::Size(newW, newH),
                    cv::INTER_CUBIC,
                    cv::BORDER_CONSTANT,
-                   cv::Scalar(255, 255, 255));
+                   cv::Scalar::all(255));
     return dst;
 }
 

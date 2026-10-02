@@ -343,7 +343,8 @@ void MainWindow::onDeskew()
     showMatOnPreview(m_currentMat);
 
     statusBar()->showMessage(
-        QString::fromUtf8("自动扶正完成，旋转 %.2f 度").arg(result.angle));
+        QString::fromUtf8("自动扶正完成，旋转 %1 度")
+            .arg(result.angle, 0, 'f', 2));
 }
 
 void MainWindow::onRemoveBlackEdge()
