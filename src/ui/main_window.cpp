@@ -362,7 +362,7 @@ void MainWindow::onDeskew()
     }
 
     m_currentMat = result.image;
-    showMatOnPreview(result.markedImage);
+    showMatOnPreview(m_currentMat);
 
     statusBar()->showMessage(
         QString::fromUtf8("自动扶正完成，旋转 %1 度")
@@ -690,17 +690,17 @@ void MainWindow::onProcessErrPage()
     options.detectTopRight         = true;
     options.topRightWidthRatio     = 0.25;
     options.topRightHeightRatio    = 0.15;
-    options.detectBottomRight      = true;    // ★ 新增
-    options.bottomRightWidthRatio  = 0.25;    // ★ 新增
-    options.bottomRightHeightRatio = 0.15;    // ★ 新增
+    options.detectBottomRight      = true;
+    options.bottomRightWidthRatio  = 0.25;
+    options.bottomRightHeightRatio = 0.15;
     options.detectBottomLeft       = false;
     options.minDigitHeight         = 20;
     options.maxDigitHeight         = 100;
     options.minDigitWidth          = 10;
-    options.maxDigitWidth          = 100;
+    options.maxDigitWidth          = 150;
     options.crossLineRatio         = 0.5;
     options.fillWhite              = true;
-    options.tesseractPath          = QString();   // 空 = 自动查找 exe 同目录
+    options.tesseractPath          = QString();
 
     const process::ErrPageResult result =
         process::ErrPage::process(m_currentMat, m_currentImagePath, options);
@@ -713,7 +713,7 @@ void MainWindow::onProcessErrPage()
     }
 
     m_currentMat = result.image;
-    showMatOnPreview(m_currentMat);
+    showMatOnPreview(result.markedImage);   // ★ 显示带标记的图
 
     QString pageInfo;
     if (result.correctPage >= 0) {
