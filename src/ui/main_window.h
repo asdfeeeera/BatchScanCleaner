@@ -34,6 +34,7 @@ private slots:
     void onDetectColorLine();
     void onClearColorLine();
     void onProcessErrPage();
+    void onStampProtectTest();   // ★ 临时：签名印章保护测试
 
 private:
     void setupMenuBar();

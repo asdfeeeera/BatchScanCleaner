@@ -26,6 +26,7 @@
 #include <QDebug>
 
 #include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>
 
 #include "image_io.h"
 #include "jpeg_writer.h"
@@ -36,6 +37,8 @@
 #include "enhance.h"
 #include "colorline.h"
 #include "errpage.h"
+
+#include "../protect/stamp_protect.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -128,6 +131,9 @@ void MainWindow::setupToolBar()
 
     QAction *errPageAction = toolBar->addAction(QString::fromUtf8("错误页码处理"));
     connect(errPageAction, &QAction::triggered, this, &MainWindow::onProcessErrPage);
+
+    QAction *stampTestAction = toolBar->addAction(QString::fromUtf8("印章保护测试"));
+    connect(stampTestAction, &QAction::triggered, this, &MainWindow::onStampProtectTest);
 
     toolBar->addSeparator();
     toolBar->addAction(QString::fromUtf8("输出设置"));
@@ -713,7 +719,7 @@ void MainWindow::onProcessErrPage()
     }
 
     m_currentMat = result.image;
-    showMatOnPreview(result.markedImage);   // ★ 显示带标记的图
+    showMatOnPreview(result.markedImage);
 
     QString pageInfo;
     if (result.correctPage >= 0) {
@@ -733,6 +739,71 @@ void MainWindow::onProcessErrPage()
                 .arg(result.crossedRemoved)
                 .arg(result.pendingCount));
     }
+}
+
+// ============================================================
+// ★ 临时：签名印章保护测试
+// ============================================================
+void MainWindow::onStampProtectTest()
+{
+    if (!m_hasImage || m_currentMat.empty()) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+                                 QString::fromUtf8("请先打开一张图片。"));
+        return;
+    }
+
+    statusBar()->showMessage(QString::fromUtf8("正在检测签名印章保护区域..."));
+
+    protect::StampProtectOptions options;
+    const protect::StampProtectResult result =
+        protect::StampProtect::detect(m_currentMat, options);
+
+    if (!result.ok) {
+        QMessageBox::warning(this, QString::fromUtf8("错误"),
+                             QString::fromUtf8("签名印章保护检测失败。"));
+        statusBar()->showMessage(QString::fromUtf8("签名印章检测失败"));
+        return;
+    }
+
+    const QString desktop = QDir::homePath() + QStringLiteral("/Desktop");
+
+    // 1. 保存纯掩膜
+    const QString maskPath = desktop + QStringLiteral("/stamp_mask.png");
+    cv::imwrite(maskPath.toStdString(), result.mask);
+
+    // 2. 保存彩色掩膜
+    const QString colorMaskPath = desktop + QStringLiteral("/stamp_colormask.png");
+    cv::imwrite(colorMaskPath.toStdString(), result.colorMask);
+
+    // 3. 保存叠加图：原图 + 半透明绿色覆盖保护区域
+    cv::Mat bgr;
+    if (m_currentMat.channels() == 3) {
+        bgr = m_currentMat.clone();
+    } else if (m_currentMat.channels() == 4) {
+        cv::cvtColor(m_currentMat, bgr, cv::COLOR_BGRA2BGR);
+    } else {
+        cv::cvtColor(m_currentMat, bgr, cv::COLOR_GRAY2BGR);
+    }
+
+    cv::Mat overlay = bgr.clone();
+    overlay.setTo(cv::Scalar(0, 255, 0), result.mask);
+
+    cv::Mat blended;
+    cv::addWeighted(bgr, 0.6, overlay, 0.4, 0, blended);
+
+    const QString overlayPath = desktop + QStringLiteral("/stamp_overlay.png");
+    cv::imwrite(overlayPath.toStdString(), blended);
+
+    const int totalPixels = m_currentMat.cols * m_currentMat.rows;
+    const double ratio = totalPixels > 0
+        ? (100.0 * result.protectedPixels / totalPixels)
+        : 0.0;
+
+    statusBar()->showMessage(
+        QString::fromUtf8("签名印章检测完成：保护 %1 像素（占 %2%）。"
+                          "已保存 stamp_mask.png / stamp_colormask.png / stamp_overlay.png 到桌面")
+            .arg(result.protectedPixels)
+            .arg(ratio, 0, 'f', 2));
 }
 
 void MainWindow::showMatOnPreview(const cv::Mat &mat)
