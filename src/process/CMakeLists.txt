@@ -7,6 +7,8 @@ add_library(process STATIC
     denoise.cpp
     enhance.h
     enhance.cpp
+    colorline.h
+    colorline.cpp
 )
 
 target_include_directories(process PUBLIC

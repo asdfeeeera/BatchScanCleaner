@@ -31,6 +31,8 @@ private slots:
     void onDenoise();
     void onEnhance();
     void onOneClickProcess();
+    void onDetectColorLine();
+    void onClearColorLine();
 
 private:
     void setupMenuBar();
@@ -52,4 +54,7 @@ private:
     QString m_currentImagePath;
     cv::Mat m_currentMat;
     cv::Mat m_originalMat;
+
+    // 彩色细线：原始图 + 检测结果
+    cv::Mat m_colorLineSource;   // 检测时的原图（用于清除）
 };

@@ -34,6 +34,7 @@
 #include "blackedge.h"
 #include "denoise.h"
 #include "enhance.h"
+#include "colorline.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -117,6 +118,12 @@ void MainWindow::setupToolBar()
 
     QAction *enhanceAction = toolBar->addAction(QString::fromUtf8("文字加深"));
     connect(enhanceAction, &QAction::triggered, this, &MainWindow::onEnhance);
+
+    QAction *detectColorAction = toolBar->addAction(QString::fromUtf8("检测彩色细线"));
+    connect(detectColorAction, &QAction::triggered, this, &MainWindow::onDetectColorLine);
+
+    QAction *clearColorAction = toolBar->addAction(QString::fromUtf8("清除彩色细线"));
+    connect(clearColorAction, &QAction::triggered, this, &MainWindow::onClearColorLine);
 
     toolBar->addSeparator();
     toolBar->addAction(QString::fromUtf8("输出设置"));
@@ -503,7 +510,7 @@ void MainWindow::onOneClickProcess()
 
     statusBar()->showMessage(QString::fromUtf8("一键处理中，请稍候..."));
 
-    // ============ 1. 自动扶正 ============
+    // 1. 自动扶正
     statusBar()->showMessage(QString::fromUtf8("一键处理：正在自动扶正..."));
     double deskewAngle = 0.0;
     {
@@ -514,7 +521,7 @@ void MainWindow::onOneClickProcess()
         }
     }
 
-    // ============ 2. 黑边去除 ============
+    // 2. 黑边去除
     statusBar()->showMessage(QString::fromUtf8("一键处理：正在去除黑边..."));
     int blackEdgeTotal = 0;
     {
@@ -538,7 +545,7 @@ void MainWindow::onOneClickProcess()
         }
     }
 
-    // ============ 3. 污点去除 ============
+    // 3. 污点去除
     statusBar()->showMessage(QString::fromUtf8("一键处理：正在去除污点..."));
     int spotCount = 0;
     {
@@ -559,7 +566,7 @@ void MainWindow::onOneClickProcess()
         }
     }
 
-    // ============ 4. 文字加深 ============
+    // 4. 文字加深
     statusBar()->showMessage(QString::fromUtf8("一键处理：正在加深文字..."));
     {
         process::EnhanceOptions opt;
@@ -576,7 +583,7 @@ void MainWindow::onOneClickProcess()
         }
     }
 
-    // ============ 5. 显示结果 ============
+    // 显示结果
     showMatOnPreview(m_currentMat);
 
     statusBar()->showMessage(
@@ -584,6 +591,85 @@ void MainWindow::onOneClickProcess()
             .arg(deskewAngle, 0, 'f', 2)
             .arg(blackEdgeTotal)
             .arg(spotCount));
+}
+
+void MainWindow::onDetectColorLine()
+{
+    if (!m_hasImage || m_currentMat.empty()) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+                                 QString::fromUtf8("请先打开一张图片。"));
+        return;
+    }
+
+    statusBar()->showMessage(QString::fromUtf8("正在检测彩色细线..."));
+
+    // 保存当前图像，供"清除彩色细线"用
+    m_colorLineSource = m_currentMat.clone();
+
+    process::ColorLineOptions options;
+    options.saturationThreshold = 50;
+    options.valueThreshold      = 60;
+    options.minLength           = 50;
+    options.minAspectRatio      = 5.0;
+    options.maxArea             = 2000;
+    options.edgeMarginRatio     = 0.02;
+
+    const process::ColorLineResult result =
+        process::ColorLine::detect(m_currentMat, options);
+
+    if (!result.ok) {
+        QMessageBox::warning(this, QString::fromUtf8("错误"),
+                             QString::fromUtf8("彩色细线检测失败。"));
+        statusBar()->showMessage(QString::fromUtf8("检测失败"));
+        return;
+    }
+
+    // 显示带黄框的标记图
+    showMatOnPreview(result.markedImage);
+
+    if (result.items.empty()) {
+        statusBar()->showMessage(
+            QString::fromUtf8("彩色细线检测：未检测到彩色故障细线"));
+    } else {
+        statusBar()->showMessage(
+            QString::fromUtf8("彩色细线检测完成：检测到 %1 条。点\"清除彩色细线\"可清除。")
+                .arg(static_cast<int>(result.items.size())));
+    }
+}
+
+void MainWindow::onClearColorLine()
+{
+    if (m_colorLineSource.empty()) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+                                 QString::fromUtf8("请先点\"检测彩色细线\"。"));
+        return;
+    }
+
+    statusBar()->showMessage(QString::fromUtf8("正在清除彩色细线..."));
+
+    process::ColorLineOptions options;
+    options.saturationThreshold = 50;
+    options.valueThreshold      = 60;
+    options.minLength           = 50;
+    options.minAspectRatio      = 5.0;
+    options.maxArea             = 2000;
+    options.edgeMarginRatio     = 0.02;
+
+    const process::ColorLineResult result =
+        process::ColorLine::clear(m_colorLineSource, options);
+
+    if (!result.ok || result.items.empty()) {
+        statusBar()->showMessage(QString::fromUtf8("没有需要清除的彩色细线"));
+        return;
+    }
+
+    m_currentMat = result.image;
+    showMatOnPreview(m_currentMat);
+
+    statusBar()->showMessage(
+        QString::fromUtf8("彩色细线清除完成：清除 %1 条，填白 %2 像素")
+            .arg(static_cast<int>(result.items.size()))
+            .arg(result.clearedPixels));
 }
 
 void MainWindow::showMatOnPreview(const cv::Mat &mat)
