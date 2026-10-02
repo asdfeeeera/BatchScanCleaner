@@ -11,49 +11,11 @@ permissions:
 jobs:
   build:
     runs-on: windows-2022
-    timeout-minutes: 240
+    timeout-minutes: 30
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
-    - name: Cache vcpkg
-      id: cache-vcpkg
-      uses: actions/cache@v4
-      with:
-        path: |
-          ${{ github.workspace }}/vcpkg
-          ${{ github.workspace }}/vcpkg_installed
-        key: vcpkg-tesseract-v2-${{ runner.os }}
-
-    - name: Setup vcpkg and Install Tesseract
-      if: steps.cache-vcpkg.outputs.cache-hit != 'true'
-      shell: cmd
-      run: |
-        cd /d %GITHUB_WORKSPACE%
-        git clone https://github.com/microsoft/vcpkg.git
-        if errorlevel 1 exit /b 1
-        cd vcpkg
-        git checkout a1a1cbc975abf909a6c8985a6a2b8fe20bbd9bd6
-        if errorlevel 1 exit /b 1
-        call bootstrap-vcpkg.bat -disableMetrics
-        if errorlevel 1 exit /b 1
-        if not exist vcpkg.exe exit /b 1
-        vcpkg install tesseract:x64-windows
-        if errorlevel 1 exit /b 1
-        echo vcpkg install done
-
-    - name: Setup vcpkg (cache hit)
-      if: steps.cache-vcpkg.outputs.cache-hit == 'true'
-      shell: pwsh
-      run: |
-        Write-Host "vcpkg restored from cache"
-        Get-ChildItem "$env:GITHUB_WORKSPACE\vcpkg\installed\x64-windows\bin" | Select-Object -First 5
-
-    - name: Export vcpkg env
-      shell: pwsh
-      run: |
-        echo "VCPKG_ROOT=$env:GITHUB_WORKSPACE\vcpkg" >> $env:GITHUB_ENV
 
     - name: Install OpenCV 4.5.5
       shell: pwsh
@@ -76,11 +38,7 @@ jobs:
         cache: true
 
     - name: Configure CMake
-      shell: pwsh
-      run: |
-        cmake -B build -DCMAKE_BUILD_TYPE=Release `
-          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
-          -DVCPKG_TARGET_TRIPLET=x64-windows
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
     - name: Build
       run: cmake --build build --config Release
@@ -91,21 +49,56 @@ jobs:
         Copy-Item "C:\opencv\build\x64\vc15\bin\opencv_world455.dll" -Destination "build\bin\Release\" -Force
         Copy-Item "C:\opencv\build\x64\vc15\bin\opencv_videoio_ffmpeg455_64.dll" -Destination "build\bin\Release\" -Force -ErrorAction SilentlyContinue
 
-    - name: Bundle Tesseract DLL and tessdata
+    - name: Download Tesseract portable
       shell: pwsh
       run: |
-        $vcpkgBin = "$env:VCPKG_ROOT\installed\x64-windows\bin"
-        if (Test-Path $vcpkgBin) {
-          Copy-Item "$vcpkgBin\*.dll" -Destination "build\bin\Release\" -Force -ErrorAction SilentlyContinue
+        # 下载 UB-Mannheim 的 Tesseract 安装包
+        $url = "https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.3.3.20231005.exe"
+        $out = "$env:RUNNER_TEMP\tesseract-setup.exe"
+        Invoke-WebRequest -Uri $url -OutFile $out
+        
+        # 静默安装到指定目录
+        $installDir = "C:\tesseract-portable"
+        Start-Process -FilePath $out -ArgumentList "/S", "/D=$installDir" -Wait
+        
+        # 等待安装完成
+        Start-Sleep -Seconds 5
+        
+        # 检查关键文件
+        if (-not (Test-Path "$installDir\tesseract.exe")) {
+          Write-Error "tesseract.exe not found at $installDir"
+          exit 1
         }
-        New-Item -ItemType Directory -Path "build\bin\Release\tessdata" -Force | Out-Null
-        $tessdataSrc = "$env:VCPKG_ROOT\installed\x64-windows\share\tessdata"
-        if (Test-Path $tessdataSrc) {
-          Copy-Item "$tessdataSrc\*" -Destination "build\bin\Release\tessdata\" -Force -ErrorAction SilentlyContinue
+        
+        Write-Host "Tesseract installed at $installDir"
+
+    - name: Bundle Tesseract
+      shell: pwsh
+      run: |
+        $src = "C:\tesseract-portable"
+        $dst = "build\bin\Release\tesseract"
+        New-Item -ItemType Directory -Path $dst -Force | Out-Null
+        
+        # 复制 tesseract.exe 和所有 DLL
+        Copy-Item "$src\tesseract.exe" -Destination $dst -Force
+        Get-ChildItem "$src\*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination $dst -Force
+        
+        # 复制 tessdata（只要 eng）
+        New-Item -ItemType Directory -Path "$dst\tessdata" -Force | Out-Null
+        if (Test-Path "$src\tessdata\eng.traineddata") {
+          Copy-Item "$src\tessdata\eng.traineddata" -Destination "$dst\tessdata\" -Force
         }
-        if (-not (Test-Path "build\bin\Release\tessdata\eng.traineddata")) {
-          Invoke-WebRequest -Uri "https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata" -OutFile "build\bin\Release\tessdata\eng.traineddata"
+        if (Test-Path "$src\tessdata\osd.traineddata") {
+          Copy-Item "$src\tessdata\osd.traineddata" -Destination "$dst\tessdata\" -Force
         }
+        
+        # 确认 eng.traineddata 存在
+        if (-not (Test-Path "$dst\tessdata\eng.traineddata")) {
+          Invoke-WebRequest -Uri "https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata" -OutFile "$dst\tessdata\eng.traineddata"
+        }
+        
+        Write-Host "Tesseract bundled:"
+        Get-ChildItem $dst | Select-Object Name
 
     - name: Upload EXE artifact
       uses: actions/upload-artifact@v4
