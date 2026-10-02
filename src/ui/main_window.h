@@ -30,6 +30,7 @@ private slots:
     void onRemoveBlackEdge();
     void onDenoise();
     void onEnhance();
+    void onOneClickProcess();
 
 private:
     void setupMenuBar();

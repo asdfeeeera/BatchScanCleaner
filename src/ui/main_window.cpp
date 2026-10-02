@@ -103,6 +103,9 @@ void MainWindow::setupToolBar()
 
     toolBar->addSeparator();
 
+    QAction *oneClickAction = toolBar->addAction(QString::fromUtf8("一键处理"));
+    connect(oneClickAction, &QAction::triggered, this, &MainWindow::onOneClickProcess);
+
     QAction *deskewAction = toolBar->addAction(QString::fromUtf8("自动扶正"));
     connect(deskewAction, &QAction::triggered, this, &MainWindow::onDeskew);
 
@@ -488,6 +491,99 @@ void MainWindow::onEnhance()
                 .arg(result.darkGray, 0, 'f', 1)
                 .arg(result.enhancedPixels));
     }
+}
+
+void MainWindow::onOneClickProcess()
+{
+    if (!m_hasImage || m_currentMat.empty()) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+                                 QString::fromUtf8("请先打开一张图片。"));
+        return;
+    }
+
+    statusBar()->showMessage(QString::fromUtf8("一键处理中，请稍候..."));
+
+    // ============ 1. 自动扶正 ============
+    statusBar()->showMessage(QString::fromUtf8("一键处理：正在自动扶正..."));
+    double deskewAngle = 0.0;
+    {
+        const process::DeskewResult r = process::Deskew::autoDeskew(m_currentMat);
+        if (r.ok) {
+            m_currentMat = r.image;
+            deskewAngle = r.angle;
+        }
+    }
+
+    // ============ 2. 黑边去除 ============
+    statusBar()->showMessage(QString::fromUtf8("一键处理：正在去除黑边..."));
+    int blackEdgeTotal = 0;
+    {
+        process::BlackEdgeOptions opt;
+        opt.paperSampleRatio = 0.6;
+        opt.paperPercentile  = 0.9;
+        opt.darkRatio        = 0.75;
+        opt.maxScanRatio     = 0.30;
+        opt.darkPixelRatio   = 0.50;
+        opt.gapTolerance     = 3;
+        opt.smoothKernelSize = 5;
+        opt.expandPixels     = 5;
+        opt.fillWhite        = true;
+
+        const process::BlackEdgeResult r =
+            process::BlackEdge::removeBlackEdge(m_currentMat, opt);
+        if (r.ok) {
+            m_currentMat = r.image;
+            blackEdgeTotal = r.topPixels + r.bottomPixels
+                             + r.leftPixels + r.rightPixels;
+        }
+    }
+
+    // ============ 3. 污点去除 ============
+    statusBar()->showMessage(QString::fromUtf8("一键处理：正在去除污点..."));
+    int spotCount = 0;
+    {
+        process::DenoiseOptions opt;
+        opt.maxSpotArea   = 200;
+        opt.maxSpotWidth  = 30;
+        opt.maxSpotHeight = 30;
+        opt.darkRatio     = 0.60;
+        opt.protectRadius = 2;
+        opt.strengthLevel = 1;
+        opt.useInpaint    = true;
+
+        const process::DenoiseResult r =
+            process::Denoise::removeSpots(m_currentMat, opt);
+        if (r.ok) {
+            m_currentMat = r.image;
+            spotCount = r.spotCount;
+        }
+    }
+
+    // ============ 4. 文字加深 ============
+    statusBar()->showMessage(QString::fromUtf8("一键处理：正在加深文字..."));
+    {
+        process::EnhanceOptions opt;
+        opt.strengthLevel = 1;
+        opt.protectColor = true;
+        opt.targetDarkGray = 0;
+        opt.targetPaperGray = 255;
+        opt.colorSaturationThreshold = 40;
+
+        const process::EnhanceResult r =
+            process::Enhance::textEnhance(m_currentMat, opt);
+        if (r.ok) {
+            m_currentMat = r.image;
+        }
+    }
+
+    // ============ 5. 显示结果 ============
+    showMatOnPreview(m_currentMat);
+
+    statusBar()->showMessage(
+        QString::fromUtf8("一键处理完成：扶正 %1 度，黑边 %2 像素，污点 %3 处。请点\"另存为\"保存。")
+            .arg(deskewAngle, 0, 'f', 2)
+            .arg(blackEdgeTotal)
+            .arg(spotCount));
 }
 
 void MainWindow::showMatOnPreview(const cv::Mat &mat)
