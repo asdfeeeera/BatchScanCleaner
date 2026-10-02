@@ -12,7 +12,6 @@ void ColorLine::buildColorMask(const cv::Mat &bgr,
                                 int valThreshold)
 {
     colorMask = cv::Mat::zeros(bgr.rows, bgr.cols, CV_8UC1);
-
     if (bgr.channels() < 3) return;
 
     cv::Mat hsv;
@@ -23,17 +22,59 @@ void ColorLine::buildColorMask(const cv::Mat &bgr,
     cv::Mat &S = ch[1];
     cv::Mat &V = ch[2];
 
-    // 彩色像素：饱和度高 + 明度不太低
+    // 通道 1：高饱和彩色
     cv::Mat mask1, mask2;
     cv::threshold(S, mask1, satThreshold, 255, cv::THRESH_BINARY);
     cv::threshold(V, mask2, valThreshold, 255, cv::THRESH_BINARY);
-
     cv::bitwise_and(mask1, mask2, colorMask);
+
+    // 通道 2：弱彩色——通道间差异检测（捕捉淡蓝、淡绿、淡红）
+    std::vector<cv::Mat> bgrCh;
+    cv::split(bgr, bgrCh);
+    cv::Mat &B = bgrCh[0];
+    cv::Mat &G = bgrCh[1];
+    cv::Mat &R = bgrCh[2];
+
+    // 淡蓝：B - max(R,G) > 15
+    cv::Mat rgMax;
+    cv::max(R, G, rgMax);
+    cv::Mat bDiff;
+    cv::subtract(B, rgMax, bDiff);
+    cv::Mat bWeak;
+    cv::threshold(bDiff, bWeak, 15, 255, cv::THRESH_BINARY);
+
+    // 淡绿：G - max(R,B) > 15
+    cv::Mat rbMax;
+    cv::max(R, B, rbMax);
+    cv::Mat gDiff;
+    cv::subtract(G, rbMax, gDiff);
+    cv::Mat gWeak;
+    cv::threshold(gDiff, gWeak, 15, 255, cv::THRESH_BINARY);
+
+    // 淡红：R - max(G,B) > 15
+    cv::Mat gbMax;
+    cv::max(G, B, gbMax);
+    cv::Mat rDiff;
+    cv::subtract(R, gbMax, rDiff);
+    cv::Mat rWeak;
+    cv::threshold(rDiff, rWeak, 15, 255, cv::THRESH_BINARY);
+
+    // 合并弱彩色
+    cv::Mat weakColor;
+    cv::bitwise_or(bWeak, gWeak, weakColor);
+    cv::bitwise_or(weakColor, rWeak, weakColor);
+
+    // 排除暗色（避免黑边被当彩色）
+    cv::Mat bright;
+    cv::threshold(V, bright, 80, 255, cv::THRESH_BINARY);
+    cv::bitwise_and(weakColor, bright, weakColor);
+
+    // 合并两个通道
+    cv::bitwise_or(colorMask, weakColor, colorMask);
 }
 
 namespace {
 
-// 计算连通域的平均颜色（BGR）
 cv::Scalar averageColor(const cv::Mat &bgr, const cv::Mat &mask, int label)
 {
     long b = 0, g = 0, r = 0;
@@ -65,7 +106,6 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
     const int W = src.cols;
     const int H = src.rows;
 
-    // 转 BGR
     cv::Mat bgr;
     if (src.channels() == 1) {
         cv::cvtColor(src, bgr, cv::COLOR_GRAY2BGR);
@@ -75,13 +115,11 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
         bgr = src.clone();
     }
 
-    // 彩色掩膜
     cv::Mat colorMask;
     buildColorMask(bgr, colorMask,
                    options.saturationThreshold,
                    options.valueThreshold);
 
-    // 排除边缘（避免黑边误判）
     if (options.edgeMarginRatio > 0) {
         const int mx = static_cast<int>(W * options.edgeMarginRatio);
         const int my = static_cast<int>(H * options.edgeMarginRatio);
@@ -91,17 +129,14 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
         cv::rectangle(colorMask, cv::Rect(W - mx, 0, mx, H), cv::Scalar(0), cv::FILLED);
     }
 
-    // 轻微膨胀，让同一条细线的像素连通
     cv::Mat dilated;
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
     cv::dilate(colorMask, dilated, kernel);
 
-    // 连通域
     cv::Mat labels, stats, centroids;
     int nLabels = cv::connectedComponentsWithStats(
         dilated, labels, stats, centroids, 8, CV_32S);
 
-    // 遍历
     for (int i = 1; i < nLabels; ++i) {
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
         const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
@@ -109,11 +144,9 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
         const int x = stats.at<int>(i, cv::CC_STAT_LEFT);
         const int y = stats.at<int>(i, cv::CC_STAT_TOP);
 
-        // 面积过滤
-        if (area < 30) continue;
+        if (area < 20) continue;
         if (area > options.maxArea) continue;
 
-        // 长宽比过滤
         const int longSide = std::max(w, h);
         const int shortSide = std::max(1, std::min(w, h));
         const double aspect = static_cast<double>(longSide) / shortSide;
@@ -121,7 +154,6 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
         if (longSide < options.minLength) continue;
         if (aspect < options.minAspectRatio) continue;
 
-        // 是彩色细线
         ColorLineItem item;
         item.boundingBox = cv::Rect(x, y, w, h);
         item.length = longSide;
@@ -132,7 +164,6 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
         result.items.push_back(item);
     }
 
-    // 生成标记图像
     cv::Mat marked = bgr.clone();
     for (const auto &item : result.items) {
         cv::Rect r = item.boundingBox;
@@ -141,7 +172,7 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
         r.width += 6;
         r.height += 6;
         r &= cv::Rect(0, 0, W, H);
-        cv::rectangle(marked, r, cv::Scalar(0, 255, 255), 3);  // 黄色框
+        cv::rectangle(marked, r, cv::Scalar(0, 255, 255), 3);
     }
 
     result.image = bgr;
@@ -167,11 +198,9 @@ ColorLineResult ColorLine::clear(const cv::Mat &src,
     const int W = bgr.cols;
     const int H = bgr.rows;
 
-    // 用检测到的细线区域构建清除掩膜
     cv::Mat clearMask = cv::Mat::zeros(H, W, CV_8UC1);
     for (const auto &item : result.items) {
         cv::Rect r = item.boundingBox;
-        // 稍微放大一点，覆盖干净
         r.x -= 2;
         r.y -= 2;
         r.width += 4;
@@ -180,19 +209,16 @@ ColorLineResult ColorLine::clear(const cv::Mat &src,
         cv::rectangle(clearMask, r, cv::Scalar(255), cv::FILLED);
     }
 
-    // 在掩膜上只保留"彩色像素"，避免误删彩色内容旁边的白色
     cv::Mat colorMask;
     buildColorMask(bgr, colorMask,
                    options.saturationThreshold,
                    options.valueThreshold);
     cv::bitwise_and(clearMask, colorMask, clearMask);
 
-    // 膨胀一点，让清除边缘平滑
     cv::Mat dilateKernel = cv::getStructuringElement(
         cv::MORPH_ELLIPSE, cv::Size(5, 5));
     cv::dilate(clearMask, clearMask, dilateKernel);
 
-    // 填白
     cv::Mat dst = bgr.clone();
     dst.setTo(cv::Scalar(255, 255, 255), clearMask);
 
