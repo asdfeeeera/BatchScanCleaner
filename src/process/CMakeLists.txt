@@ -9,6 +9,8 @@ add_library(process STATIC
     enhance.cpp
     colorline.h
     colorline.cpp
+    errpage.h
+    errpage.cpp
 )
 
 target_include_directories(process PUBLIC

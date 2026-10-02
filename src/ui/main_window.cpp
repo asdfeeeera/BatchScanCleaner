@@ -35,6 +35,7 @@
 #include "denoise.h"
 #include "enhance.h"
 #include "colorline.h"
+#include "errpage.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -124,6 +125,9 @@ void MainWindow::setupToolBar()
 
     QAction *clearColorAction = toolBar->addAction(QString::fromUtf8("清除彩色细线"));
     connect(clearColorAction, &QAction::triggered, this, &MainWindow::onClearColorLine);
+
+    QAction *errPageAction = toolBar->addAction(QString::fromUtf8("错误页码处理"));
+    connect(errPageAction, &QAction::triggered, this, &MainWindow::onProcessErrPage);
 
     toolBar->addSeparator();
     toolBar->addAction(QString::fromUtf8("输出设置"));
@@ -583,7 +587,6 @@ void MainWindow::onOneClickProcess()
         }
     }
 
-    // 显示结果
     showMatOnPreview(m_currentMat);
 
     statusBar()->showMessage(
@@ -603,7 +606,6 @@ void MainWindow::onDetectColorLine()
 
     statusBar()->showMessage(QString::fromUtf8("正在检测彩色细线..."));
 
-    // 保存当前图像，供"清除彩色细线"用
     m_colorLineSource = m_currentMat.clone();
 
     process::ColorLineOptions options;
@@ -623,7 +625,6 @@ void MainWindow::onDetectColorLine()
         return;
     }
 
-    // 显示带黄框的标记图
     showMatOnPreview(result.markedImage);
 
     if (result.items.empty()) {
@@ -668,6 +669,67 @@ void MainWindow::onClearColorLine()
         QString::fromUtf8("彩色细线清除完成：清除 %1 条，填白 %2 像素")
             .arg(static_cast<int>(result.items.size()))
             .arg(result.clearedPixels));
+}
+
+void MainWindow::onProcessErrPage()
+{
+    if (!m_hasImage || m_currentMat.empty()) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+                                 QString::fromUtf8("请先打开一张图片。"));
+        return;
+    }
+
+    if (m_currentImagePath.isEmpty()) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+                                 QString::fromUtf8("请通过\"打开图片\"或双击列表打开，才能解析文件名页码。"));
+        return;
+    }
+
+    statusBar()->showMessage(QString::fromUtf8("正在处理错误页码..."));
+
+    process::ErrPageOptions options;
+    options.regionWidthRatio  = 0.25;
+    options.regionHeightRatio = 0.15;
+    options.detectTopLeft     = true;
+    options.detectTopRight    = true;
+    options.minDigitHeight    = 15;
+    options.maxDigitHeight    = 120;
+    options.minDigitWidth     = 8;
+    options.maxDigitWidth     = 120;
+    options.crossLineRatio    = 0.6;
+    options.fillWhite         = true;
+
+    const process::ErrPageResult result =
+        process::ErrPage::process(m_currentMat, m_currentImagePath, options);
+
+    if (!result.ok) {
+        QMessageBox::warning(this, QString::fromUtf8("错误"),
+                             QString::fromUtf8("错误页码处理失败。"));
+        statusBar()->showMessage(QString::fromUtf8("错误页码处理失败"));
+        return;
+    }
+
+    m_currentMat = result.image;
+    showMatOnPreview(m_currentMat);
+
+    QString pageInfo;
+    if (result.correctPage >= 0) {
+        pageInfo = QString::fromUtf8("正确页码 %1").arg(result.correctPage);
+    } else {
+        pageInfo = QString::fromUtf8("文件名无页码");
+    }
+
+    if (result.skipped) {
+        statusBar()->showMessage(
+            QString::fromUtf8("错误页码处理：角落未检测到数字。%1").arg(pageInfo));
+    } else {
+        statusBar()->showMessage(
+            QString::fromUtf8("错误页码处理完成：%1，检测到 %2 个数字块，自动删除划线 %3 个，待确认 %4 个")
+                .arg(pageInfo)
+                .arg(static_cast<int>(result.items.size()))
+                .arg(result.crossedRemoved)
+                .arg(result.pendingCount));
+    }
 }
 
 void MainWindow::showMatOnPreview(const cv::Mat &mat)

@@ -33,6 +33,7 @@ private slots:
     void onOneClickProcess();
     void onDetectColorLine();
     void onClearColorLine();
+    void onProcessErrPage();
 
 private:
     void setupMenuBar();
@@ -55,6 +56,6 @@ private:
     cv::Mat m_currentMat;
     cv::Mat m_originalMat;
 
-    // 彩色细线：原始图 + 检测结果
-    cv::Mat m_colorLineSource;   // 检测时的原图（用于清除）
+    // 彩色细线：检测时的原图（供清除用）
+    cv::Mat m_colorLineSource;
 };
