@@ -8,7 +8,6 @@ namespace process {
 
 namespace {
 
-// 旋转图像（用于投影法中间步骤，不扩展画布）
 cv::Mat rotateForProjection(const cv::Mat &src, double angle)
 {
     const cv::Point2f center(src.cols / 2.0f, src.rows / 2.0f);
@@ -17,12 +16,10 @@ cv::Mat rotateForProjection(const cv::Mat &src, double angle)
     cv::warpAffine(src, dst, rot, src.size(),
                    cv::INTER_NEAREST,
                    cv::BORDER_CONSTANT,
-                   cv::Scalar(0));
+                   cv::Scalar::all(0));
     return dst;
 }
 
-// 在指定角度范围内用投影法搜索最佳角度
-// 返回 {角度, 是否可信}
 std::pair<double, bool> searchAngleByProjection(const cv::Mat &binary,
                                                   double minAngle,
                                                   double maxAngle,
@@ -31,7 +28,6 @@ std::pair<double, bool> searchAngleByProjection(const cv::Mat &binary,
     double bestAngle = 0.0;
     double bestScore = -1.0;
     double secondScore = -1.0;
-    double secondAngle = 0.0;
 
     for (double angle = minAngle; angle <= maxAngle + 1e-6; angle += step) {
         const cv::Mat rotated = rotateForProjection(binary, angle);
@@ -45,26 +41,20 @@ std::pair<double, bool> searchAngleByProjection(const cv::Mat &binary,
 
         if (score > bestScore) {
             secondScore = bestScore;
-            secondAngle = bestAngle;
             bestScore = score;
             bestAngle = angle;
         } else if (score > secondScore) {
             secondScore = score;
-            secondAngle = angle;
         }
     }
 
-    // 判断置信度：最佳值应显著高于次佳值
-    // 或者最佳角度的得分要足够大
     bool confident = false;
     if (bestScore > 0.0) {
-        // 峰值比次高峰大 15% 以上，或最佳分数绝对值够大
         if (secondScore > 0.0) {
             confident = (bestScore > secondScore * 1.15);
         } else {
             confident = true;
         }
-        // 额外保护：分数太低说明前景太少
         if (bestScore < 500.0) {
             confident = false;
         }
@@ -73,21 +63,18 @@ std::pair<double, bool> searchAngleByProjection(const cv::Mat &binary,
     return { bestAngle, confident };
 }
 
-// 粗裁边缘：去掉四边可能的大黑边，用于扶正前预处理
-// 只是给扶正算法用，不改原图
 cv::Mat roughCropEdges(const cv::Mat &binary)
 {
     const int W = binary.cols;
     const int H = binary.rows;
 
-    // 从上往下扫，找第一个"白像素占多"的行
     auto isBrightRow = [&](int y) {
         const uchar *row = binary.ptr<uchar>(y);
         int whiteCount = 0;
         for (int x = 0; x < W; ++x) {
             if (row[x] > 0) ++whiteCount;
         }
-        return whiteCount > W * 0.05; // 至少 5% 白
+        return whiteCount > W * 0.05;
     };
 
     auto isBrightCol = [&](int x) {
@@ -126,7 +113,6 @@ cv::Mat roughCropEdges(const cv::Mat &binary)
     int y1 = H - bottom;
 
     if (x1 - x0 < W * 0.2 || y1 - y0 < H * 0.2) {
-        // 裁得太狠，放弃裁剪，返回原图
         return binary.clone();
     }
 
@@ -143,7 +129,6 @@ double Deskew::detectAngle(const cv::Mat &src)
         return 0.0;
     }
 
-    // 1. 转灰度
     cv::Mat gray;
     if (src.channels() == 3) {
         cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
@@ -153,7 +138,6 @@ double Deskew::detectAngle(const cv::Mat &src)
         gray = src.clone();
     }
 
-    // 2. 只取中间 70% 区域，避开边缘黑边
     const int W = gray.cols;
     const int H = gray.rows;
     const int mx = static_cast<int>(W * 0.15);
@@ -163,12 +147,10 @@ double Deskew::detectAngle(const cv::Mat &src)
 
     cv::Mat center = gray(centerRoi).clone();
 
-    // 3. 二值化
     cv::Mat binary;
     cv::threshold(center, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    // 4. 降采样加速
     cv::Mat small;
     const int maxDim = std::max(binary.cols, binary.rows);
     if (maxDim > 800) {
@@ -178,26 +160,26 @@ double Deskew::detectAngle(const cv::Mat &src)
         small = binary;
     }
 
-    // 5. 粗到细两阶段搜索
-    // 第 1 步：粗扫 ±45°，步长 1°
+    // 粗到细搜索
     auto coarse = searchAngleByProjection(small, -45.0, 45.0, 1.0);
     const double coarseAngle = coarse.first;
 
-    // 第 2 步：在粗扫结果附近细扫 ±1.5°，步长 0.05°
     auto fine = searchAngleByProjection(small,
                                         coarseAngle - 1.5,
                                         coarseAngle + 1.5,
                                         0.05);
 
-    // 用细扫结果；如果细扫不可信，用粗扫结果
     auto result = fine.second ? fine : coarse;
 
-    // 6. 置信度低 → 尝试粗裁后重新分析
     if (!result.second) {
         cv::Mat cropped = roughCropEdges(small);
-
         if (cropped.cols != small.cols || cropped.rows != small.rows) {
-            auto retry = searchAngleByProjection(cropped, -10.0, 10.0, 0.1);
+            auto coarse2 = searchAngleByProjection(cropped, -45.0, 45.0, 1.0);
+            auto fine2 = searchAngleByProjection(cropped,
+                                                  coarse2.first - 1.5,
+                                                  coarse2.first + 1.5,
+                                                  0.05);
+            auto retry = fine2.second ? fine2 : coarse2;
             if (retry.second) {
                 return retry.first;
             }
@@ -254,7 +236,8 @@ DeskewResult Deskew::autoDeskew(const cv::Mat &src)
         return result;
     }
 
-    if (std::abs(angle) > 10.0) {
+    // ★ 这里从 10.0 改成 45.0
+    if (std::abs(angle) > 45.0) {
         result.image = src.clone();
         result.angle = 0.0;
         result.ok = false;
