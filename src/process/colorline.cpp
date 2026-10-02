@@ -19,38 +19,33 @@ void ColorLine::buildColorMask(const cv::Mat &bgr,
     cv::Mat &G = ch[1];
     cv::Mat &R = ch[2];
 
-    // 弱彩色：任一通道比其他两通道高 channelDiffThreshold
-    cv::Mat rgMax, rbMax, gbMax;
-    cv::max(R, G, rgMax);   // max(R,G)
-    cv::max(R, B, rbMax);   // max(R,B)
-    cv::max(G, B, gbMax);   // max(G,B)
+    // 色度差 = max(R,G,B) - min(R,G,B)
+    cv::Mat maxRG, maxRGB, minRG, minRGB;
+    cv::max(R, G, maxRG);
+    cv::max(maxRG, B, maxRGB);
 
-    cv::Mat bDiff, gDiff, rDiff;
-    cv::subtract(B, rgMax, bDiff);
-    cv::subtract(G, rbMax, gDiff);
-    cv::subtract(R, gbMax, rDiff);
+    cv::min(R, G, minRG);
+    cv::min(minRG, B, minRGB);
 
-    cv::Mat bMask, gMask, rMask;
-    cv::threshold(bDiff, bMask, options.channelDiffThreshold, 255, cv::THRESH_BINARY);
-    cv::threshold(gDiff, gMask, options.channelDiffThreshold, 255, cv::THRESH_BINARY);
-    cv::threshold(rDiff, rMask, options.channelDiffThreshold, 255, cv::THRESH_BINARY);
+    cv::Mat colorfulness;
+    cv::subtract(maxRGB, minRGB, colorfulness);
 
-    cv::Mat weakColor;
-    cv::bitwise_or(bMask, gMask, weakColor);
-    cv::bitwise_or(weakColor, rMask, weakColor);
+    // 亮度 = (B + G + R) / 3
+    cv::Mat brightness;
+    cv::add(B, G, brightness);
+    cv::add(brightness, R, brightness);
+    cv::divide(brightness, 3.0, brightness);
 
-    // 排除暗色
-    cv::Mat gray;
-    cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
-    cv::Mat bright;
-    cv::threshold(gray, bright, options.valueThreshold, 255, cv::THRESH_BINARY);
+    // 候选像素：色度差 >= 阈值 且 亮度 >= 阈值
+    cv::Mat c1, c2;
+    cv::threshold(colorfulness, c1, options.channelDiffThreshold, 255, cv::THRESH_BINARY);
+    cv::threshold(brightness, c2, options.valueThreshold, 255, cv::THRESH_BINARY);
 
-    cv::bitwise_and(weakColor, bright, colorMask);
+    cv::bitwise_and(c1, c2, colorMask);
 }
 
 namespace {
 
-// 判断一行是否算彩色细线
 bool isColorRow(const cv::Mat &colorMask, int y, double threshold,
                 int x0, int x1, double &ratio)
 {
@@ -140,7 +135,6 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
     cv::Mat colorMask;
     buildColorMask(bgr, colorMask, options);
 
-    // 边缘排除
     const int mx = static_cast<int>(W * options.edgeMarginRatio);
     const int my = static_cast<int>(H * options.edgeMarginRatio);
     const int x0 = mx;
@@ -156,7 +150,7 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
         return result;
     }
 
-    // ---- 检测水平细线（逐行）----
+    // 水平线
     std::vector<bool> rowIsLine(H, false);
     std::vector<double> rowRatio(H, 0.0);
     for (int y = y0; y < y1; ++y) {
@@ -167,7 +161,6 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
         }
     }
 
-    // 合并相邻行
     int runStart = -1;
     for (int y = y0; y <= y1; ++y) {
         const bool isLine = (y < y1) && rowIsLine[y];
@@ -188,7 +181,7 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
         }
     }
 
-    // ---- 检测垂直细线（逐列）----
+    // 垂直线
     std::vector<bool> colIsLine(W, false);
     std::vector<double> colRatio(W, 0.0);
     for (int x = x0; x < x1; ++x) {
@@ -219,7 +212,6 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
         }
     }
 
-    // ---- 生成标记图 ----
     cv::Mat marked = bgr.clone();
     for (const auto &item : result.items) {
         if (item.horizontal) {
@@ -254,7 +246,6 @@ ColorLineResult ColorLine::clear(const cv::Mat &src,
     const int W = bgr.cols;
     const int H = bgr.rows;
 
-    // 构建清除掩膜
     cv::Mat clearMask = cv::Mat::zeros(H, W, CV_8UC1);
     for (const auto &item : result.items) {
         if (item.horizontal) {
@@ -270,12 +261,10 @@ ColorLineResult ColorLine::clear(const cv::Mat &src,
         }
     }
 
-    // 只清除彩色像素
     cv::Mat colorMask;
     buildColorMask(bgr, colorMask, options);
     cv::bitwise_and(clearMask, colorMask, clearMask);
 
-    // 膨胀，边缘平滑
     cv::Mat dilateKernel = cv::getStructuringElement(
         cv::MORPH_ELLIPSE, cv::Size(5, 5));
     cv::dilate(clearMask, clearMask, dilateKernel);

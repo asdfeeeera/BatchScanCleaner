@@ -607,10 +607,10 @@ void MainWindow::onDetectColorLine()
     m_colorLineSource = m_currentMat.clone();
 
     process::ColorLineOptions options;
-    options.channelDiffThreshold = 15;
-    options.valueThreshold       = 80;
-    options.colorRatioThreshold  = 0.60;
-    options.maxThickness         = 20;
+    options.channelDiffThreshold = 8;
+    options.valueThreshold       = 180;
+    options.colorRatioThreshold  = 0.40;
+    options.maxThickness         = 8;
     options.edgeMarginRatio      = 0.02;
 
     const process::ColorLineResult result =
@@ -647,10 +647,10 @@ void MainWindow::onClearColorLine()
     statusBar()->showMessage(QString::fromUtf8("正在清除彩色细线..."));
 
     process::ColorLineOptions options;
-    options.channelDiffThreshold = 15;
-    options.valueThreshold       = 80;
-    options.colorRatioThreshold  = 0.60;
-    options.maxThickness         = 20;
+    options.channelDiffThreshold = 8;
+    options.valueThreshold       = 180;
+    options.colorRatioThreshold  = 0.40;
+    options.maxThickness         = 8;
     options.edgeMarginRatio      = 0.02;
 
     const process::ColorLineResult result =
