@@ -17,16 +17,12 @@ namespace process {
 
 // ============================================================
 // 从文件名解析正确页码
-// 宽容版：提取文件名中所有数字
-// 例如 "065.jpg" → 65，"065_错误.jpg" → 65065? 不，这里只提取 065 部分
-// 实际上只提取"主名"里的所有数字，按顺序拼起来
 // ============================================================
 int ErrPage::parseCorrectPage(const QString &sourcePath)
 {
     const QFileInfo info(sourcePath);
     const QString baseName = info.completeBaseName().trimmed();
 
-    // 提取主名中所有数字字符
     QString digitsOnly;
     for (const QChar &c : baseName) {
         if (c.isDigit()) {
@@ -45,7 +41,7 @@ int ErrPage::parseCorrectPage(const QString &sourcePath)
 }
 
 // ============================================================
-// 匿名命名空间：内部辅助函数
+// 匿名命名空间
 // ============================================================
 namespace {
 
@@ -71,10 +67,9 @@ std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
         if (w < options.minDigitWidth || w > options.maxDigitWidth) continue;
         if (area < 50) continue;
 
-        // 长宽比过滤：这里放宽，允许很宽的数字块（如 065）
         const double aspect = static_cast<double>(h) / std::max(1, w);
-        if (aspect < 0.15) continue;   // 太扁（可能是横线）
-        if (aspect > 4.0) continue;    // 太高（可能是竖线）
+        if (aspect < 0.15) continue;
+        if (aspect > 4.0) continue;
 
         cv::Rect r(stats.at<int>(i, cv::CC_STAT_LEFT),
                    stats.at<int>(i, cv::CC_STAT_TOP),
@@ -84,7 +79,6 @@ std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
     return result;
 }
 
-// 计算两个矩形的垂直重叠比例：0=完全错开，1=完全重叠
 double verticalOverlap(const cv::Rect &a, const cv::Rect &b)
 {
     const int top = std::max(a.y, b.y);
@@ -95,7 +89,6 @@ double verticalOverlap(const cv::Rect &a, const cv::Rect &b)
     return static_cast<double>(bot - top) / minH;
 }
 
-// 合并相邻数字：垂直重叠 >= 60% 才合并
 std::vector<cv::Rect> mergeAdjacentDigits(std::vector<cv::Rect> boxes)
 {
     if (boxes.size() < 2) return boxes;
@@ -157,7 +150,7 @@ bool isPageMatch(int recognized, int correctPage)
 } // namespace
 
 // ============================================================
-// Tesseract OCR 识别数字块
+// Tesseract OCR 识别数字块（诊断版）
 // ============================================================
 int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
@@ -166,20 +159,33 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
 {
     outText.clear();
     outConfidence = 0.0;
-    if (digitImage.empty()) return -1;
+
+    if (digitImage.empty()) {
+        outText = QString::fromUtf8("空图");
+        return -1;
+    }
 
     const QString tessExe = locateTesseract(tesseractPath);
-    if (tessExe.isEmpty()) return -1;
+    if (tessExe.isEmpty()) {
+        outText = QString::fromUtf8("未找到tesseract");
+        return -1;
+    }
 
     QTemporaryDir tempDir;
-    if (!tempDir.isValid()) return -1;
+    if (!tempDir.isValid()) {
+        outText = QString::fromUtf8("临时目录失败");
+        return -1;
+    }
 
     const QString tmpPng = tempDir.path() + QStringLiteral("/digit.png");
     const QString tmpOutBase = tempDir.path() + QStringLiteral("/out");
 
     cv::Mat enlarged;
     cv::resize(digitImage, enlarged, cv::Size(), 3.0, 3.0, cv::INTER_CUBIC);
-    if (!cv::imwrite(tmpPng.toStdString(), enlarged)) return -1;
+    if (!cv::imwrite(tmpPng.toStdString(), enlarged)) {
+        outText = QString::fromUtf8("PNG保存失败");
+        return -1;
+    }
 
     const QString tessDir = QFileInfo(tessExe).absolutePath();
     const QString tessdataDir = tessDir + QStringLiteral("/tessdata");
@@ -198,26 +204,50 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
          << QStringLiteral("tessedit_char_whitelist=0123456789");
 
     proc.start(tessExe, args);
-    if (!proc.waitForStarted(5000)) return -1;
-    if (!proc.waitForFinished(10000)) { proc.kill(); return -1; }
-    if (proc.exitCode() != 0) return -1;
+    if (!proc.waitForStarted(5000)) {
+        outText = QString::fromUtf8("启动失败");
+        return -1;
+    }
+    if (!proc.waitForFinished(10000)) {
+        proc.kill();
+        outText = QString::fromUtf8("超时");
+        return -1;
+    }
+    if (proc.exitCode() != 0) {
+        const QString errOut = QString::fromUtf8(proc.readAllStandardError());
+        outText = QString::fromUtf8("码%1:%2")
+                    .arg(proc.exitCode())
+                    .arg(errOut.left(30));
+        return -1;
+    }
 
     QFile outFile(tmpOutBase + QStringLiteral(".txt"));
-    if (!outFile.open(QIODevice::ReadOnly | QIODevice::Text)) return -1;
-    outText = QString::fromUtf8(outFile.readAll()).trimmed();
+    if (!outFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        outText = QString::fromUtf8("输出打不开");
+        return -1;
+    }
+    const QString rawText = QString::fromUtf8(outFile.readAll()).trimmed();
     outFile.close();
 
     QString digitsOnly;
-    for (const QChar &c : outText) {
+    for (const QChar &c : rawText) {
         if (c.isDigit()) digitsOnly += c;
     }
+
+    if (digitsOnly.isEmpty()) {
+        QString preview = rawText.left(20);
+        if (preview.isEmpty()) preview = QString::fromUtf8("空");
+        outText = QString::fromUtf8("无数字[%1]").arg(preview);
+        return -1;
+    }
+
     outText = digitsOnly;
-
-    if (outText.isEmpty()) return -1;
-
     bool ok = false;
     const int num = outText.toInt(&ok);
-    if (!ok) return -1;
+    if (!ok) {
+        outText = QString::fromUtf8("转换失败");
+        return -1;
+    }
 
     outConfidence = 0.9;
     return num;
@@ -273,7 +303,7 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
 }
 
 // ============================================================
-// 划线检测：支持多道线
+// 划线检测
 // ============================================================
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
@@ -344,7 +374,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     std::vector<PageNumberItem> allItems;
 
-    // 左上角
     if (options.detectTopLeft) {
         const int w = static_cast<int>(W * options.topLeftWidthRatio);
         const int h = static_cast<int>(H * options.topLeftHeightRatio);
@@ -352,7 +381,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         detectDigitsInRegion(gray, region, options, allItems);
     }
 
-    // 右上角
     if (options.detectTopRight) {
         const int w = static_cast<int>(W * options.topRightWidthRatio);
         const int h = static_cast<int>(H * options.topRightHeightRatio);
@@ -360,7 +388,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         detectDigitsInRegion(gray, region, options, allItems);
     }
 
-    // 右下角（横向文件）
     if (options.detectBottomRight) {
         const int w = static_cast<int>(W * options.bottomRightWidthRatio);
         const int h = static_cast<int>(H * options.bottomRightHeightRatio);
@@ -368,7 +395,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         detectDigitsInRegion(gray, region, options, allItems);
     }
 
-    // 左下角
     if (options.detectBottomLeft) {
         const int w = static_cast<int>(W * options.bottomLeftWidthRatio);
         const int h = static_cast<int>(H * options.bottomLeftHeightRatio);
@@ -409,7 +435,11 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         }
     }
 
+    // ============================================================
+    // 生成标记图（带彩色框 + 诊断信息）
+    // ============================================================
     cv::Mat marked = src.clone();
+    int idx = 0;
     for (const auto &item : allItems) {
         const bool ocrFailed = (item.recognizedNumber < 0);
         const bool matchesCorrect = isPageMatch(item.recognizedNumber,
@@ -423,14 +453,19 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
         cv::rectangle(marked, item.boundingBox, color, 2);
 
-        QString label;
-        if (item.recognizedNumber >= 0) label = QString::number(item.recognizedNumber);
-        else                            label = QString::fromUtf8("?");
+        // ★ 显示诊断信息在框上方
+        QString info = QString::fromUtf8("块%1:").arg(idx++);
+        if (item.recognizedNumber >= 0) {
+            info += QString::number(item.recognizedNumber);
+        } else {
+            info += item.recognizedText.left(25);
+        }
 
-        cv::putText(marked, label.toStdString(),
+        cv::putText(marked, info.toStdString(),
                     cv::Point(item.boundingBox.x,
-                              item.boundingBox.y + item.boundingBox.height + 15),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
+                              item.boundingBox.y - 5),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5,
+                    cv::Scalar(255, 0, 255), 1);
     }
 
     result.image = dst;
