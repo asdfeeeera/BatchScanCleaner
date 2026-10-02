@@ -42,83 +42,96 @@ void ColorLine::buildColorMask(const cv::Mat &bgr,
 
 namespace {
 
-double medianOf(std::vector<double> &v)
+const int kMinColorDiff = 6;    // 像素级色度差阈值
+const int kMinBrightness = 120; // 像素级亮度阈值
+
+// 判断一个像素是否"明显彩色"
+inline bool isPixelColorful(int b, int g, int r)
 {
-    if (v.empty()) return 0.0;
-    std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
-    return v[v.size() / 2];
+    const int mx = std::max({b, g, r});
+    const int mn = std::min({b, g, r});
+    if (mx - mn < kMinColorDiff) return false;
+    const int bright = (b + g + r) / 3;
+    return bright >= kMinBrightness;
 }
 
-// 一行的色偏：对每个像素算 max(R,G,B)-min(R,G,B)，取中位数
-double rowColorBias(const cv::Mat &B, const cv::Mat &G, const cv::Mat &R,
-                    int y, int x0, int x1)
+// 分析一行：返回 (彩色像素占比, 跨度占页面宽度比例)
+// 跨度为最右彩色像素 - 最左彩色像素
+struct RowAnalysis
 {
-    std::vector<double> biases;
-    biases.reserve(x1 - x0);
+    double colorRatio = 0.0;
+    double spanRatio = 0.0;
+    int colorCount = 0;
+};
+
+RowAnalysis analyzeRow(const cv::Mat &B, const cv::Mat &G, const cv::Mat &R,
+                       int y, int x0, int x1)
+{
+    RowAnalysis ra;
+    const int width = x1 - x0;
+    if (width <= 0) return ra;
+
     const uchar *bRow = B.ptr<uchar>(y);
     const uchar *gRow = G.ptr<uchar>(y);
     const uchar *rRow = R.ptr<uchar>(y);
 
+    int firstX = -1;
+    int lastX = -1;
+
     for (int x = x0; x < x1; ++x) {
-        const double b = bRow[x];
-        const double g = gRow[x];
-        const double r = rRow[x];
-        const double mx = std::max({b, g, r});
-        const double mn = std::min({b, g, r});
-        biases.push_back(mx - mn);
+        if (isPixelColorful(bRow[x], gRow[x], rRow[x])) {
+            if (firstX < 0) firstX = x;
+            lastX = x;
+            ++ra.colorCount;
+        }
     }
-    return medianOf(biases);
+
+    ra.colorRatio = static_cast<double>(ra.colorCount) / width;
+    if (firstX >= 0 && lastX >= firstX) {
+        const int span = lastX - firstX + 1;
+        ra.spanRatio = static_cast<double>(span) / width;
+    } else {
+        ra.spanRatio = 0.0;
+    }
+    return ra;
 }
 
-double colColorBias(const cv::Mat &B, const cv::Mat &G, const cv::Mat &R,
-                    int x, int y0, int y1)
+struct ColAnalysis
 {
-    std::vector<double> biases;
-    biases.reserve(y1 - y0);
-    for (int y = y0; y < y1; ++y) {
-        const double b = B.at<uchar>(y, x);
-        const double g = G.at<uchar>(y, x);
-        const double r = R.at<uchar>(y, x);
-        const double mx = std::max({b, g, r});
-        const double mn = std::min({b, g, r});
-        biases.push_back(mx - mn);
-    }
-    return medianOf(biases);
-}
+    double colorRatio = 0.0;
+    double spanRatio = 0.0;
+    int colorCount = 0;
+};
 
-// 一行中"明显彩色"像素的比例
-double rowColorPixelRatio(const cv::Mat &B, const cv::Mat &G, const cv::Mat &R,
-                          int y, int x0, int x1, int minColorDiff)
+ColAnalysis analyzeCol(const cv::Mat &B, const cv::Mat &G, const cv::Mat &R,
+                       int x, int y0, int y1)
 {
-    const uchar *bRow = B.ptr<uchar>(y);
-    const uchar *gRow = G.ptr<uchar>(y);
-    const uchar *rRow = R.ptr<uchar>(y);
+    ColAnalysis ca;
+    const int height = y1 - y0;
+    if (height <= 0) return ca;
 
-    int count = 0;
-    for (int x = x0; x < x1; ++x) {
-        const int b = bRow[x];
-        const int g = gRow[x];
-        const int r = rRow[x];
-        const int mx = std::max({b, g, r});
-        const int mn = std::min({b, g, r});
-        if (mx - mn >= minColorDiff) ++count;
-    }
-    return static_cast<double>(count) / (x1 - x0);
-}
+    int firstY = -1;
+    int lastY = -1;
 
-double colColorPixelRatio(const cv::Mat &B, const cv::Mat &G, const cv::Mat &R,
-                          int x, int y0, int y1, int minColorDiff)
-{
-    int count = 0;
     for (int y = y0; y < y1; ++y) {
         const int b = B.at<uchar>(y, x);
         const int g = G.at<uchar>(y, x);
         const int r = R.at<uchar>(y, x);
-        const int mx = std::max({b, g, r});
-        const int mn = std::min({b, g, r});
-        if (mx - mn >= minColorDiff) ++count;
+        if (isPixelColorful(b, g, r)) {
+            if (firstY < 0) firstY = y;
+            lastY = y;
+            ++ca.colorCount;
+        }
     }
-    return static_cast<double>(count) / (y1 - y0);
+
+    ca.colorRatio = static_cast<double>(ca.colorCount) / height;
+    if (firstY >= 0 && lastY >= firstY) {
+        const int span = lastY - firstY + 1;
+        ca.spanRatio = static_cast<double>(span) / height;
+    } else {
+        ca.spanRatio = 0.0;
+    }
+    return ca;
 }
 
 cv::Scalar avgRowColor(const cv::Mat &bgr, int y, int x0, int x1)
@@ -187,39 +200,23 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
         return result;
     }
 
-    // ---- 逐行分析 ----
-    std::vector<double> rowBias(H, 0.0);
-    std::vector<double> rowColorRatio(H, 0.0);
-    const int minColorDiff = 4;   // 极敏感的彩色像素判定
-
-    for (int y = y0; y < y1; ++y) {
-        rowBias[y] = rowColorBias(ch[0], ch[1], ch[2], y, x0, x1);
-        rowColorRatio[y] = rowColorPixelRatio(ch[0], ch[1], ch[2], y, x0, x1, minColorDiff);
-    }
-
-    // 统计：中位数 + 标准差
-    std::vector<double> validRowBias(rowBias.begin() + y0, rowBias.begin() + y1);
-    std::vector<double> sortedRow = validRowBias;
-    std::sort(sortedRow.begin(), sortedRow.end());
-    const double rowMedian = sortedRow[sortedRow.size() / 2];
-
-    double rowVariance = 0.0;
-    for (double v : validRowBias) rowVariance += (v - rowMedian) * (v - rowMedian);
-    rowVariance /= std::max<size_t>(1, validRowBias.size());
-    const double rowStd = std::sqrt(rowVariance);
-
-    // 判定：色偏 > 中位数 + max(1.5, 2×std) 且 彩色像素比例 > 0.2
-    const double rowThreshold = rowMedian + std::max(1.5, 2.0 * rowStd);
-
+    // ============ 逐行分析 ============
     std::vector<bool> rowIsLine(H, false);
+    std::vector<double> rowBias(H, 0.0);
+
     for (int y = y0; y < y1; ++y) {
-        if (rowBias[y] > rowThreshold
-            && rowBias[y] > 1.5
-            && rowColorRatio[y] > 0.20) {
+        const RowAnalysis ra = analyzeRow(ch[0], ch[1], ch[2], y, x0, x1);
+
+        // 关键过滤：
+        // 1. 彩色像素占整行比例 >= 20%（有足够彩色）
+        // 2. 跨度 >= 页面宽度 80%（贯穿整页）
+        if (ra.colorRatio >= 0.20 && ra.spanRatio >= 0.80) {
             rowIsLine[y] = true;
+            rowBias[y] = ra.colorRatio;
         }
     }
 
+    // 合并相邻行
     int runStart = -1;
     for (int y = y0; y <= y1; ++y) {
         const bool isLine = (y < y1) && rowIsLine[y];
@@ -240,32 +237,16 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
         }
     }
 
-    // ---- 逐列分析 ----
-    std::vector<double> colBias(W, 0.0);
-    std::vector<double> colColorRatio(W, 0.0);
-    for (int x = x0; x < x1; ++x) {
-        colBias[x] = colColorBias(ch[0], ch[1], ch[2], x, y0, y1);
-        colColorRatio[x] = colColorPixelRatio(ch[0], ch[1], ch[2], x, y0, y1, minColorDiff);
-    }
-
-    std::vector<double> validColBias(colBias.begin() + x0, colBias.begin() + x1);
-    std::vector<double> sortedCol = validColBias;
-    std::sort(sortedCol.begin(), sortedCol.end());
-    const double colMedian = sortedCol[sortedCol.size() / 2];
-
-    double colVariance = 0.0;
-    for (double v : validColBias) colVariance += (v - colMedian) * (v - colMedian);
-    colVariance /= std::max<size_t>(1, validColBias.size());
-    const double colStd = std::sqrt(colVariance);
-
-    const double colThreshold = colMedian + std::max(1.5, 2.0 * colStd);
-
+    // ============ 逐列分析 ============
     std::vector<bool> colIsLine(W, false);
+    std::vector<double> colBias(W, 0.0);
+
     for (int x = x0; x < x1; ++x) {
-        if (colBias[x] > colThreshold
-            && colBias[x] > 1.5
-            && colColorRatio[x] > 0.20) {
+        const ColAnalysis ca = analyzeCol(ch[0], ch[1], ch[2], x, y0, y1);
+
+        if (ca.colorRatio >= 0.20 && ca.spanRatio >= 0.80) {
             colIsLine[x] = true;
+            colBias[x] = ca.colorRatio;
         }
     }
 
@@ -289,6 +270,7 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
         }
     }
 
+    // 生成标记图
     cv::Mat marked = bgr.clone();
     for (const auto &item : result.items) {
         if (item.horizontal) {
@@ -323,7 +305,7 @@ ColorLineResult ColorLine::clear(const cv::Mat &src,
     const int W = bgr.cols;
     const int H = bgr.rows;
 
-    // 构建"细线区域"掩膜
+    // 细线区域掩膜
     cv::Mat lineMask = cv::Mat::zeros(H, W, CV_8UC1);
     for (const auto &item : result.items) {
         if (item.horizontal) {
@@ -339,43 +321,32 @@ ColorLineResult ColorLine::clear(const cv::Mat &src,
         }
     }
 
-    // ★ 关键：像素级判断"是否明显彩色"
-    //    色度差 >= 6 且 亮度 > 120 → 是彩色像素（细线特征）
-    //    文字是黑色：色度差小、亮度低，不会被选中
+    // 像素级彩色判断：只清除"明显彩色且亮"的像素
+    // 文字（黑）色度差小、亮度低 → 不会被选中
     std::vector<cv::Mat> ch;
     cv::split(bgr, ch);
-    cv::Mat &B = ch[0];
-    cv::Mat &G = ch[1];
-    cv::Mat &R = ch[2];
 
-    cv::Mat maxRG, maxRGB, minRG, minRGB;
-    cv::max(R, G, maxRG);
-    cv::max(maxRG, B, maxRGB);
-    cv::min(R, G, minRG);
-    cv::min(minRG, B, minRGB);
-
-    cv::Mat colorfulness;
-    cv::subtract(maxRGB, minRGB, colorfulness);
-
-    cv::Mat brightness;
-    cv::add(B, G, brightness);
-    cv::add(brightness, R, brightness);
-    cv::divide(brightness, 3.0, brightness);
-
-    cv::Mat isColor, isBright;
-    cv::threshold(colorfulness, isColor, 6, 255, cv::THRESH_BINARY);
-    cv::threshold(brightness, isBright, 120, 255, cv::THRESH_BINARY);
+    cv::Mat pixelColorMask = cv::Mat::zeros(H, W, CV_8UC1);
+    for (int y = 0; y < H; ++y) {
+        const uchar *bRow = ch[0].ptr<uchar>(y);
+        const uchar *gRow = ch[1].ptr<uchar>(y);
+        const uchar *rRow = ch[2].ptr<uchar>(y);
+        uchar *mRow = pixelColorMask.ptr<uchar>(y);
+        for (int x = 0; x < W; ++x) {
+            if (isPixelColorful(bRow[x], gRow[x], rRow[x])) {
+                mRow[x] = 255;
+            }
+        }
+    }
 
     cv::Mat clearMask;
-    cv::bitwise_and(isColor, isBright, clearMask);
-    cv::bitwise_and(clearMask, lineMask, clearMask);
+    cv::bitwise_and(pixelColorMask, lineMask, clearMask);
 
-    // 膨胀一下，让清除连续
+    // 膨胀一点，让清除平滑
     cv::Mat dilateKernel = cv::getStructuringElement(
         cv::MORPH_ELLIPSE, cv::Size(3, 3));
     cv::dilate(clearMask, clearMask, dilateKernel);
 
-    // 只清除像素级彩色的位置，文字保留
     cv::Mat dst = bgr.clone();
     dst.setTo(cv::Scalar(255, 255, 255), clearMask);
 
