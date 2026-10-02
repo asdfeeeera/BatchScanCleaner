@@ -570,7 +570,7 @@ void MainWindow::onOneClickProcess()
         opt.colorSaturationThreshold = 40;
 
         const process::EnhanceResult r =
-            process::Enhance::textEnhance(m_currentMat, opt);
+            process::Enhance::enhanceText(m_currentMat, opt);
         if (r.ok) {
             m_currentMat = r.image;
         }
