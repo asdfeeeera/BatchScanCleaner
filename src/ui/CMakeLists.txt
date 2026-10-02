@@ -1,4 +1,4 @@
-add_library(ui STATIC
+﻿add_library(ui STATIC
     main_window.h
     main_window.cpp
 )
@@ -9,6 +9,7 @@ target_include_directories(ui PUBLIC
     ${CMAKE_SOURCE_DIR}/src/core
     ${CMAKE_SOURCE_DIR}/src/process
     ${CMAKE_SOURCE_DIR}/src/protect
+    ${CMAKE_SOURCE_DIR}/src/analyze
 )
 
 target_link_libraries(ui PUBLIC
@@ -19,4 +20,5 @@ target_link_libraries(ui PUBLIC
     core
     process
     protect
+    analyze
 )

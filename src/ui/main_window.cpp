@@ -39,6 +39,8 @@
 #include "errpage.h"
 
 #include "../protect/stamp_protect.h"
+#include "../analyze/pending_center.h"
+#include "../analyze/pending_dialog.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -80,7 +82,10 @@ void MainWindow::setupMenuBar()
     viewMenu->addAction(QString::fromUtf8("显示/隐藏参数区"));
 
     QMenu *toolMenu = menuBar()->addMenu(QString::fromUtf8("工具"));
-    toolMenu->addAction(QString::fromUtf8("待确认中心"));
+
+    QAction *pendingAct = toolMenu->addAction(QString::fromUtf8("待确认中心"));
+    connect(pendingAct, &QAction::triggered, this, &MainWindow::onPendingCenter);
+
     toolMenu->addAction(QString::fromUtf8("任务队列"));
     toolMenu->addAction(QString::fromUtf8("日志与报告"));
     toolMenu->addAction(QString::fromUtf8("备份管理"));
@@ -134,6 +139,9 @@ void MainWindow::setupToolBar()
 
     QAction *stampTestAction = toolBar->addAction(QString::fromUtf8("印章保护测试"));
     connect(stampTestAction, &QAction::triggered, this, &MainWindow::onStampProtectTest);
+
+    QAction *pendingAction = toolBar->addAction(QString::fromUtf8("待确认中心"));
+    connect(pendingAction, &QAction::triggered, this, &MainWindow::onPendingCenter);
 
     toolBar->addSeparator();
     toolBar->addAction(QString::fromUtf8("输出设置"));
@@ -443,7 +451,6 @@ void MainWindow::onDenoise()
     options.strengthLevel = 1;
     options.useInpaint    = true;
 
-    // ★ 独立调用污点去除时，也检测一次印章签名保护
     {
         protect::StampProtectOptions protectOpt;
         const protect::StampProtectResult pr =
@@ -563,7 +570,6 @@ void MainWindow::onOneClickProcess()
         }
     }
 
-    // ★ 检测签名印章保护掩膜
     statusBar()->showMessage(QString::fromUtf8("一键处理：正在检测签名印章保护区..."));
     cv::Mat protectMask;
     {
@@ -586,7 +592,7 @@ void MainWindow::onOneClickProcess()
         opt.protectRadius = 2;
         opt.strengthLevel = 1;
         opt.useInpaint    = true;
-        opt.protectMask   = protectMask;   // ★ 传入保护掩膜
+        opt.protectMask   = protectMask;
 
         const process::DenoiseResult r =
             process::Denoise::removeSpots(m_currentMat, opt);
@@ -614,11 +620,22 @@ void MainWindow::onOneClickProcess()
 
     showMatOnPreview(m_currentMat);
 
-    statusBar()->showMessage(
-        QString::fromUtf8("一键处理完成：扶正 %1 度，黑边 %2 像素，污点 %3 处。请点\"另存为\"保存。")
-            .arg(deskewAngle, 0, 'f', 2)
-            .arg(blackEdgeTotal)
-            .arg(spotCount));
+    const int pendingCount = analyze::PendingCenter::instance().pendingCount();
+
+    QString msg = QString::fromUtf8(
+        "一键处理完成：扶正 %1 度，黑边 %2 像素，污点 %3 处。")
+        .arg(deskewAngle, 0, 'f', 2)
+        .arg(blackEdgeTotal)
+        .arg(spotCount);
+
+    if (pendingCount > 0) {
+        msg += QString::fromUtf8(" 待确认 %1 项，请打开待确认中心处理。")
+                   .arg(pendingCount);
+    } else {
+        msg += QString::fromUtf8(" 请点另存为保存。");
+    }
+
+    statusBar()->showMessage(msg);
 }
 
 void MainWindow::onDetectColorLine()
@@ -657,7 +674,7 @@ void MainWindow::onDetectColorLine()
             QString::fromUtf8("彩色细线检测：未检测到彩色故障细线"));
     } else {
         statusBar()->showMessage(
-            QString::fromUtf8("彩色细线检测完成：检测到 %1 条。点\"清除彩色细线\"可清除。")
+            QString::fromUtf8("彩色细线检测完成：检测到 %1 条。点清除彩色细线可清除。")
                 .arg(static_cast<int>(result.items.size())));
     }
 }
@@ -666,7 +683,7 @@ void MainWindow::onClearColorLine()
 {
     if (m_colorLineSource.empty()) {
         QMessageBox::information(this, QString::fromUtf8("提示"),
-                                 QString::fromUtf8("请先点\"检测彩色细线\"。"));
+                                 QString::fromUtf8("请先点检测彩色细线。"));
         return;
     }
 
@@ -706,7 +723,7 @@ void MainWindow::onProcessErrPage()
 
     if (m_currentImagePath.isEmpty()) {
         QMessageBox::information(this, QString::fromUtf8("提示"),
-                                 QString::fromUtf8("请通过\"打开图片\"或双击列表打开，才能解析文件名页码。"));
+                                 QString::fromUtf8("请通过打开图片或双击列表打开，才能解析文件名页码。"));
         return;
     }
 
@@ -731,6 +748,9 @@ void MainWindow::onProcessErrPage()
     options.fillWhite              = true;
     options.tesseractPath          = QString();
 
+    // 备份原图（用于抠缩略图）
+    const cv::Mat srcForThumb = m_currentMat.clone();
+
     const process::ErrPageResult result =
         process::ErrPage::process(m_currentMat, m_currentImagePath, options);
 
@@ -744,6 +764,46 @@ void MainWindow::onProcessErrPage()
     m_currentMat = result.image;
     showMatOnPreview(result.markedImage);
 
+    // ★ 收集待确认项：OCR 失败 或 识别值 != 正确页码
+    const QFileInfo fi(m_currentImagePath);
+    int addedCount = 0;
+    for (const auto &it : result.items) {
+        const bool ocrFailed = (it.recognizedNumber < 0);
+        const bool matchesCorrect =
+            (result.correctPage >= 0 &&
+             it.recognizedNumber == result.correctPage);
+
+        if (matchesCorrect) continue;
+        if (!ocrFailed && !it.isCrossed) continue;   // 非划线且能识别，跳过
+        if (!ocrFailed && it.recognizedNumber == result.correctPage) continue;
+
+        analyze::PendingItem p;
+        p.type = analyze::PendingType::WrongPageNumber;
+        p.suggestedAction = it.isCrossed
+                                ? analyze::PendingAction::Remove
+                                : analyze::PendingAction::ManualReview;
+        p.sourceImagePath = m_currentImagePath;
+        p.fileName = fi.fileName();
+        p.boundingBox = it.boundingBox;
+        p.confidence = it.confidence;
+        p.reason = it.isCrossed
+                       ? QString::fromUtf8("检测到划线数字，与正确页码不符")
+                       : QString::fromUtf8("OCR 识别失败或与正确页码不符");
+        p.detail = QString::fromUtf8("识别结果：%1，正确页码：%2")
+                       .arg(it.recognizedNumber)
+                       .arg(result.correctPage);
+
+        // 抠缩略图
+        cv::Rect safe = it.boundingBox &
+                        cv::Rect(0, 0, srcForThumb.cols, srcForThumb.rows);
+        if (safe.width > 0 && safe.height > 0) {
+            p.thumbnail = srcForThumb(safe).clone();
+        }
+
+        analyze::PendingCenter::instance().addItem(p);
+        ++addedCount;
+    }
+
     QString pageInfo;
     if (result.correctPage >= 0) {
         pageInfo = QString::fromUtf8("正确页码 %1").arg(result.correctPage);
@@ -751,22 +811,24 @@ void MainWindow::onProcessErrPage()
         pageInfo = QString::fromUtf8("文件名无页码");
     }
 
+    QString msg;
     if (result.skipped) {
-        statusBar()->showMessage(
-            QString::fromUtf8("错误页码处理：角落未检测到数字。%1").arg(pageInfo));
+        msg = QString::fromUtf8("错误页码处理：角落未检测到数字。%1")
+                  .arg(pageInfo);
     } else {
-        statusBar()->showMessage(
-            QString::fromUtf8("错误页码处理完成：%1，检测到 %2 个数字块，自动删除划线 %3 个，待确认 %4 个")
-                .arg(pageInfo)
-                .arg(static_cast<int>(result.items.size()))
-                .arg(result.crossedRemoved)
-                .arg(result.pendingCount));
+        msg = QString::fromUtf8("错误页码处理完成：%1，检测到 %2 个数字块，自动删除划线 %3 个，待确认 %4 个")
+                  .arg(pageInfo)
+                  .arg(static_cast<int>(result.items.size()))
+                  .arg(result.crossedRemoved)
+                  .arg(result.pendingCount);
     }
+    if (addedCount > 0) {
+        msg += QString::fromUtf8("（已加入待确认中心 %1 项）").arg(addedCount);
+    }
+
+    statusBar()->showMessage(msg);
 }
 
-// ============================================================
-// Stamp + Signature Protection Test (temporary)
-// ============================================================
 void MainWindow::onStampProtectTest()
 {
     if (!m_hasImage || m_currentMat.empty()) {
@@ -831,6 +893,15 @@ void MainWindow::onStampProtectTest()
             .arg(result.protectedPixels)
             .arg(ratio, 0, 'f', 2)
             .arg(hwRatio, 0, 'f', 2));
+}
+
+// ============================================================
+// Pending Center
+// ============================================================
+void MainWindow::onPendingCenter()
+{
+    analyze::PendingDialog dlg(this);
+    dlg.exec();
 }
 
 void MainWindow::showMatOnPreview(const cv::Mat &mat)
