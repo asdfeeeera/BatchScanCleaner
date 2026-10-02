@@ -71,7 +71,6 @@ std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
         if (aspect < 0.15) continue;
         if (aspect > 4.0) continue;
 
-        // 填充率过滤：排除实心块（箭头、印章、粗黑块等）
         const double fillRatio = static_cast<double>(area) /
                                   std::max(1, w * h);
         if (fillRatio > 0.55) continue;
@@ -153,8 +152,7 @@ bool isPageMatch(int recognized, int correctPage)
 }
 
 // ============================================================
-// 用 mask 涂白横线区域
-// ★ 膨胀核改为 3x1：只水平膨胀，垂直不扩，避免涂掉 6 的上下连接处
+// 用 mask 涂白横线区域（膨胀核 3x1）
 // ============================================================
 cv::Mat removeHorizontalLinesByMask(const cv::Mat &gray)
 {
@@ -168,7 +166,6 @@ cv::Mat removeHorizontalLinesByMask(const cv::Mat &gray)
     cv::Mat hLines;
     cv::morphologyEx(binary, hLines, cv::MORPH_OPEN, hKernel);
 
-    // ★ 只水平膨胀
     cv::Mat dKernel = cv::getStructuringElement(
         cv::MORPH_RECT, cv::Size(3, 1));
     cv::Mat hLinesDilated;
@@ -461,7 +458,7 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         }
     }
 
-    // 方案 3：分割 + 单字符识别（同时尝试涂白图和原图）
+    // 方案 3：分割 + 单字符识别（双源尝试）
     {
         std::vector<cv::Rect> charBoxes = splitByVerticalProjection(cleanedBinary);
         const int rawCount = static_cast<int>(charBoxes.size());
@@ -497,13 +494,11 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                 int digit = -1;
                 bool ok = false;
 
-                // ★ 先试涂白后的图
                 if (recognizeSingleChar(cbCleaned, tessExe, tessdataDir, digit)) {
                     ok = true;
                     writeDiag(QString::fromUtf8("  字符%1：成功 %2（涂白图）")
                                   .arg(static_cast<int>(i)).arg(digit));
                 }
-                // ★ 再试原始图
                 else if (recognizeSingleChar(cbOrig, tessExe, tessdataDir, digit)) {
                     ok = true;
                     writeDiag(QString::fromUtf8("  字符%1：成功 %2（原图）")
@@ -623,17 +618,17 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
 }
 
 // ============================================================
-// 划线检测
+// 划线检测（★ 3 种核宽度尝试，任一命中即判定有横线）
 // ============================================================
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
                                double crossLineRatio)
 {
     cv::Rect expanded = digitBox;
-    expanded.x -= 8;
-    expanded.y -= 15;
-    expanded.width += 16;
-    expanded.height += 30;
+    expanded.x -= 15;
+    expanded.y -= 20;
+    expanded.width += 30;
+    expanded.height += 40;
     expanded &= cv::Rect(0, 0, gray.cols, gray.rows);
 
     if (expanded.width <= 0 || expanded.height <= 0) return false;
@@ -643,29 +638,33 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     cv::threshold(roi, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    const int kernelWidth = std::max(15, static_cast<int>(digitBox.width * 0.7));
-    cv::Mat hKernel = cv::getStructuringElement(
-        cv::MORPH_RECT, cv::Size(kernelWidth, 1));
+    // 3 种核宽度：宽、中、窄
+    const int baseW = std::max(15, digitBox.width / 2);
+    const int ws[3] = { baseW,
+                        std::max(15, digitBox.width / 3),
+                        20 };
 
-    cv::Mat hLines;
-    cv::morphologyEx(binary, hLines, cv::MORPH_OPEN, hKernel);
+    for (int wi = 0; wi < 3; ++wi) {
+        const int kw = ws[wi];
+        cv::Mat hKernel = cv::getStructuringElement(
+            cv::MORPH_RECT, cv::Size(kw, 1));
+        cv::Mat hLines;
+        cv::morphologyEx(binary, hLines, cv::MORPH_OPEN, hKernel);
 
-    cv::Mat labels, stats, centroids;
-    const int nLabels = cv::connectedComponentsWithStats(
-        hLines, labels, stats, centroids, 8, CV_32S);
+        cv::Mat labels, stats, centroids;
+        const int nLabels = cv::connectedComponentsWithStats(
+            hLines, labels, stats, centroids, 8, CV_32S);
 
-    int longLineCount = 0;
-    for (int i = 1; i < nLabels; ++i) {
-        const int area = stats.at<int>(i, cv::CC_STAT_AREA);
-        const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
-        const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
-
-        if (w >= static_cast<int>(digitBox.width * 0.6) && h <= 6 && area >= 20) {
-            ++longLineCount;
+        for (int i = 1; i < nLabels; ++i) {
+            const int area = stats.at<int>(i, cv::CC_STAT_AREA);
+            const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
+            const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
+            if (w >= kw && h <= 8 && area >= kw / 2) {
+                return true;
+            }
         }
     }
-
-    return longLineCount >= 1;
+    return false;
 }
 
 // ============================================================
@@ -730,6 +729,12 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         white = cv::Scalar(255, 255, 255);
     }
 
+    // 正确页码的位数
+    int correctDigits = 0;
+    if (result.correctPage > 0) {
+        correctDigits = QString::number(result.correctPage).length();
+    }
+
     for (auto &item : allItems) {
         const bool ocrFailed = (item.recognizedNumber < 0);
         const bool matchesCorrect = isPageMatch(item.recognizedNumber,
@@ -741,12 +746,25 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             continue;
         }
 
-        if (item.isCrossed) {
+        // ★ 判断是否需要清除
+        bool shouldRemove = item.isCrossed;
+
+        // ★ 备用规则：数字位数和正确页码位数接近 → 视为错误页码
+        if (!shouldRemove) {
+            const int digits = QString::number(item.recognizedNumber).length();
+            if (digits >= 2 && digits <= 4 &&
+                (correctDigits == 0 ||
+                 std::abs(digits - correctDigits) <= 1)) {
+                shouldRemove = true;
+            }
+        }
+
+        if (shouldRemove) {
             cv::Rect r = item.boundingBox;
-            r.x -= 3;
-            r.y -= 3;
-            r.width += 6;
-            r.height += 6;
+            r.x -= 8;
+            r.y -= 8;
+            r.width += 16;
+            r.height += 16;
             r &= cv::Rect(0, 0, W, H);
             cv::rectangle(dst, r, white, cv::FILLED);
             ++result.crossedRemoved;
