@@ -36,7 +36,6 @@ void Denoise::buildProtectMask(const cv::Mat &gray,
                                 cv::Mat &protectMask,
                                 int protectRadius)
 {
-    // 二值化
     cv::Mat binary;
     cv::threshold(gray, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
@@ -47,9 +46,8 @@ void Denoise::buildProtectMask(const cv::Mat &gray,
 
     protectMask = cv::Mat::zeros(gray.rows, gray.cols, CV_8UC1);
 
-    // ★ 核心改动：保护所有面积 >= 15 的暗块
-    //    文字、表格线、印章、签名 面积都远超 15
-    const int protectArea = 15;
+    // 保护所有面积 >= 10 的暗块（文字、线条、印章、签名）
+    const int protectArea = 10;
     for (int i = 1; i < nLabels; ++i) {
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
         if (area >= protectArea) {
@@ -61,7 +59,6 @@ void Denoise::buildProtectMask(const cv::Mat &gray,
         }
     }
 
-    // 膨胀保护掩膜
     if (protectRadius > 0) {
         const int ksize = protectRadius * 2 + 1;
         cv::Mat kernel = cv::getStructuringElement(
@@ -70,14 +67,13 @@ void Denoise::buildProtectMask(const cv::Mat &gray,
     }
 }
 
-DenoiseResult Denoise::removeSpots(const cv::Mat &src,
-                                    const DenoiseOptions &options)
-{
-    DenoiseResult result;
-    if (src.empty()) return result;
+namespace {
 
-    const int W = src.cols;
-    const int H = src.rows;
+// 填底色：把浅灰、浅黄纸张变成纯白
+// 用大核形态学估计背景，再拉伸对比
+cv::Mat whitenBackground(const cv::Mat &src, double paperGray)
+{
+    if (src.empty()) return src.clone();
 
     cv::Mat gray;
     if (src.channels() == 3) {
@@ -88,23 +84,91 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         gray = src.clone();
     }
 
+    // 用大核闭运算估计背景（纸张的局部平均灰度）
+    const int bgSize = 41;
+    cv::Mat bgKernel = cv::getStructuringElement(
+        cv::MORPH_RECT, cv::Size(bgSize, bgSize));
+    cv::Mat background;
+    cv::morphologyEx(gray, background, cv::MORPH_CLOSE, bgKernel);
+
+    // 计算每个像素的拉伸系数：255 / background
+    cv::Mat bgFloat;
+    background.convertTo(bgFloat, CV_32F);
+
+    // 保护：背景灰度 < 100 时不处理（避免暗区被拉爆）
+    cv::Mat factor;
+    cv::divide(255.0, bgFloat, factor);
+
+    // 限制拉伸倍数，最大 1.5 倍
+    cv::threshold(factor, factor, 1.5, 1.5, cv::THRESH_TRUNC);
+
+    // 应用到原图（各通道分别乘）
+    cv::Mat srcFloat;
+    src.convertTo(srcFloat, CV_32F);
+
+    std::vector<cv::Mat> channels;
+    cv::split(srcFloat, channels);
+
+    for (auto &ch : channels) {
+        cv::multiply(ch, factor, ch);
+    }
+
+    cv::Mat resultFloat;
+    cv::merge(channels, resultFloat);
+
+    cv::Mat result;
+    resultFloat.convertTo(result, src.depth());
+
+    return result;
+}
+
+} // namespace
+
+DenoiseResult Denoise::removeSpots(const cv::Mat &src,
+                                    const DenoiseOptions &options)
+{
+    DenoiseResult result;
+    if (src.empty()) return result;
+
+    const int W = src.cols;
+    const int H = src.rows;
+
+    // ============ 第 1 步：填底色 ============
+    cv::Mat gray;
+    if (src.channels() == 3) {
+        cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
+    } else if (src.channels() == 4) {
+        cv::cvtColor(src, gray, cv::COLOR_BGRA2GRAY);
+    } else {
+        gray = src.clone();
+    }
+
     const double paperGray = estimatePaperGray(gray);
+    cv::Mat whitened = whitenBackground(src, paperGray);
+
+    // ============ 第 2 步：去黑点 + 表格内杂质 ============
+    cv::Mat whitenedGray;
+    if (whitened.channels() == 3) {
+        cv::cvtColor(whitened, whitenedGray, cv::COLOR_BGR2GRAY);
+    } else if (whitened.channels() == 4) {
+        cv::cvtColor(whitened, whitenedGray, cv::COLOR_BGRA2GRAY);
+    } else {
+        whitenedGray = whitened.clone();
+    }
+
     const double darkThreshold = paperGray * options.darkRatio;
 
-    // 二值化
     cv::Mat binary;
-    cv::threshold(gray, binary, darkThreshold, 255, cv::THRESH_BINARY_INV);
+    cv::threshold(whitenedGray, binary, darkThreshold, 255, cv::THRESH_BINARY_INV);
 
-    // 保护掩膜（先把文字等大块保护起来）
+    // 保护掩膜
     cv::Mat protectMask;
-    buildProtectMask(gray, protectMask, options.protectRadius);
+    buildProtectMask(whitenedGray, protectMask, options.protectRadius);
 
-    // 连通域分析
     cv::Mat labels, stats, centroids;
     int nLabels = cv::connectedComponentsWithStats(
         binary, labels, stats, centroids, 8, CV_32S);
 
-    // 强度对应的最大污点面积
     int maxSpotArea = 30;
     if (options.strengthLevel == 0) maxSpotArea = 15;
     else if (options.strengthLevel == 1) maxSpotArea = 30;
@@ -121,52 +185,44 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         const int x = stats.at<int>(i, cv::CC_STAT_LEFT);
         const int y = stats.at<int>(i, cv::CC_STAT_TOP);
 
-        // 面积过滤：太大当文字，太小当噪点忽略
         if (area < 2) continue;
         if (area > maxSpotArea) continue;
 
-        // 长宽比过滤：太细长当线条
-        const double aspect = static_cast<double>(std::max(w, h)) / std::max(1, std::min(w, h));
+        const double aspect = static_cast<double>(std::max(w, h))
+                              / std::max(1, std::min(w, h));
         if (aspect > 5.0) continue;
 
-        // ★ 核心改动：如果在保护掩膜内，跳过
         cv::Rect r(x, y, w, h);
         r &= cv::Rect(0, 0, W, H);
-        cv::Mat roi = protectMask(r);
-        if (cv::countNonZero(roi) > 0) {
-            continue;
-        }
 
-        // 是污点
+        // 保护掩膜内的跳过
+        cv::Mat roi = protectMask(r);
+        if (cv::countNonZero(roi) > 0) continue;
+
         cv::rectangle(spotMask, r, cv::Scalar(255), cv::FILLED);
         ++spotCount;
         totalPixels += area;
     }
 
+    cv::Mat finalImage;
     if (spotCount == 0) {
-        result.image = src.clone();
-        result.ok = true;
-        result.skipped = true;
-        return result;
-    }
-
-    // 轻微膨胀污点掩膜
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
-    cv::dilate(spotMask, spotMask, kernel);
-
-    // ★ 核心改动：膨胀后再减去保护区域，避免 inpaint 破坏文字
-    cv::bitwise_and(spotMask, ~protectMask, spotMask);
-
-    // 修补
-    cv::Mat dst;
-    if (options.useInpaint) {
-        cv::inpaint(src, spotMask, dst, 3, cv::INPAINT_TELEA);
+        finalImage = whitened;
     } else {
-        cv::medianBlur(src, dst, 3);
-        src.copyTo(dst, ~spotMask);
+        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+        cv::dilate(spotMask, spotMask, kernel);
+        cv::bitwise_and(spotMask, ~protectMask, spotMask);
+
+        cv::Mat dst;
+        if (options.useInpaint) {
+            cv::inpaint(whitened, spotMask, dst, 3, cv::INPAINT_TELEA);
+        } else {
+            cv::medianBlur(whitened, dst, 3);
+            whitened.copyTo(dst, ~spotMask);
+        }
+        finalImage = dst;
     }
 
-    result.image = dst;
+    result.image = finalImage;
     result.spotCount = spotCount;
     result.cleanedPixels = totalPixels;
     result.ok = true;
