@@ -33,21 +33,34 @@ double Enhance::estimatePaperGray(const cv::Mat &gray)
 
 double Enhance::estimateDarkGray(const cv::Mat &gray)
 {
+    // 先估算纸张灰度
+    const double paperGray = estimatePaperGray(gray);
+
+    // 分界线：纸张 × 0.75
+    const double contentThreshold = paperGray * 0.75;
+
+    // 统计所有低于阈值的像素
+    long sum = 0;
+    int count = 0;
     const int W = gray.cols;
     const int H = gray.rows;
-
-    std::vector<uchar> pixels;
-    pixels.reserve(static_cast<size_t>(W) * H / 4);
     for (int y = 0; y < H; y += 2) {
         const uchar *row = gray.ptr<uchar>(y);
         for (int x = 0; x < W; x += 2) {
-            pixels.push_back(row[x]);
+            const uchar v = row[x];
+            if (v < contentThreshold) {
+                sum += v;
+                ++count;
+            }
         }
     }
-    if (pixels.empty()) return 0.0;
-    const size_t idx = pixels.size() * 5 / 100;
-    std::nth_element(pixels.begin(), pixels.begin() + idx, pixels.end());
-    return static_cast<double>(pixels[idx]);
+
+    // 像素太少：说明整张图很淡，用虚拟暗部灰度
+    if (count < 100) {
+        return paperGray * 0.5;
+    }
+
+    return static_cast<double>(sum) / count;
 }
 
 void Enhance::buildColorProtectMask(const cv::Mat &src,
@@ -55,7 +68,6 @@ void Enhance::buildColorProtectMask(const cv::Mat &src,
                                      int saturationThreshold)
 {
     colorMask = cv::Mat::zeros(src.rows, src.cols, CV_8UC1);
-
     if (src.channels() < 3) return;
 
     cv::Mat hsv;
@@ -74,7 +86,6 @@ EnhanceResult Enhance::enhanceText(const cv::Mat &src,
     EnhanceResult result;
     if (src.empty()) return result;
 
-    // 1. 转灰度
     cv::Mat gray;
     if (src.channels() == 3) {
         cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
@@ -90,7 +101,7 @@ EnhanceResult Enhance::enhanceText(const cv::Mat &src,
     result.paperGray = paperGray;
     result.darkGray = darkGray;
 
-    // 纸张本身太暗，跳过
+    // 纸张太暗，跳过
     if (paperGray < 150.0) {
         result.image = src.clone();
         result.ok = true;
@@ -98,32 +109,39 @@ EnhanceResult Enhance::enhanceText(const cv::Mat &src,
         return result;
     }
 
-    // 2. 强度对应 gamma
+    // 强度 → gamma
     double gamma = 1.0;
-    if (options.strengthLevel == 0) gamma = 1.2;
-    else if (options.strengthLevel == 1) gamma = 1.5;
+    if (options.strengthLevel == 0) gamma = 1.3;
+    else if (options.strengthLevel == 1) gamma = 1.6;
     else if (options.strengthLevel == 2) gamma = 2.0;
 
-    // 3. 构建 LUT（映射曲线）
-    uchar lut[256];
-    const double paperTarget = std::min(255.0, paperGray * 1.05);
-    const double darkTarget = static_cast<double>(options.targetDarkGray);
+    // LUT 映射
+    // 关键改动：分界线用 paperGray * 0.75，避免整图被加深
+    const double contentThreshold = paperGray * 0.75;
 
+    uchar lut[256];
     for (int v = 0; v < 256; ++v) {
         if (v <= darkGray) {
-            lut[v] = static_cast<uchar>(darkTarget);
+            // 暗部 → 拉到纯黑
+            lut[v] = 0;
         } else if (v >= paperGray) {
+            // 亮部 → 拉到纯白
             lut[v] = 255;
-        } else {
-            double t = (v - darkGray) / (paperGray - darkGray);
+        } else if (v < contentThreshold) {
+            // 文字候选区 → 强拉伸
+            double t = (v - darkGray) / std::max(1.0, contentThreshold - darkGray);
             t = std::pow(t, gamma);
-            lut[v] = static_cast<uchar>(std::min(255.0, t * 255.0));
+            lut[v] = static_cast<uchar>(std::min(255.0, t * 128.0));
+        } else {
+            // 背景区 → 温和拉伸到白
+            double t = (v - contentThreshold) / std::max(1.0, paperGray - contentThreshold);
+            lut[v] = static_cast<uchar>(std::min(255.0, 128.0 + t * 127.0));
         }
     }
 
     cv::Mat lutMat(1, 256, CV_8UC1, lut);
 
-    // 4. 应用
+    // 应用
     cv::Mat output;
     if (src.channels() == 1) {
         cv::LUT(src, lutMat, output);
@@ -136,7 +154,6 @@ EnhanceResult Enhance::enhanceText(const cv::Mat &src,
             srcBgr = src;
         }
 
-        // 用 Lab 空间，只改 L 通道（亮度），保留色相
         cv::Mat lab;
         cv::cvtColor(srcBgr, lab, cv::COLOR_BGR2Lab);
 
@@ -146,7 +163,6 @@ EnhanceResult Enhance::enhanceText(const cv::Mat &src,
         cv::Mat LEnhanced;
         cv::LUT(labCh[0], lutMat, LEnhanced);
 
-        // 彩色保护：彩色像素保留原始 L
         if (options.protectColor) {
             cv::Mat colorMask;
             buildColorProtectMask(srcBgr, colorMask, options.colorSaturationThreshold);
