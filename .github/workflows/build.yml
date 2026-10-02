@@ -56,21 +56,50 @@ jobs:
         $url = "https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.3.3.20231005.exe"
         $out = "$env:RUNNER_TEMP\tesseract-setup.exe"
         Invoke-WebRequest -Uri $url -OutFile $out
+        Write-Host "Downloaded: $((Get-Item $out).Length) bytes"
         
-        # 静默安装到指定目录
+        # 用 7z 直接提取（Inno Setup 格式可被 7z 解压）
         $installDir = "C:\tesseract-portable"
-        Start-Process -FilePath $out -ArgumentList "/S", "/D=$installDir" -Wait
+        New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+        & 7z x $out "-o$installDir" -y
+        Write-Host "Extract exit code: $LASTEXITCODE"
         
-        # 等待安装完成
-        Start-Sleep -Seconds 5
+        # 列出目录（调试用）
+        Write-Host "Extracted files:"
+        Get-ChildItem $installDir | Select-Object Name, Length | Format-Table
         
-        # 检查关键文件
-        if (-not (Test-Path "$installDir\tesseract.exe")) {
-          Write-Error "tesseract.exe not found at $installDir"
+        # 查找 tesseract.exe（可能在子目录里）
+        $tessExe = Get-ChildItem $installDir -Recurse -Filter "tesseract.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $tessExe) {
+          Write-Error "tesseract.exe not found in $installDir"
           exit 1
         }
         
-        Write-Host "Tesseract installed at $installDir"
+        # 如果 tesseract.exe 在子目录里，把它移到根目录
+        $tessDir = $tessExe.DirectoryName
+        if ($tessDir -ne $installDir) {
+          Write-Host "Moving files from $tessDir to $installDir"
+          Get-ChildItem $tessDir -Recurse | ForEach-Object {
+            $rel = $_.FullName.Substring($tessDir.Length).TrimStart('\')
+            $target = Join-Path $installDir $rel
+            if ($_.PSIsContainer) {
+              New-Item -ItemType Directory -Path $target -Force | Out-Null
+            } else {
+              $targetDir = Split-Path $target -Parent
+              if (-not (Test-Path $targetDir)) {
+                New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+              }
+              Move-Item $_.FullName -Destination $target -Force
+            }
+          }
+        }
+        
+        if (-not (Test-Path "$installDir\tesseract.exe")) {
+          Write-Error "tesseract.exe still not found after move"
+          exit 1
+        }
+        
+        Write-Host "Tesseract ready at $installDir"
 
     - name: Bundle Tesseract
       shell: pwsh
