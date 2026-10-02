@@ -514,7 +514,6 @@ void MainWindow::onOneClickProcess()
 
     statusBar()->showMessage(QString::fromUtf8("一键处理中，请稍候..."));
 
-    // 1. 自动扶正
     statusBar()->showMessage(QString::fromUtf8("一键处理：正在自动扶正..."));
     double deskewAngle = 0.0;
     {
@@ -525,7 +524,6 @@ void MainWindow::onOneClickProcess()
         }
     }
 
-    // 2. 黑边去除
     statusBar()->showMessage(QString::fromUtf8("一键处理：正在去除黑边..."));
     int blackEdgeTotal = 0;
     {
@@ -549,7 +547,6 @@ void MainWindow::onOneClickProcess()
         }
     }
 
-    // 3. 污点去除
     statusBar()->showMessage(QString::fromUtf8("一键处理：正在去除污点..."));
     int spotCount = 0;
     {
@@ -570,7 +567,6 @@ void MainWindow::onOneClickProcess()
         }
     }
 
-    // 4. 文字加深
     statusBar()->showMessage(QString::fromUtf8("一键处理：正在加深文字..."));
     {
         process::EnhanceOptions opt;
@@ -698,6 +694,7 @@ void MainWindow::onProcessErrPage()
     options.maxDigitWidth     = 120;
     options.crossLineRatio    = 0.6;
     options.fillWhite         = true;
+    options.tesseractPath     = QString();   // 空 = 自动查找 exe 同目录
 
     const process::ErrPageResult result =
         process::ErrPage::process(m_currentMat, m_currentImagePath, options);

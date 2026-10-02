@@ -3,6 +3,12 @@
 #include <opencv2/imgproc.hpp>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QDir>
+#include <QFile>
+#include <QProcess>
+#include <QCoreApplication>
+#include <QTemporaryDir>
+#include <QStandardPaths>
 #include <algorithm>
 #include <cmath>
 
@@ -13,7 +19,6 @@ int ErrPage::parseCorrectPage(const QString &sourcePath)
     const QFileInfo info(sourcePath);
     const QString baseName = info.completeBaseName();
 
-    // 只提取纯数字文件名
     static const QRegularExpression re(QStringLiteral("^\\d+$"));
     if (re.match(baseName).hasMatch()) {
         bool ok = false;
@@ -27,13 +32,11 @@ int ErrPage::parseCorrectPage(const QString &sourcePath)
 
 namespace {
 
-// 提取数字块（用形态学膨胀让数字笔画连通）
 std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
                                       const ErrPageOptions &options)
 {
     std::vector<cv::Rect> result;
 
-    // 水平方向膨胀，让同一数字的笔画连通
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 3));
     cv::Mat dilated;
     cv::dilate(binary, dilated, kernel);
@@ -51,9 +54,8 @@ std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
         if (w < options.minDigitWidth || w > options.maxDigitWidth) continue;
         if (area < 30) continue;
 
-        // 长宽比过滤：数字通常是窄的
         const double aspect = static_cast<double>(h) / std::max(1, w);
-        if (aspect < 0.5) continue;   // 太扁，可能是横线
+        if (aspect < 0.5) continue;
 
         cv::Rect r(stats.at<int>(i, cv::CC_STAT_LEFT),
                    stats.at<int>(i, cv::CC_STAT_TOP),
@@ -63,7 +65,6 @@ std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
     return result;
 }
 
-// 把距离近的数字块合并成一个页码（例如 "278" 由 3 个数字组成）
 std::vector<cv::Rect> mergeAdjacentDigits(std::vector<cv::Rect> boxes)
 {
     if (boxes.size() < 2) return boxes;
@@ -80,7 +81,6 @@ std::vector<cv::Rect> mergeAdjacentDigits(std::vector<cv::Rect> boxes)
     for (size_t i = 1; i < boxes.size(); ++i) {
         const cv::Rect &next = boxes[i];
 
-        // 同一行 + 水平距离近 → 合并
         const bool sameRow = std::abs(current.y - next.y) < current.height / 2;
         const int gap = next.x - (current.x + current.width);
         const bool closeGap = gap >= 0 && gap < current.height * 2;
@@ -102,33 +102,136 @@ std::vector<cv::Rect> mergeAdjacentDigits(std::vector<cv::Rect> boxes)
     return merged;
 }
 
+// 找到 tesseract.exe：优先用 options.tesseractPath，
+// 否则查找 exe 同目录下的 tesseract\tesseract.exe
+QString locateTesseract(const QString &hint)
+{
+    if (!hint.isEmpty() && QFile::exists(hint)) {
+        return hint;
+    }
+
+    const QString appDir = QCoreApplication::applicationDirPath();
+
+    // 候选 1：<appDir>/tesseract/tesseract.exe
+    const QString candidate1 = appDir + QStringLiteral("/tesseract/tesseract.exe");
+    if (QFile::exists(candidate1)) return candidate1;
+
+    // 候选 2：<appDir>/tesseract.exe
+    const QString candidate2 = appDir + QStringLiteral("/tesseract.exe");
+    if (QFile::exists(candidate2)) return candidate2;
+
+    // 候选 3：系统 PATH
+    const QString inPath = QStandardPaths::findExecutable(QStringLiteral("tesseract"));
+    if (!inPath.isEmpty()) return inPath;
+
+    return QString();
+}
+
 } // namespace
+
+int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
+                                     const QString &tesseractPath,
+                                     QString &outText,
+                                     double &outConfidence)
+{
+    outText.clear();
+    outConfidence = 0.0;
+
+    if (digitImage.empty()) return -1;
+
+    const QString tessExe = locateTesseract(tesseractPath);
+    if (tessExe.isEmpty()) {
+        return -1;
+    }
+
+    // 创建临时目录
+    QTemporaryDir tempDir;
+    if (!tempDir.isValid()) return -1;
+
+    const QString tmpPng = tempDir.path() + QStringLiteral("/digit.png");
+    const QString tmpOutBase = tempDir.path() + QStringLiteral("/out");
+
+    // 保存数字块（放大 3 倍提高 OCR 准确率）
+    cv::Mat enlarged;
+    cv::resize(digitImage, enlarged, cv::Size(), 3.0, 3.0, cv::INTER_CUBIC);
+    if (!cv::imwrite(tmpPng.toStdString(), enlarged)) {
+        return -1;
+    }
+
+    // 设置 tessdata 路径为 exe 同目录
+    const QString tessDir = QFileInfo(tessExe).absolutePath();
+    const QString tessdataDir = tessDir + QStringLiteral("/tessdata");
+
+    QProcess proc;
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("TESSDATA_PREFIX"), tessdataDir);
+    proc.setProcessEnvironment(env);
+    proc.setWorkingDirectory(tessDir);
+
+    QStringList args;
+    args << tmpPng
+         << tmpOutBase
+         << QStringLiteral("-l") << QStringLiteral("eng")
+         << QStringLiteral("--psm") << QStringLiteral("7")  // 单行文本
+         << QStringLiteral("-c")
+         << QStringLiteral("tessedit_char_whitelist=0123456789");
+
+    proc.start(tessExe, args);
+    if (!proc.waitForStarted(5000)) {
+        return -1;
+    }
+    if (!proc.waitForFinished(10000)) {
+        proc.kill();
+        return -1;
+    }
+
+    if (proc.exitCode() != 0) {
+        return -1;
+    }
+
+    // 读取输出文本
+    QFile outFile(tmpOutBase + QStringLiteral(".txt"));
+    if (!outFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return -1;
+    }
+    outText = QString::fromUtf8(outFile.readAll()).trimmed();
+    outFile.close();
+
+    // 只保留数字
+    QString digitsOnly;
+    for (const QChar &c : outText) {
+        if (c.isDigit()) digitsOnly += c;
+    }
+    outText = digitsOnly;
+
+    if (outText.isEmpty()) return -1;
+
+    bool ok = false;
+    const int num = outText.toInt(&ok);
+    if (!ok) return -1;
+
+    outConfidence = 0.9;   // Tesseract 不输出置信度时给个默认值
+    return num;
+}
 
 void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
                                     const cv::Rect &region,
                                     const ErrPageOptions &options,
                                     std::vector<PageNumberItem> &outItems)
 {
-    // 裁剪区域
     cv::Rect r = region & cv::Rect(0, 0, gray.cols, gray.rows);
     if (r.width <= 0 || r.height <= 0) return;
 
     cv::Mat roi = gray(r);
 
-    // 二值化：文字=白（前景），背景=黑
     cv::Mat binary;
     cv::threshold(roi, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    // 找数字块
     std::vector<cv::Rect> digitBoxes = findDigitBoxes(binary, options);
-
-    // 合并相邻数字
     std::vector<cv::Rect> pageBoxes = mergeAdjacentDigits(digitBoxes);
 
-    // 每个页码块判断是否被划线
     for (const auto &box : pageBoxes) {
-        // 转回原图坐标
         const cv::Rect globalBox(box.x + r.x, box.y + r.y,
                                   box.width, box.height);
 
@@ -136,10 +239,25 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
         item.boundingBox = globalBox;
         item.isCrossed = detectCrossLine(gray, globalBox, options.crossLineRatio);
 
-        // 置信度：面积比例大 + 划线特征明显
-        const double areaRatio = static_cast<double>(box.area()) /
-                                 (options.maxDigitWidth * options.maxDigitHeight);
-        item.confidence = std::min(1.0, areaRatio * 3.0);
+        // 提取数字块图像，供 OCR 识别
+        cv::Rect safeBox = globalBox & cv::Rect(0, 0, gray.cols, gray.rows);
+        if (safeBox.width > 0 && safeBox.height > 0) {
+            cv::Mat digitImg = gray(safeBox).clone();
+
+            // 反色 + 二值化，让 Tesseract 更容易识别（白底黑字）
+            cv::Mat digitProc;
+            cv::threshold(digitImg, digitProc, 0, 255,
+                          cv::THRESH_BINARY | cv::THRESH_OTSU);
+
+            QString text;
+            double conf = 0.0;
+            const int num = recognizeWithTesseract(
+                digitProc, options.tesseractPath, text, conf);
+
+            item.recognizedNumber = num;
+            item.recognizedText = text;
+            item.confidence = conf;
+        }
 
         outItems.push_back(item);
     }
@@ -149,7 +267,6 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
                                double crossLineRatio)
 {
-    // 稍微扩大区域，检查数字周围是否有横线穿过
     cv::Rect expanded = digitBox;
     expanded.x -= 5;
     expanded.y -= 5;
@@ -165,7 +282,6 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     cv::threshold(roi, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    // 用纯水平方向的长核进行开运算，只保留长横线
     const int kernelWidth = std::max(15, expanded.width * 2 / 3);
     cv::Mat hKernel = cv::getStructuringElement(
         cv::MORPH_RECT, cv::Size(kernelWidth, 1));
@@ -173,7 +289,6 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     cv::Mat hLines;
     cv::morphologyEx(binary, hLines, cv::MORPH_OPEN, hKernel);
 
-    // 统计每一行的横线像素
     int maxRowCount = 0;
     const int binaryRowMax = expanded.width;
     for (int y = 0; y < hLines.rows; ++y) {
@@ -185,7 +300,6 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
         if (count > maxRowCount) maxRowCount = count;
     }
 
-    // 如果某一行横线像素超过 60%，认为有横线穿过
     const double ratio = static_cast<double>(maxRowCount) / binaryRowMax;
     return ratio >= crossLineRatio;
 }
@@ -228,9 +342,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         detectDigitsInRegion(gray, topRight, options, allItems);
     }
 
-    // 4. 判断每一个页码：
-    //    - 划线 → 自动删除
-    //    - 无划线 → 待确认
+    // 4. 应用规则
     cv::Mat dst = src.clone();
     cv::Scalar white;
     if (dst.channels() == 4) {
@@ -239,9 +351,19 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         white = cv::Scalar(255, 255, 255);
     }
 
-    for (const auto &item : allItems) {
+    for (auto &item : allItems) {
+        const bool matchesCorrectPage =
+            (result.correctPage >= 0 &&
+             item.recognizedNumber == result.correctPage);
+
+        if (matchesCorrectPage) {
+            // 正确页码 → 保留
+            continue;
+        }
+
+        // 非正确页码
         if (item.isCrossed) {
-            // 自动删除（填白）
+            // 有划线 → 自动删除
             cv::Rect r = item.boundingBox;
             r.x -= 3;
             r.y -= 3;
@@ -251,7 +373,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             cv::rectangle(dst, r, white, cv::FILLED);
             ++result.crossedRemoved;
         } else {
-            // 进入待确认
+            // 无划线 → 待确认
             ++result.pendingCount;
         }
     }
@@ -259,13 +381,29 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
     // 5. 标记图
     cv::Mat marked = src.clone();
     for (const auto &item : allItems) {
+        const bool matchesCorrectPage =
+            (result.correctPage >= 0 &&
+             item.recognizedNumber == result.correctPage);
+
         cv::Scalar color;
-        if (item.isCrossed) {
-            color = cv::Scalar(0, 0, 255);   // 红色 = 自动删除
+        if (matchesCorrectPage) {
+            color = cv::Scalar(0, 255, 0);       // 绿 = 正确页码
+        } else if (item.isCrossed) {
+            color = cv::Scalar(0, 0, 255);       // 红 = 自动删除
         } else {
-            color = cv::Scalar(0, 165, 255); // 橙色 = 待确认
+            color = cv::Scalar(0, 165, 255);     // 橙 = 待确认
         }
         cv::rectangle(marked, item.boundingBox, color, 2);
+
+        // 在框下方显示识别结果
+        QString label = QString::fromUtf8("?");
+        if (item.recognizedNumber >= 0) {
+            label = QString::number(item.recognizedNumber);
+        }
+        cv::putText(marked, label.toStdString(),
+                    cv::Point(item.boundingBox.x,
+                              item.boundingBox.y + item.boundingBox.height + 15),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
     }
 
     result.image = dst;

@@ -11,7 +11,9 @@ struct PageNumberItem
 {
     cv::Rect boundingBox;     // 外接矩形
     bool isCrossed = false;   // 是否有划线/打叉
-    double confidence = 0.0;  // 置信度 0-1
+    int recognizedNumber = -1; // OCR 识别出的数字（-1=未识别）
+    QString recognizedText;   // OCR 原始文本
+    double confidence = 0.0;  // OCR 置信度 0-1
 };
 
 struct ErrPageResult
@@ -29,8 +31,8 @@ struct ErrPageResult
 struct ErrPageOptions
 {
     // 页码区域检测范围（占页面的比例）
-    double regionWidthRatio = 0.25;      // 左/右上角宽度占页面
-    double regionHeightRatio = 0.15;     // 高度占页面
+    double regionWidthRatio = 0.25;
+    double regionHeightRatio = 0.15;
 
     // 是否检测左上角
     bool detectTopLeft = true;
@@ -47,29 +49,34 @@ struct ErrPageOptions
 
     // 删除填充色
     bool fillWhite = true;
+
+    // Tesseract 可执行文件路径（默认 exe 同目录下的 tesseract\tesseract.exe）
+    QString tesseractPath;
 };
 
 class ErrPage
 {
 public:
     // 处理错误页码
-    // sourcePath: 原图路径（用于从文件名解析正确页码）
     static ErrPageResult process(const cv::Mat &src,
                                   const QString &sourcePath,
                                   const ErrPageOptions &options = ErrPageOptions());
 
     // 从文件名解析正确页码
-    // "278.jpg" -> 278, "0278.jpg" -> 278, "abc.jpg" -> -1
     static int parseCorrectPage(const QString &sourcePath);
 
+    // 用 Tesseract OCR 识别数字块
+    static int recognizeWithTesseract(const cv::Mat &digitImage,
+                                       const QString &tesseractPath,
+                                       QString &outText,
+                                       double &outConfidence);
+
 private:
-    // 在指定区域检测数字块
     static void detectDigitsInRegion(const cv::Mat &gray,
                                       const cv::Rect &region,
                                       const ErrPageOptions &options,
                                       std::vector<PageNumberItem> &outItems);
 
-    // 判断数字块是否被划线/打叉
     static bool detectCrossLine(const cv::Mat &gray,
                                  const cv::Rect &digitBox,
                                  double crossLineRatio);
