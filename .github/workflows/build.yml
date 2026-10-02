@@ -52,33 +52,23 @@ jobs:
     - name: Download Tesseract portable
       shell: pwsh
       run: |
-        # 下载 UB-Mannheim 的 Tesseract 安装包
         $url = "https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.3.3.20231005.exe"
         $out = "$env:RUNNER_TEMP\tesseract-setup.exe"
         Invoke-WebRequest -Uri $url -OutFile $out
         Write-Host "Downloaded: $((Get-Item $out).Length) bytes"
         
-        # 用 7z 直接提取（Inno Setup 格式可被 7z 解压）
         $installDir = "C:\tesseract-portable"
         New-Item -ItemType Directory -Path $installDir -Force | Out-Null
         & 7z x $out "-o$installDir" -y
-        Write-Host "Extract exit code: $LASTEXITCODE"
         
-        # 列出目录（调试用）
-        Write-Host "Extracted files:"
-        Get-ChildItem $installDir | Select-Object Name, Length | Format-Table
-        
-        # 查找 tesseract.exe（可能在子目录里）
         $tessExe = Get-ChildItem $installDir -Recurse -Filter "tesseract.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $tessExe) {
           Write-Error "tesseract.exe not found in $installDir"
           exit 1
         }
         
-        # 如果 tesseract.exe 在子目录里，把它移到根目录
         $tessDir = $tessExe.DirectoryName
         if ($tessDir -ne $installDir) {
-          Write-Host "Moving files from $tessDir to $installDir"
           Get-ChildItem $tessDir -Recurse | ForEach-Object {
             $rel = $_.FullName.Substring($tessDir.Length).TrimStart('\')
             $target = Join-Path $installDir $rel
@@ -98,7 +88,6 @@ jobs:
           Write-Error "tesseract.exe still not found after move"
           exit 1
         }
-        
         Write-Host "Tesseract ready at $installDir"
 
     - name: Bundle Tesseract
@@ -108,11 +97,9 @@ jobs:
         $dst = "build\bin\Release\tesseract"
         New-Item -ItemType Directory -Path $dst -Force | Out-Null
         
-        # 复制 tesseract.exe 和所有 DLL
         Copy-Item "$src\tesseract.exe" -Destination $dst -Force
         Get-ChildItem "$src\*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination $dst -Force
         
-        # 复制 tessdata（只要 eng）
         New-Item -ItemType Directory -Path "$dst\tessdata" -Force | Out-Null
         if (Test-Path "$src\tessdata\eng.traineddata") {
           Copy-Item "$src\tessdata\eng.traineddata" -Destination "$dst\tessdata\" -Force
@@ -121,13 +108,37 @@ jobs:
           Copy-Item "$src\tessdata\osd.traineddata" -Destination "$dst\tessdata\" -Force
         }
         
-        # 确认 eng.traineddata 存在
         if (-not (Test-Path "$dst\tessdata\eng.traineddata")) {
           Invoke-WebRequest -Uri "https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata" -OutFile "$dst\tessdata\eng.traineddata"
         }
         
         Write-Host "Tesseract bundled:"
         Get-ChildItem $dst | Select-Object Name
+
+    - name: Prepare portable zip
+      shell: pwsh
+      run: |
+        # 收集所有需要打包的文件
+        $bundleDir = "bundle-portable"
+        New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null
+        
+        # 复制 exe
+        Copy-Item "build\bin\Release\BatchScanCleaner.exe" -Destination $bundleDir -Force
+        
+        # 复制 OpenCV DLL
+        Copy-Item "build\bin\Release\opencv_world455.dll" -Destination $bundleDir -Force
+        Copy-Item "build\bin\Release\opencv_videoio_ffmpeg455_64.dll" -Destination $bundleDir -Force -ErrorAction SilentlyContinue
+        
+        # 复制 tesseract 整个目录
+        Copy-Item "build\bin\Release\tesseract" -Destination "$bundleDir\tesseract" -Recurse -Force
+        
+        Write-Host "Bundle contents:"
+        Get-ChildItem $bundleDir | Select-Object Name
+        
+        # 压缩为 zip
+        Compress-Archive -Path "$bundleDir\*" -DestinationPath "BatchScanCleaner-Portable.zip" -Force
+        
+        Write-Host "Zip created: $((Get-Item 'BatchScanCleaner-Portable.zip').Length) bytes"
 
     - name: Upload EXE artifact
       uses: actions/upload-artifact@v4
@@ -136,11 +147,19 @@ jobs:
         path: build/bin/Release/
         compression-level: 0
 
+    - name: Upload Portable zip artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: BatchScanCleaner-Portable
+        path: BatchScanCleaner-Portable.zip
+
     - name: Publish to Release
       if: github.event_name == 'push'
       uses: softprops/action-gh-release@v2
       with:
         tag_name: build-${{ github.run_number }}
         name: Build ${{ github.run_number }}
-        files: build/bin/Release/BatchScanCleaner.exe
+        files: |
+          build/bin/Release/BatchScanCleaner.exe
+          BatchScanCleaner-Portable.zip
         generate_release_notes: false
