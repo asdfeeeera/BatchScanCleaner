@@ -10,153 +10,14 @@ namespace process {
 double BlackEdge::estimatePaperGray(const cv::Mat &gray,
                                      const BlackEdgeOptions &options)
 {
-    const int W = gray.cols;
-    const int H = gray.rows;
-
-    const int marginX = static_cast<int>(W * (1.0 - options.paperSampleRatio) / 2.0);
-    const int marginY = static_cast<int>(H * (1.0 - options.paperSampleRatio) / 2.0);
-
-    const int x0 = std::max(0, marginX);
-    const int y0 = std::max(0, marginY);
-    const int x1 = std::min(W, W - marginX);
-    const int y1 = std::min(H, H - marginY);
-
-    if (x1 <= x0 || y1 <= y0) {
-        cv::Scalar m = cv::mean(gray);
-        return m[0];
-    }
-
-    std::vector<uchar> pixels;
-    pixels.reserve(static_cast<size_t>(x1 - x0) * (y1 - y0) / 4);
-
-    for (int y = y0; y < y1; y += 2) {
-        const uchar *row = gray.ptr<uchar>(y);
-        for (int x = x0; x < x1; x += 2) {
-            pixels.push_back(row[x]);
-        }
-    }
-
-    if (pixels.empty()) {
-        cv::Scalar m = cv::mean(gray);
-        return m[0];
-    }
-
-    const size_t idx = static_cast<size_t>(
-        std::min<double>(pixels.size() - 1,
-                         pixels.size() * options.paperPercentile));
-    std::nth_element(pixels.begin(), pixels.begin() + idx, pixels.end());
-    return static_cast<double>(pixels[idx]);
+    cv::Scalar m = cv::mean(gray);
+    return m[0];
 }
 
-namespace {
-
-int scanDepth(const cv::Mat &gray, int x, int y, int dx, int dy,
-              int maxScan, double darkThreshold, int gapTolerance)
-{
-    const int W = gray.cols;
-    const int H = gray.rows;
-    int lastDark = -1;
-    int gapCount = 0;
-
-    for (int i = 0; i < maxScan; ++i) {
-        const int px = x + dx * i;
-        const int py = y + dy * i;
-        if (px < 0 || px >= W || py < 0 || py >= H) break;
-
-        if (gray.at<uchar>(py, px) < darkThreshold) {
-            lastDark = i;
-            gapCount = 0;
-        } else {
-            ++gapCount;
-            if (gapCount > gapTolerance) break;
-        }
-    }
-
-    return (lastDark >= 0) ? (lastDark + 1) : 0;
-}
-
-int percentileOf(std::vector<int> &values, double p)
-{
-    if (values.empty()) return 0;
-    std::sort(values.begin(), values.end());
-    const size_t idx = static_cast<size_t>(
-        std::min<double>(values.size() - 1, values.size() * p));
-    return values[idx];
-}
-
-} // namespace
-
-int BlackEdge::scanTop(const cv::Mat &gray,
-                       double darkThreshold,
-                       const BlackEdgeOptions &options)
-{
-    const int H = gray.rows;
-    const int W = gray.cols;
-    const int maxScan = static_cast<int>(H * options.maxScanRatio);
-
-    std::vector<int> depths;
-    depths.reserve(W);
-    for (int x = 0; x < W; ++x) {
-        const int d = scanDepth(gray, x, 0, 0, 1, maxScan,
-                                darkThreshold, options.gapTolerance);
-        depths.push_back(d);
-    }
-    return percentileOf(depths, 0.95) + 5;
-}
-
-int BlackEdge::scanBottom(const cv::Mat &gray,
-                          double darkThreshold,
-                          const BlackEdgeOptions &options)
-{
-    const int H = gray.rows;
-    const int W = gray.cols;
-    const int maxScan = static_cast<int>(H * options.maxScanRatio);
-
-    std::vector<int> depths;
-    depths.reserve(W);
-    for (int x = 0; x < W; ++x) {
-        const int d = scanDepth(gray, x, H - 1, 0, -1, maxScan,
-                                darkThreshold, options.gapTolerance);
-        depths.push_back(d);
-    }
-    return percentileOf(depths, 0.95) + 5;
-}
-
-int BlackEdge::scanLeft(const cv::Mat &gray,
-                        double darkThreshold,
-                        const BlackEdgeOptions &options)
-{
-    const int H = gray.rows;
-    const int W = gray.cols;
-    const int maxScan = static_cast<int>(W * options.maxScanRatio);
-
-    std::vector<int> depths;
-    depths.reserve(H);
-    for (int y = 0; y < H; ++y) {
-        const int d = scanDepth(gray, 0, y, 1, 0, maxScan,
-                                darkThreshold, options.gapTolerance);
-        depths.push_back(d);
-    }
-    return percentileOf(depths, 0.95) + 5;
-}
-
-int BlackEdge::scanRight(const cv::Mat &gray,
-                         double darkThreshold,
-                         const BlackEdgeOptions &options)
-{
-    const int H = gray.rows;
-    const int W = gray.cols;
-    const int maxScan = static_cast<int>(W * options.maxScanRatio);
-
-    std::vector<int> depths;
-    depths.reserve(H);
-    for (int y = 0; y < H; ++y) {
-        const int d = scanDepth(gray, W - 1, y, -1, 0, maxScan,
-                                darkThreshold, options.gapTolerance);
-        depths.push_back(d);
-    }
-    return percentileOf(depths, 0.95) + 5;
-}
+int BlackEdge::scanTop(const cv::Mat &, double, const BlackEdgeOptions &) { return 0; }
+int BlackEdge::scanBottom(const cv::Mat &, double, const BlackEdgeOptions &) { return 0; }
+int BlackEdge::scanLeft(const cv::Mat &, double, const BlackEdgeOptions &) { return 0; }
+int BlackEdge::scanRight(const cv::Mat &, double, const BlackEdgeOptions &) { return 0; }
 
 void BlackEdge::smoothMask(cv::Mat &mask, int kernelSize)
 {
@@ -171,14 +32,12 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
                                             const BlackEdgeOptions &options)
 {
     BlackEdgeResult result;
-
-    if (src.empty()) {
-        return result;
-    }
+    if (src.empty()) return result;
 
     const int W = src.cols;
     const int H = src.rows;
 
+    // 1. 转灰度
     cv::Mat gray;
     if (src.channels() == 3) {
         cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
@@ -188,80 +47,138 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
         gray = src.clone();
     }
 
-    const double paperGray = estimatePaperGray(gray, options);
-    result.paperGray = paperGray;
+    // 2. 降采样加速
+    cv::Mat small;
+    double scale = 1.0;
+    const int maxDim = std::max(W, H);
+    if (maxDim > 1500) {
+        scale = 1500.0 / maxDim;
+        cv::resize(gray, small, cv::Size(), scale, scale, cv::INTER_AREA);
+    } else {
+        small = gray;
+    }
 
-    const double darkThreshold = paperGray * options.darkRatio;
-    result.darkThreshold = darkThreshold;
+    // 3. 高斯模糊
+    cv::GaussianBlur(small, small, cv::Size(5, 5), 0);
 
-    const int top    = scanTop(gray, darkThreshold, options);
-    const int bottom = scanBottom(gray, darkThreshold, options);
-    const int left   = scanLeft(gray, darkThreshold, options);
-    const int right  = scanRight(gray, darkThreshold, options);
+    // 4. Otsu 二值化
+    cv::Mat binary;
+    double otsuThresh = cv::threshold(small, binary, 0, 255,
+                                      cv::THRESH_BINARY | cv::THRESH_OTSU);
 
-    result.topPixels = top;
-    result.bottomPixels = bottom;
-    result.leftPixels = left;
-    result.rightPixels = right;
+    // Otsu 阈值过低（整图偏暗），用固定 180 兜底
+    if (otsuThresh < 120.0) {
+        cv::threshold(small, binary, 180, 255, cv::THRESH_BINARY);
+    }
 
-    const int minEdge = 5;
-    if (top <= minEdge && bottom <= minEdge &&
-        left <= minEdge && right <= minEdge) {
+    // 5. 大核闭运算：把文字、表格并入纸张
+    //    核大小按图片尺寸自适应
+    int closeSize = std::max(31, std::min(small.cols, small.rows) / 40);
+    if (closeSize % 2 == 0) closeSize += 1;
+    cv::Mat closeKernel = cv::getStructuringElement(
+        cv::MORPH_RECT, cv::Size(closeSize, closeSize));
+    cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, closeKernel);
+
+    // 6. 找最大白色连通域
+    cv::Mat labels, stats, centroids;
+    int nLabels = cv::connectedComponentsWithStats(
+        binary, labels, stats, centroids, 8, CV_32S);
+
+    if (nLabels <= 1) {
         result.image = src.clone();
         result.ok = true;
         result.skipped = true;
         return result;
     }
 
-    cv::Mat edgeMask = cv::Mat::zeros(H, W, CV_8UC1);
-
-    if (top > 0) {
-        cv::rectangle(edgeMask, cv::Rect(0, 0, W, top),
-                      cv::Scalar(255), cv::FILLED);
-    }
-    if (bottom > 0) {
-        cv::rectangle(edgeMask, cv::Rect(0, H - bottom, W, bottom),
-                      cv::Scalar(255), cv::FILLED);
-    }
-    if (left > 0) {
-        cv::rectangle(edgeMask, cv::Rect(0, 0, left, H),
-                      cv::Scalar(255), cv::FILLED);
-    }
-    if (right > 0) {
-        cv::rectangle(edgeMask, cv::Rect(W - right, 0, right, H),
-                      cv::Scalar(255), cv::FILLED);
-    }
-
-    if (options.smoothKernelSize > 1) {
-        smoothMask(edgeMask, options.smoothKernelSize);
-    }
-
-    if (options.fillWhite) {
-        cv::Mat dst = src.clone();
-        cv::Scalar white;
-        if (dst.channels() == 4) {
-            white = cv::Scalar(255, 255, 255, 255);
-        } else {
-            white = cv::Scalar(255, 255, 255);
+    int maxLabel = -1;
+    int maxArea = 0;
+    for (int i = 1; i < nLabels; ++i) {
+        const int a = stats.at<int>(i, cv::CC_STAT_AREA);
+        if (a > maxArea) {
+            maxArea = a;
+            maxLabel = i;
         }
-        dst.setTo(white, edgeMask);
-        result.image = dst;
-    } else {
-        int x0 = (left > 0) ? left : 0;
-        int y0 = (top > 0) ? top : 0;
-        int x1 = W - ((right > 0) ? right : 0);
-        int y1 = H - ((bottom > 0) ? bottom : 0);
-
-        int w = x1 - x0;
-        int h = y1 - y0;
-        if (w < 1) w = 1;
-        if (h < 1) h = 1;
-
-        cv::Rect roi(x0, y0, w, h);
-        roi &= cv::Rect(0, 0, W, H);
-        result.image = src(roi).clone();
     }
 
+    if (maxLabel < 0) {
+        result.image = src.clone();
+        result.ok = true;
+        result.skipped = true;
+        return result;
+    }
+
+    // 7. 取外接矩形
+    int bx = stats.at<int>(maxLabel, cv::CC_STAT_LEFT);
+    int by = stats.at<int>(maxLabel, cv::CC_STAT_TOP);
+    int bw = stats.at<int>(maxLabel, cv::CC_STAT_WIDTH);
+    int bh = stats.at<int>(maxLabel, cv::CC_STAT_HEIGHT);
+
+    // 8. 还原坐标
+    if (scale != 1.0) {
+        bx = static_cast<int>(bx / scale);
+        by = static_cast<int>(by / scale);
+        bw = static_cast<int>(bw / scale);
+        bh = static_cast<int>(bh / scale);
+    }
+
+    // 9. 检查：矩形几乎等于整图 → 认为无黑边
+    const int marginX = static_cast<int>(W * 0.005);
+    const int marginY = static_cast<int>(H * 0.005);
+    const bool touchesLeft = bx <= marginX;
+    const bool touchesTop = by <= marginY;
+    const bool touchesRight = (bx + bw) >= (W - marginX);
+    const bool touchesBottom = (by + bh) >= (H - marginY);
+
+    if (touchesLeft && touchesTop && touchesRight && touchesBottom) {
+        result.image = src.clone();
+        result.ok = true;
+        result.skipped = true;
+        return result;
+    }
+
+    // 10. 掩膜：矩形内为白（保留），矩形外为黑（填白）
+    cv::Mat mask = cv::Mat::zeros(H, W, CV_8UC1);
+    cv::Rect paperRect(bx, by, bw, bh);
+    paperRect &= cv::Rect(0, 0, W, H);
+    cv::rectangle(mask, paperRect, cv::Scalar(255), cv::FILLED);
+
+    // 11. 掩膜外扩展一点，避免切割纸张边缘
+    if (options.expandPixels > 0) {
+        const int ksize = options.expandPixels * 2 + 1;
+        cv::Mat expandKernel = cv::getStructuringElement(
+            cv::MORPH_ELLIPSE, cv::Size(ksize, ksize));
+        cv::dilate(mask, mask, expandKernel);
+    }
+
+    // 12. 计算填白区域
+    cv::Mat invMask;
+    cv::bitwise_not(mask, invMask);
+    const int nonZeroCount = cv::countNonZero(invMask);
+
+    if (nonZeroCount < static_cast<int>(static_cast<double>(W) * H * 0.001)) {
+        result.image = src.clone();
+        result.ok = true;
+        result.skipped = true;
+        return result;
+    }
+
+    // 13. 填白
+    cv::Mat dst = src.clone();
+    cv::Scalar white;
+    if (dst.channels() == 4) {
+        white = cv::Scalar(255, 255, 255, 255);
+    } else {
+        white = cv::Scalar(255, 255, 255);
+    }
+    dst.setTo(white, invMask);
+
+    result.image = dst;
+    result.filledPixels = nonZeroCount;
+    result.topPixels = by;
+    result.bottomPixels = H - (by + bh);
+    result.leftPixels = bx;
+    result.rightPixels = W - (bx + bw);
     result.ok = true;
     return result;
 }
