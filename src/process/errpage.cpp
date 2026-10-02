@@ -1,5 +1,4 @@
-﻿#include <QImage>
-#include "errpage.h"
+﻿#include "errpage.h"
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -8,6 +7,7 @@
 #include <QDir>
 #include <QFile>
 #include <QTextStream>
+#include <QImage>
 #include <QProcess>
 #include <QCoreApplication>
 #include <QTemporaryDir>
@@ -149,10 +149,39 @@ bool isPageMatch(int recognized, int correctPage)
     return recognized == correctPage;
 }
 
+// ★ 新增：去掉数字块内的长横线，只保留数字
+// 输入：digitImage（灰度图，黑字白底或黑底白字）
+// 输出：处理后的图，横线被去掉
+cv::Mat removeHorizontalLines(const cv::Mat &digitImage)
+{
+    // 二值化：文字/线条为白前景
+    cv::Mat binary;
+    cv::threshold(digitImage, binary, 0, 255,
+                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+
+    // 用长横核开运算提取横线
+    const int kernelW = std::max(15, static_cast<int>(digitImage.cols * 0.7));
+    cv::Mat hKernel = cv::getStructuringElement(
+        cv::MORPH_RECT, cv::Size(kernelW, 1));
+
+    cv::Mat hLines;
+    cv::morphologyEx(binary, hLines, cv::MORPH_OPEN, hKernel);
+
+    // 从二值图中减去横线
+    cv::Mat digitsOnly;
+    cv::subtract(binary, hLines, digitsOnly);
+
+    // 反色回白底黑字（Tesseract 更容易识别）
+    cv::Mat result;
+    cv::bitwise_not(digitsOnly, result);
+
+    return result;
+}
+
 } // namespace
 
 // ============================================================
-// Tesseract OCR 识别（含诊断，写入桌面 ocr_debug.txt）
+// Tesseract OCR 识别（含诊断）
 // ============================================================
 int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
@@ -162,7 +191,6 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     outText.clear();
     outConfidence = 0.0;
 
-    // 打开桌面诊断文件
     const QString diagPath = QDir::homePath() +
                              QStringLiteral("/Desktop/ocr_debug.txt");
     QFile diagFile(diagPath);
@@ -192,8 +220,6 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     const QString tessExe = locateTesseract(tesseractPath);
     if (tessExe.isEmpty()) {
         writeDiag(QString::fromUtf8("错误：未找到 tesseract.exe"));
-        writeDiag(QString::fromUtf8("  exe目录：") +
-                  QCoreApplication::applicationDirPath());
         outText = QString::fromUtf8("未找到tesseract");
         diagFile.close();
         return -1;
@@ -211,29 +237,25 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     const QString tmpPng = tempDir.path() + QStringLiteral("/digit.png");
     const QString tmpOutBase = tempDir.path() + QStringLiteral("/out");
 
-    // ★ 用 QImage 保存 PNG，避免 cv::imwrite 在 Windows 上的路径/编码问题
+    // 放大 3 倍
     cv::Mat enlarged;
     cv::resize(digitImage, enlarged, cv::Size(), 3.0, 3.0, cv::INTER_CUBIC);
 
+    // 用 QImage 保存
     QImage qimg(enlarged.data, enlarged.cols, enlarged.rows,
                 static_cast<int>(enlarged.step),
                 (enlarged.channels() == 1) ? QImage::Format_Grayscale8
                                             : QImage::Format_RGB888);
-    QImage copy = qimg.copy();  // 深拷贝，避免 cv::Mat 释放后访问
+    QImage copy = qimg.copy();
     if (!copy.save(tmpPng, "PNG")) {
         writeDiag(QString::fromUtf8("错误：PNG 保存失败（Qt）"));
         outText = QString::fromUtf8("PNG保存失败");
         diagFile.close();
         return -1;
     }
-    writeDiag(QString::fromUtf8("PNG 已保存：") + tmpPng);
 
     const QString tessDir = QFileInfo(tessExe).absolutePath();
     const QString tessdataDir = tessDir + QStringLiteral("/tessdata");
-    writeDiag(QString::fromUtf8("TESSDATA_PREFIX：") + tessdataDir);
-    writeDiag(QString::fromUtf8("tessdata 存在：") +
-              (QFile::exists(tessdataDir + QStringLiteral("/eng.traineddata"))
-                   ? QString::fromUtf8("是") : QString::fromUtf8("否")));
 
     QProcess proc;
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -247,8 +269,6 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
          << QStringLiteral("--psm") << QStringLiteral("7")
          << QStringLiteral("-c")
          << QStringLiteral("tessedit_char_whitelist=0123456789");
-    writeDiag(QString::fromUtf8("命令：\"") + tessExe + QString::fromUtf8("\" ") +
-              args.join(QString::fromUtf8(" ")));
 
     proc.start(tessExe, args);
     if (!proc.waitForStarted(5000)) {
@@ -266,11 +286,8 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     }
 
     const int exitCode = proc.exitCode();
-    const QString stdOut = QString::fromUtf8(proc.readAllStandardOutput());
     const QString stdErr = QString::fromUtf8(proc.readAllStandardError());
     writeDiag(QString::fromUtf8("退出码：%1").arg(exitCode));
-    writeDiag(QString::fromUtf8("stdout：") + stdOut.left(200));
-    writeDiag(QString::fromUtf8("stderr：") + stdErr.left(200));
 
     if (exitCode != 0) {
         outText = QString::fromUtf8("码%1:%2").arg(exitCode).arg(stdErr.left(30));
@@ -296,7 +313,7 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
 
     if (digitsOnly.isEmpty()) {
         writeDiag(QString::fromUtf8("结果：无数字"));
-        outText = QString::fromUtf8("无数字[%1]").arg(rawText.left(20));
+        outText = QString::fromUtf8("无数字");
         diagFile.close();
         return -1;
     }
@@ -321,7 +338,7 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
 }
 
 // ============================================================
-// 在指定区域检测数字块
+// 在指定区域检测数字块（★ 关键改动：OCR 前先去横线）
 // ============================================================
 void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
                                     const cv::Rect &region,
@@ -341,24 +358,32 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
     std::vector<cv::Rect> pageBoxes = mergeAdjacentDigits(digitBoxes);
 
     for (const auto &box : pageBoxes) {
-        const cv::Rect globalBox(box.x + r.x, box.y + r.y,
-                                  box.width, box.height);
+        // 上边扩大一点，把划线也含进来
+        cv::Rect expandedBox = box;
+        expandedBox.y -= 5;
+        expandedBox.height += 10;
+        expandedBox &= cv::Rect(0, 0, roi.cols, roi.rows);
+
+        const cv::Rect globalBox(expandedBox.x + r.x, expandedBox.y + r.y,
+                                  expandedBox.width, expandedBox.height);
 
         PageNumberItem item;
-        item.boundingBox = globalBox;
-        item.isCrossed = detectCrossLine(gray, globalBox, options.crossLineRatio);
+        item.boundingBox = cv::Rect(box.x + r.x, box.y + r.y,
+                                     box.width, box.height);
+        item.isCrossed = detectCrossLine(gray, item.boundingBox,
+                                          options.crossLineRatio);
 
-        cv::Rect safeBox = globalBox & cv::Rect(0, 0, gray.cols, gray.rows);
+        cv::Rect safeBox = expandedBox & cv::Rect(0, 0, roi.cols, roi.rows);
         if (safeBox.width > 0 && safeBox.height > 0) {
-            cv::Mat digitImg = gray(safeBox).clone();
-            cv::Mat digitProc;
-            cv::threshold(digitImg, digitProc, 0, 255,
-                          cv::THRESH_BINARY | cv::THRESH_OTSU);
+            cv::Mat digitImg = roi(safeBox).clone();
+
+            // ★ 关键：OCR 前先把横线去掉
+            cv::Mat cleaned = removeHorizontalLines(digitImg);
 
             QString text;
             double conf = 0.0;
             const int num = recognizeWithTesseract(
-                digitProc, options.tesseractPath, text, conf);
+                cleaned, options.tesseractPath, text, conf);
 
             item.recognizedNumber = num;
             item.recognizedText = text;
