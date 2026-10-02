@@ -73,6 +73,20 @@ std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
     return result;
 }
 
+// 计算两个矩形的垂直重叠比例
+// 0.0 = 完全错开，1.0 = 完全重叠
+double verticalOverlap(const cv::Rect &a, const cv::Rect &b)
+{
+    const int top = std::max(a.y, b.y);
+    const int bot = std::min(a.y + a.height, b.y + b.height);
+    if (bot <= top) return 0.0;
+    const int minH = std::min(a.height, b.height);
+    if (minH <= 0) return 0.0;
+    return static_cast<double>(bot - top) / minH;
+}
+
+// 合并相邻数字：★ 关键改动——要求垂直重叠 >= 60% 才合并
+// 这样 065 和 066 即使水平距离近，也不会被误合并
 std::vector<cv::Rect> mergeAdjacentDigits(std::vector<cv::Rect> boxes)
 {
     if (boxes.size() < 2) return boxes;
@@ -89,11 +103,12 @@ std::vector<cv::Rect> mergeAdjacentDigits(std::vector<cv::Rect> boxes)
     for (size_t i = 1; i < boxes.size(); ++i) {
         const cv::Rect &next = boxes[i];
 
-        const bool sameRow = std::abs(current.y - next.y) < current.height * 0.3;
+        const double vOverlap = verticalOverlap(current, next);
         const int gap = next.x - (current.x + current.width);
         const bool closeGap = gap >= 0 && gap < current.height * 0.8;
 
-        if (sameRow && closeGap) {
+        // ★ 垂直重叠 >= 60% 且水平靠得近 → 合并
+        if (vOverlap >= 0.6 && closeGap) {
             const int x1 = std::min(current.x, next.x);
             const int y1 = std::min(current.y, next.y);
             const int x2 = std::max(current.x + current.width,
