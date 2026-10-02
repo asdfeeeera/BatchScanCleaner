@@ -71,7 +71,7 @@ std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
         if (aspect < 0.15) continue;
         if (aspect > 4.0) continue;
 
-        // ★ 填充率过滤：排除实心块（箭头、印章、粗黑块等）
+        // 填充率过滤：排除实心块（箭头、印章、粗黑块等）
         const double fillRatio = static_cast<double>(area) /
                                   std::max(1, w * h);
         if (fillRatio > 0.55) continue;
@@ -154,6 +154,7 @@ bool isPageMatch(int recognized, int correctPage)
 
 // ============================================================
 // 用 mask 涂白横线区域
+// ★ 膨胀核改为 3x1：只水平膨胀，垂直不扩，避免涂掉 6 的上下连接处
 // ============================================================
 cv::Mat removeHorizontalLinesByMask(const cv::Mat &gray)
 {
@@ -167,8 +168,9 @@ cv::Mat removeHorizontalLinesByMask(const cv::Mat &gray)
     cv::Mat hLines;
     cv::morphologyEx(binary, hLines, cv::MORPH_OPEN, hKernel);
 
+    // ★ 只水平膨胀
     cv::Mat dKernel = cv::getStructuringElement(
-        cv::MORPH_RECT, cv::Size(3, 3));
+        cv::MORPH_RECT, cv::Size(3, 1));
     cv::Mat hLinesDilated;
     cv::dilate(hLines, hLinesDilated, dKernel);
 
@@ -459,7 +461,7 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         }
     }
 
-    // 方案 3：分割 + 单字符识别
+    // 方案 3：分割 + 单字符识别（同时尝试涂白图和原图）
     {
         std::vector<cv::Rect> charBoxes = splitByVerticalProjection(cleanedBinary);
         const int rawCount = static_cast<int>(charBoxes.size());
@@ -488,13 +490,28 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                     allOk = false;
                     break;
                 }
-                cv::Mat cbImg = cleaned(safe).clone();
+
+                cv::Mat cbCleaned = cleaned(safe).clone();
+                cv::Mat cbOrig = grayOrig(safe).clone();
 
                 int digit = -1;
-                if (recognizeSingleChar(cbImg, tessExe, tessdataDir, digit)) {
-                    combined += QString::number(digit);
-                    writeDiag(QString::fromUtf8("  字符%1：成功 %2")
+                bool ok = false;
+
+                // ★ 先试涂白后的图
+                if (recognizeSingleChar(cbCleaned, tessExe, tessdataDir, digit)) {
+                    ok = true;
+                    writeDiag(QString::fromUtf8("  字符%1：成功 %2（涂白图）")
                                   .arg(static_cast<int>(i)).arg(digit));
+                }
+                // ★ 再试原始图
+                else if (recognizeSingleChar(cbOrig, tessExe, tessdataDir, digit)) {
+                    ok = true;
+                    writeDiag(QString::fromUtf8("  字符%1：成功 %2（原图）")
+                                  .arg(static_cast<int>(i)).arg(digit));
+                }
+
+                if (ok) {
+                    combined += QString::number(digit);
                 } else {
                     allOk = false;
                     writeDiag(QString::fromUtf8("  字符%1：失败")
@@ -555,7 +572,6 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
     std::vector<cv::Rect> digitBoxes = findDigitBoxes(binary, options);
     std::vector<cv::Rect> pageBoxes = mergeAdjacentDigits(digitBoxes);
 
-    // ★ 保存调试图：ROI + 原始候选（蓝）+ 合并后（红）
     {
         cv::Mat dbg;
         cv::cvtColor(roi, dbg, cv::COLOR_GRAY2BGR);
