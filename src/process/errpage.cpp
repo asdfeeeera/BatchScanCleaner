@@ -1,4 +1,5 @@
-﻿#include "errpage.h"
+﻿#include <QImage>
+#include "errpage.h"
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -210,10 +211,17 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     const QString tmpPng = tempDir.path() + QStringLiteral("/digit.png");
     const QString tmpOutBase = tempDir.path() + QStringLiteral("/out");
 
+    // ★ 用 QImage 保存 PNG，避免 cv::imwrite 在 Windows 上的路径/编码问题
     cv::Mat enlarged;
     cv::resize(digitImage, enlarged, cv::Size(), 3.0, 3.0, cv::INTER_CUBIC);
-    if (!cv::imwrite(tmpPng.toStdString(), enlarged)) {
-        writeDiag(QString::fromUtf8("错误：PNG 保存失败"));
+
+    QImage qimg(enlarged.data, enlarged.cols, enlarged.rows,
+                static_cast<int>(enlarged.step),
+                (enlarged.channels() == 1) ? QImage::Format_Grayscale8
+                                            : QImage::Format_RGB888);
+    QImage copy = qimg.copy();  // 深拷贝，避免 cv::Mat 释放后访问
+    if (!copy.save(tmpPng, "PNG")) {
+        writeDiag(QString::fromUtf8("错误：PNG 保存失败（Qt）"));
         outText = QString::fromUtf8("PNG保存失败");
         diagFile.close();
         return -1;
