@@ -346,6 +346,7 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     QFile diagFile(diagPath);
     diagFile.open(QIODevice::Append | QIODevice::Text);
     QTextStream diag(&diagFile);
+    diag.setCodec("UTF-8");
     auto writeDiag = [&](const QString &msg) {
         if (diagFile.isOpen()) {
             diag << msg << "\n";
@@ -603,17 +604,17 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
 }
 
 // ============================================================
-// 划线检测
+// 划线检测（逐行黑像素统计，对虚线也有效）
 // ============================================================
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
                                double crossLineRatio)
 {
     cv::Rect expanded = digitBox;
-    expanded.x -= 15;
-    expanded.y -= 20;
-    expanded.width += 30;
-    expanded.height += 40;
+    expanded.x -= 10;
+    expanded.y -= 10;
+    expanded.width += 20;
+    expanded.height += 20;
     expanded &= cv::Rect(0, 0, gray.cols, gray.rows);
 
     if (expanded.width <= 0 || expanded.height <= 0) return false;
@@ -623,29 +624,19 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     cv::threshold(roi, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    const int baseW = std::max(15, digitBox.width / 2);
-    const int ws[3] = { baseW,
-                        std::max(15, digitBox.width / 3),
-                        20 };
+    const int yStart = 10;
+    const int yEnd = std::min(binary.rows - 10, binary.rows);
 
-    for (int wi = 0; wi < 3; ++wi) {
-        const int kw = ws[wi];
-        cv::Mat hKernel = cv::getStructuringElement(
-            cv::MORPH_RECT, cv::Size(kw, 1));
-        cv::Mat hLines;
-        cv::morphologyEx(binary, hLines, cv::MORPH_OPEN, hKernel);
+    const int minCount = static_cast<int>(binary.cols * 0.6);
 
-        cv::Mat labels, stats, centroids;
-        const int nLabels = cv::connectedComponentsWithStats(
-            hLines, labels, stats, centroids, 8, CV_32S);
-
-        for (int i = 1; i < nLabels; ++i) {
-            const int area = stats.at<int>(i, cv::CC_STAT_AREA);
-            const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
-            const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
-            if (w >= kw && h <= 8 && area >= kw / 2) {
-                return true;
-            }
+    for (int y = yStart; y < yEnd; ++y) {
+        const uchar *row = binary.ptr<uchar>(y);
+        int count = 0;
+        for (int x = 0; x < binary.cols; ++x) {
+            if (row[x] > 0) ++count;
+        }
+        if (count >= minCount) {
+            return true;
         }
     }
     return false;
@@ -666,12 +657,12 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     result.correctPage = parseCorrectPage(sourcePath);
 
-    // ★ 诊断日志：写入 ocr_debug.txt
     const QString diagPath = QDir::homePath() +
                              QStringLiteral("/Desktop/ocr_debug.txt");
     QFile diagFile(diagPath);
     diagFile.open(QIODevice::Append | QIODevice::Text);
     QTextStream diag(&diagFile);
+    diag.setCodec("UTF-8");
     auto writeDiag = [&](const QString &msg) {
         if (diagFile.isOpen()) {
             diag << msg << "\n";
@@ -682,12 +673,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
     writeDiag(QString::fromUtf8("----- process() -----"));
     writeDiag(QString::fromUtf8("文件名：%1").arg(sourcePath));
     writeDiag(QString::fromUtf8("正确页码：%1").arg(result.correctPage));
-
-    int correctDigits = 0;
-    if (result.correctPage > 0) {
-        correctDigits = QString::number(result.correctPage).length();
-    }
-    writeDiag(QString::fromUtf8("正确页码位数：%1").arg(correctDigits));
 
     cv::Mat gray;
     if (src.channels() == 3) {
@@ -763,17 +748,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             continue;
         }
 
-        bool shouldRemove = item.isCrossed;
-        if (!shouldRemove) {
-            const int digits = QString::number(item.recognizedNumber).length();
-            if (digits >= 2 && digits <= 4 &&
-                (correctDigits == 0 ||
-                 std::abs(digits - correctDigits) <= 1)) {
-                shouldRemove = true;
-            }
-        }
-
-        if (shouldRemove) {
+        if (item.isCrossed) {
             cv::Rect r = item.boundingBox;
             r.x -= 8;
             r.y -= 8;
@@ -782,7 +757,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             r &= cv::Rect(0, 0, W, H);
             cv::rectangle(dst, r, white, cv::FILLED);
             ++result.crossedRemoved;
-            writeDiag(QString::fromUtf8("  → 块识别=%1，执行涂白 矩形=(%2,%3,%4x%5)")
+            writeDiag(QString::fromUtf8("  → 块识别=%1，划线=是，涂白 矩形=(%2,%3,%4x%5)")
                           .arg(item.recognizedNumber)
                           .arg(r.x).arg(r.y).arg(r.width).arg(r.height));
         } else {
@@ -792,7 +767,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         }
     }
 
-    // ★ 保存涂白后的图像供人工核对
     {
         const QString dbgPath = QDir::homePath() +
             QStringLiteral("/Desktop/ocr_debug_dst.png");
