@@ -36,9 +36,12 @@ void Denoise::buildProtectMask(const cv::Mat &gray,
                                 cv::Mat &protectMask,
                                 int protectRadius)
 {
+    // 用相对纸张灰度检测内容（包括淡文字）
+    const double paperGray = estimatePaperGray(gray);
+    const double contentThresh = paperGray * 0.85;
+
     cv::Mat binary;
-    cv::threshold(gray, binary, 0, 255,
-                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+    cv::threshold(gray, binary, contentThresh, 255, cv::THRESH_BINARY_INV);
 
     cv::Mat labels, stats, centroids;
     int nLabels = cv::connectedComponentsWithStats(
@@ -46,8 +49,8 @@ void Denoise::buildProtectMask(const cv::Mat &gray,
 
     protectMask = cv::Mat::zeros(gray.rows, gray.cols, CV_8UC1);
 
-    // 保护所有面积 >= 10 的暗块（文字、线条、印章、签名）
-    const int protectArea = 10;
+    // 保护所有面积 >= 5 的暗块
+    const int protectArea = 5;
     for (int i = 1; i < nLabels; ++i) {
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
         if (area >= protectArea) {
@@ -69,9 +72,8 @@ void Denoise::buildProtectMask(const cv::Mat &gray,
 
 namespace {
 
-// 填底色：把浅灰、浅黄纸张变成纯白
-// 用大核形态学估计背景，再拉伸对比
-cv::Mat whitenBackground(const cv::Mat &src, double paperGray)
+// 填底色：只把"与局部背景差距小"的像素填白，不碰文字
+cv::Mat whitenBackground(const cv::Mat &src, const cv::Mat &protectMask)
 {
     if (src.empty()) return src.clone();
 
@@ -84,40 +86,35 @@ cv::Mat whitenBackground(const cv::Mat &src, double paperGray)
         gray = src.clone();
     }
 
-    // 用大核闭运算估计背景（纸张的局部平均灰度）
-    const int bgSize = 41;
+    // 大核闭运算估计局部背景（核越大，背景估计越平滑）
+    const int bgSize = 61;
     cv::Mat bgKernel = cv::getStructuringElement(
         cv::MORPH_RECT, cv::Size(bgSize, bgSize));
     cv::Mat background;
     cv::morphologyEx(gray, background, cv::MORPH_CLOSE, bgKernel);
 
-    // 计算每个像素的拉伸系数：255 / background
-    cv::Mat bgFloat;
-    background.convertTo(bgFloat, CV_32F);
+    // 原图与背景的差距
+    cv::Mat diff;
+    cv::absdiff(gray, background, diff);
 
-    // 保护：背景灰度 < 100 时不处理（避免暗区被拉爆）
-    cv::Mat factor;
-    cv::divide(255.0, bgFloat, factor);
+    // 差距 < 25 的像素认为"是背景"
+    cv::Mat bgMask;
+    cv::threshold(diff, bgMask, 25, 255, cv::THRESH_BINARY_INV);
 
-    // 限制拉伸倍数，最大 1.5 倍
-    cv::threshold(factor, factor, 1.5, 1.5, cv::THRESH_TRUNC);
+    // 保护掩膜内的像素（文字区域）不算背景
+    cv::bitwise_and(bgMask, ~protectMask, bgMask);
 
-    // 应用到原图（各通道分别乘）
-    cv::Mat srcFloat;
-    src.convertTo(srcFloat, CV_32F);
-
-    std::vector<cv::Mat> channels;
-    cv::split(srcFloat, channels);
-
-    for (auto &ch : channels) {
-        cv::multiply(ch, factor, ch);
+    // 只对背景填白
+    cv::Mat result = src.clone();
+    cv::Scalar white;
+    if (result.channels() == 4) {
+        white = cv::Scalar(255, 255, 255, 255);
+    } else if (result.channels() == 3) {
+        white = cv::Scalar(255, 255, 255);
+    } else {
+        white = cv::Scalar(255);
     }
-
-    cv::Mat resultFloat;
-    cv::merge(channels, resultFloat);
-
-    cv::Mat result;
-    resultFloat.convertTo(result, src.depth());
+    result.setTo(white, bgMask);
 
     return result;
 }
@@ -133,7 +130,7 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     const int W = src.cols;
     const int H = src.rows;
 
-    // ============ 第 1 步：填底色 ============
+    // 转灰度
     cv::Mat gray;
     if (src.channels() == 3) {
         cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
@@ -143,10 +140,14 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         gray = src.clone();
     }
 
-    const double paperGray = estimatePaperGray(gray);
-    cv::Mat whitened = whitenBackground(src, paperGray);
+    // 1. 先建保护掩膜（文字、线条、印章、签名）
+    cv::Mat protectMask;
+    buildProtectMask(gray, protectMask, options.protectRadius);
 
-    // ============ 第 2 步：去黑点 + 表格内杂质 ============
+    // 2. 填底色（保护掩膜内的像素不动）
+    cv::Mat whitened = whitenBackground(src, protectMask);
+
+    // 3. 在填白后的图上做污点检测
     cv::Mat whitenedGray;
     if (whitened.channels() == 3) {
         cv::cvtColor(whitened, whitenedGray, cv::COLOR_BGR2GRAY);
@@ -156,14 +157,11 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         whitenedGray = whitened.clone();
     }
 
+    const double paperGray = estimatePaperGray(whitenedGray);
     const double darkThreshold = paperGray * options.darkRatio;
 
     cv::Mat binary;
     cv::threshold(whitenedGray, binary, darkThreshold, 255, cv::THRESH_BINARY_INV);
-
-    // 保护掩膜
-    cv::Mat protectMask;
-    buildProtectMask(whitenedGray, protectMask, options.protectRadius);
 
     cv::Mat labels, stats, centroids;
     int nLabels = cv::connectedComponentsWithStats(
@@ -195,7 +193,6 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         cv::Rect r(x, y, w, h);
         r &= cv::Rect(0, 0, W, H);
 
-        // 保护掩膜内的跳过
         cv::Mat roi = protectMask(r);
         if (cv::countNonZero(roi) > 0) continue;
 
