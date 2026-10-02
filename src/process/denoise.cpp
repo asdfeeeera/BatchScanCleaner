@@ -36,67 +36,32 @@ void Denoise::buildProtectMask(const cv::Mat &gray,
                                 cv::Mat &protectMask,
                                 int protectRadius)
 {
-    const int W = gray.cols;
-    const int H = gray.rows;
-
-    protectMask = cv::Mat::zeros(H, W, CV_8UC1);
-
-    // 1. 检测"细长结构"（文字笔画、表格线、下划线）作为保护对象
-    //    方法：形态学开运算，提取水平/垂直/对角长条
+    // 二值化
     cv::Mat binary;
     cv::threshold(gray, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    // 水平长条
-    cv::Mat hKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(15, 1));
-    cv::Mat hLines;
-    cv::morphologyEx(binary, hLines, cv::MORPH_OPEN, hKernel);
-
-    // 垂直长条
-    cv::Mat vKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(1, 15));
-    cv::Mat vLines;
-    cv::morphologyEx(binary, vLines, cv::MORPH_OPEN, vKernel);
-
-    // 合并
-    cv::bitwise_or(hLines, vLines, protectMask);
-
-    // 2. 文字笔画：任何小连通域也保护（标点、小数点）
-    //    取所有"面积小但有一定结构"的连通域
     cv::Mat labels, stats, centroids;
     int nLabels = cv::connectedComponentsWithStats(
         binary, labels, stats, centroids, 8, CV_32S);
 
+    protectMask = cv::Mat::zeros(gray.rows, gray.cols, CV_8UC1);
+
+    // ★ 核心改动：保护所有面积 >= 15 的暗块
+    //    文字、表格线、印章、签名 面积都远超 15
+    const int protectArea = 15;
     for (int i = 1; i < nLabels; ++i) {
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
-        const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
-        const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
-
-        // 标点/句号/小数点：面积小（10-80），宽高比正常
-        const bool isPunctuation =
-            (area >= 10 && area <= 80) &&
-            (w <= 12 && h <= 12) &&
-            (w >= 2 && h >= 2);
-
-        // 文字笔画：面积中等，一个方向较细
-        const bool isTextStroke =
-            (area >= 20 && area <= 500) &&
-            (w <= 60 && h <= 60) &&
-            (std::min(w, h) <= 5);
-
-        // 表格线交叉点、印章边框、签名笔画
-        const bool isStructure =
-            (area >= 50 && area <= 2000) &&
-            (std::max(w, h) >= 20);
-
-        if (isPunctuation || isTextStroke || isStructure) {
+        if (area >= protectArea) {
             cv::Rect r(stats.at<int>(i, cv::CC_STAT_LEFT),
                        stats.at<int>(i, cv::CC_STAT_TOP),
-                       w, h);
+                       stats.at<int>(i, cv::CC_STAT_WIDTH),
+                       stats.at<int>(i, cv::CC_STAT_HEIGHT));
             cv::rectangle(protectMask, r, cv::Scalar(255), cv::FILLED);
         }
     }
 
-    // 3. 膨胀保护掩膜
+    // 膨胀保护掩膜
     if (protectRadius > 0) {
         const int ksize = protectRadius * 2 + 1;
         cv::Mat kernel = cv::getStructuringElement(
@@ -114,7 +79,6 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     const int W = src.cols;
     const int H = src.rows;
 
-    // 1. 转灰度
     cv::Mat gray;
     if (src.channels() == 3) {
         cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
@@ -124,36 +88,28 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         gray = src.clone();
     }
 
-    // 2. 估算纸张灰度
     const double paperGray = estimatePaperGray(gray);
     const double darkThreshold = paperGray * options.darkRatio;
 
-    // 3. 二值化：暗块 = 前景
+    // 二值化
     cv::Mat binary;
     cv::threshold(gray, binary, darkThreshold, 255, cv::THRESH_BINARY_INV);
 
-    // 4. 构建保护掩膜
+    // 保护掩膜（先把文字等大块保护起来）
     cv::Mat protectMask;
     buildProtectMask(gray, protectMask, options.protectRadius);
 
-    // 5. 清除保护区域的暗块
-    cv::Mat candidate;
-    cv::bitwise_and(binary, ~protectMask, candidate);
-
-    // 6. 根据强度调整面积阈值
-    int maxArea = options.maxSpotArea;
-    if (options.strengthLevel == 0) {
-        maxArea = maxArea / 2;   // 保守
-    } else if (options.strengthLevel == 2) {
-        maxArea = maxArea * 2;   // 强力
-    }
-
-    // 7. 连通域分析，识别污点
+    // 连通域分析
     cv::Mat labels, stats, centroids;
     int nLabels = cv::connectedComponentsWithStats(
-        candidate, labels, stats, centroids, 8, CV_32S);
+        binary, labels, stats, centroids, 8, CV_32S);
 
-    // 8. 构建污点掩膜
+    // 强度对应的最大污点面积
+    int maxSpotArea = 30;
+    if (options.strengthLevel == 0) maxSpotArea = 15;
+    else if (options.strengthLevel == 1) maxSpotArea = 30;
+    else if (options.strengthLevel == 2) maxSpotArea = 60;
+
     cv::Mat spotMask = cv::Mat::zeros(H, W, CV_8UC1);
     int spotCount = 0;
     int totalPixels = 0;
@@ -162,34 +118,30 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
         const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
         const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
-
-        // 面积过滤
-        if (area > maxArea) continue;
-        if (area < 3) continue;  // 太小的忽略（噪点级）
-
-        // 长宽过滤
-        if (w > options.maxSpotWidth) continue;
-        if (h > options.maxSpotHeight) continue;
-
-        // 长宽比过滤：排除细长结构（可能是线条）
-        const double aspect = static_cast<double>(std::max(w, h)) / std::max(1, std::min(w, h));
-        if (aspect > 8.0) continue;
-
-        // 是污点
         const int x = stats.at<int>(i, cv::CC_STAT_LEFT);
         const int y = stats.at<int>(i, cv::CC_STAT_TOP);
 
+        // 面积过滤：太大当文字，太小当噪点忽略
+        if (area < 2) continue;
+        if (area > maxSpotArea) continue;
+
+        // 长宽比过滤：太细长当线条
+        const double aspect = static_cast<double>(std::max(w, h)) / std::max(1, std::min(w, h));
+        if (aspect > 5.0) continue;
+
+        // ★ 核心改动：如果在保护掩膜内，跳过
         cv::Rect r(x, y, w, h);
         r &= cv::Rect(0, 0, W, H);
-        cv::rectangle(spotMask, r, cv::Scalar(255), cv::FILLED);
+        cv::Mat roi = protectMask(r);
+        if (cv::countNonZero(roi) > 0) {
+            continue;
+        }
 
+        // 是污点
+        cv::rectangle(spotMask, r, cv::Scalar(255), cv::FILLED);
         ++spotCount;
         totalPixels += area;
     }
-
-    // 9. 膨胀污点掩膜一点点，让修补更自然
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
-    cv::dilate(spotMask, spotMask, kernel);
 
     if (spotCount == 0) {
         result.image = src.clone();
@@ -198,12 +150,18 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         return result;
     }
 
-    // 10. 修补
+    // 轻微膨胀污点掩膜
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+    cv::dilate(spotMask, spotMask, kernel);
+
+    // ★ 核心改动：膨胀后再减去保护区域，避免 inpaint 破坏文字
+    cv::bitwise_and(spotMask, ~protectMask, spotMask);
+
+    // 修补
     cv::Mat dst;
     if (options.useInpaint) {
         cv::inpaint(src, spotMask, dst, 3, cv::INPAINT_TELEA);
     } else {
-        // 备用方案：中值滤波
         cv::medianBlur(src, dst, 3);
         src.copyTo(dst, ~spotMask);
     }
