@@ -65,7 +65,7 @@ std::pair<double, bool> searchAngleByProjection(const cv::Mat &binary,
             confident = true;
         }
         // 额外保护：分数太低说明前景太少
-        if (bestScore < 1000.0) {
+        if (bestScore < 500.0) {
             confident = false;
         }
     }
@@ -178,8 +178,19 @@ double Deskew::detectAngle(const cv::Mat &src)
         small = binary;
     }
 
-    // 5. 投影法搜索角度
-    auto result = searchAngleByProjection(small, -10.0, 10.0, 0.1);
+    // 5. 粗到细两阶段搜索
+    // 第 1 步：粗扫 ±45°，步长 1°
+    auto coarse = searchAngleByProjection(small, -45.0, 45.0, 1.0);
+    const double coarseAngle = coarse.first;
+
+    // 第 2 步：在粗扫结果附近细扫 ±1.5°，步长 0.05°
+    auto fine = searchAngleByProjection(small,
+                                        coarseAngle - 1.5,
+                                        coarseAngle + 1.5,
+                                        0.05);
+
+    // 用细扫结果；如果细扫不可信，用粗扫结果
+    auto result = fine.second ? fine : coarse;
 
     // 6. 置信度低 → 尝试粗裁后重新分析
     if (!result.second) {
