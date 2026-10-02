@@ -151,9 +151,6 @@ bool isPageMatch(int recognized, int correctPage)
     return recognized == correctPage;
 }
 
-// ============================================================
-// 用 mask 涂白横线区域（膨胀核 3x1）
-// ============================================================
 cv::Mat removeHorizontalLinesByMask(const cv::Mat &gray)
 {
     cv::Mat binary;
@@ -176,9 +173,6 @@ cv::Mat removeHorizontalLinesByMask(const cv::Mat &gray)
     return result;
 }
 
-// ============================================================
-// 垂直投影分割
-// ============================================================
 std::vector<cv::Rect> splitByVerticalProjection(const cv::Mat &binary)
 {
     std::vector<cv::Rect> boxes;
@@ -214,9 +208,6 @@ std::vector<cv::Rect> splitByVerticalProjection(const cv::Mat &binary)
     return boxes;
 }
 
-// ============================================================
-// 单次 Tesseract 识别
-// ============================================================
 struct OcrAttempt
 {
     int number = -1;
@@ -285,9 +276,6 @@ OcrAttempt tryRecognize(const cv::Mat &image, const QString &tessExe,
     return result;
 }
 
-// ============================================================
-// 识别单个字符
-// ============================================================
 bool recognizeSingleChar(const cv::Mat &charImage,
                           const QString &tessExe,
                           const QString &tessdataDir,
@@ -406,7 +394,6 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     cv::threshold(noLinesGray, cleanedBinary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    // 方案 1：原图 psm7
     {
         OcrAttempt r = tryRecognize(digitImage, tessExe, tessdataDir,
                                      QStringLiteral("7"));
@@ -428,7 +415,6 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         cv::imwrite(dbgPath.toStdString(), cleaned);
     }
 
-    // 方案 2：涂白横线后整体识别
     int bestNumber = -1;
     QString bestText;
     int bestDigits = 0;
@@ -458,7 +444,6 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         }
     }
 
-    // 方案 3：分割 + 单字符识别（双源尝试）
     {
         std::vector<cv::Rect> charBoxes = splitByVerticalProjection(cleanedBinary);
         const int rawCount = static_cast<int>(charBoxes.size());
@@ -618,7 +603,7 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
 }
 
 // ============================================================
-// 划线检测（★ 3 种核宽度尝试，任一命中即判定有横线）
+// 划线检测
 // ============================================================
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
@@ -638,7 +623,6 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     cv::threshold(roi, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    // 3 种核宽度：宽、中、窄
     const int baseW = std::max(15, digitBox.width / 2);
     const int ws[3] = { baseW,
                         std::max(15, digitBox.width / 3),
@@ -682,6 +666,29 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     result.correctPage = parseCorrectPage(sourcePath);
 
+    // ★ 诊断日志：写入 ocr_debug.txt
+    const QString diagPath = QDir::homePath() +
+                             QStringLiteral("/Desktop/ocr_debug.txt");
+    QFile diagFile(diagPath);
+    diagFile.open(QIODevice::Append | QIODevice::Text);
+    QTextStream diag(&diagFile);
+    auto writeDiag = [&](const QString &msg) {
+        if (diagFile.isOpen()) {
+            diag << msg << "\n";
+            diag.flush();
+        }
+    };
+
+    writeDiag(QString::fromUtf8("----- process() -----"));
+    writeDiag(QString::fromUtf8("文件名：%1").arg(sourcePath));
+    writeDiag(QString::fromUtf8("正确页码：%1").arg(result.correctPage));
+
+    int correctDigits = 0;
+    if (result.correctPage > 0) {
+        correctDigits = QString::number(result.correctPage).length();
+    }
+    writeDiag(QString::fromUtf8("正确页码位数：%1").arg(correctDigits));
+
     cv::Mat gray;
     if (src.channels() == 3) {
         cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
@@ -721,6 +728,17 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         detectDigitsInRegion(gray, region, options, allItems);
     }
 
+    writeDiag(QString::fromUtf8("共检测到 %1 个块").arg(allItems.size()));
+    for (size_t i = 0; i < allItems.size(); ++i) {
+        const auto &it = allItems[i];
+        writeDiag(QString::fromUtf8("  块%1：识别=%2 划线=%3 bbox=(%4,%5,%6x%7)")
+                      .arg(static_cast<int>(i))
+                      .arg(it.recognizedNumber)
+                      .arg(it.isCrossed ? QStringLiteral("是") : QStringLiteral("否"))
+                      .arg(it.boundingBox.x).arg(it.boundingBox.y)
+                      .arg(it.boundingBox.width).arg(it.boundingBox.height));
+    }
+
     cv::Mat dst = src.clone();
     cv::Scalar white;
     if (dst.channels() == 4) {
@@ -729,27 +747,23 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         white = cv::Scalar(255, 255, 255);
     }
 
-    // 正确页码的位数
-    int correctDigits = 0;
-    if (result.correctPage > 0) {
-        correctDigits = QString::number(result.correctPage).length();
-    }
-
     for (auto &item : allItems) {
         const bool ocrFailed = (item.recognizedNumber < 0);
         const bool matchesCorrect = isPageMatch(item.recognizedNumber,
                                                  result.correctPage);
 
-        if (matchesCorrect) continue;
+        if (matchesCorrect) {
+            writeDiag(QString::fromUtf8("  → 块识别=%1 与正确页码匹配，保留")
+                          .arg(item.recognizedNumber));
+            continue;
+        }
         if (ocrFailed) {
             ++result.pendingCount;
+            writeDiag(QString::fromUtf8("  → 块OCR失败，跳过"));
             continue;
         }
 
-        // ★ 判断是否需要清除
         bool shouldRemove = item.isCrossed;
-
-        // ★ 备用规则：数字位数和正确页码位数接近 → 视为错误页码
         if (!shouldRemove) {
             const int digits = QString::number(item.recognizedNumber).length();
             if (digits >= 2 && digits <= 4 &&
@@ -768,9 +782,21 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             r &= cv::Rect(0, 0, W, H);
             cv::rectangle(dst, r, white, cv::FILLED);
             ++result.crossedRemoved;
+            writeDiag(QString::fromUtf8("  → 块识别=%1，执行涂白 矩形=(%2,%3,%4x%5)")
+                          .arg(item.recognizedNumber)
+                          .arg(r.x).arg(r.y).arg(r.width).arg(r.height));
         } else {
             ++result.pendingCount;
+            writeDiag(QString::fromUtf8("  → 块识别=%1，划线=否，跳过")
+                          .arg(item.recognizedNumber));
         }
+    }
+
+    // ★ 保存涂白后的图像供人工核对
+    {
+        const QString dbgPath = QDir::homePath() +
+            QStringLiteral("/Desktop/ocr_debug_dst.png");
+        cv::imwrite(dbgPath.toStdString(), dst);
     }
 
     cv::Mat marked = src.clone();
@@ -810,6 +836,8 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
     if (allItems.empty()) {
         result.skipped = true;
     }
+
+    diagFile.close();
     return result;
 }
 
