@@ -362,7 +362,7 @@ void MainWindow::onDeskew()
     }
 
     m_currentMat = result.image;
-    showMatOnPreview(m_currentMat);
+    showMatOnPreview(result.markedImage);
 
     statusBar()->showMessage(
         QString::fromUtf8("自动扶正完成，旋转 %1 度")

@@ -17,19 +17,29 @@ namespace process {
 
 // ============================================================
 // 从文件名解析正确页码
+// 宽容版：提取文件名中所有数字
+// 例如 "065.jpg" → 65，"065_错误.jpg" → 65065? 不，这里只提取 065 部分
+// 实际上只提取"主名"里的所有数字，按顺序拼起来
 // ============================================================
 int ErrPage::parseCorrectPage(const QString &sourcePath)
 {
     const QFileInfo info(sourcePath);
-    const QString baseName = info.completeBaseName();
+    const QString baseName = info.completeBaseName().trimmed();
 
-    static const QRegularExpression re(QStringLiteral("^\\d+$"));
-    if (re.match(baseName).hasMatch()) {
-        bool ok = false;
-        const int page = baseName.toInt(&ok);
-        if (ok && page >= 0) {
-            return page;
+    // 提取主名中所有数字字符
+    QString digitsOnly;
+    for (const QChar &c : baseName) {
+        if (c.isDigit()) {
+            digitsOnly += c;
         }
+    }
+
+    if (digitsOnly.isEmpty()) return -1;
+
+    bool ok = false;
+    const int page = digitsOnly.toInt(&ok);
+    if (ok && page >= 0) {
+        return page;
     }
     return -1;
 }
@@ -61,9 +71,10 @@ std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
         if (w < options.minDigitWidth || w > options.maxDigitWidth) continue;
         if (area < 50) continue;
 
+        // 长宽比过滤：这里放宽，允许很宽的数字块（如 065）
         const double aspect = static_cast<double>(h) / std::max(1, w);
-        if (aspect < 0.6) continue;
-        if (aspect > 4.0) continue;
+        if (aspect < 0.15) continue;   // 太扁（可能是横线）
+        if (aspect > 4.0) continue;    // 太高（可能是竖线）
 
         cv::Rect r(stats.at<int>(i, cv::CC_STAT_LEFT),
                    stats.at<int>(i, cv::CC_STAT_TOP),
@@ -73,8 +84,7 @@ std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
     return result;
 }
 
-// 计算两个矩形的垂直重叠比例
-// 0.0 = 完全错开，1.0 = 完全重叠
+// 计算两个矩形的垂直重叠比例：0=完全错开，1=完全重叠
 double verticalOverlap(const cv::Rect &a, const cv::Rect &b)
 {
     const int top = std::max(a.y, b.y);
@@ -85,8 +95,7 @@ double verticalOverlap(const cv::Rect &a, const cv::Rect &b)
     return static_cast<double>(bot - top) / minH;
 }
 
-// 合并相邻数字：★ 关键改动——要求垂直重叠 >= 60% 才合并
-// 这样 065 和 066 即使水平距离近，也不会被误合并
+// 合并相邻数字：垂直重叠 >= 60% 才合并
 std::vector<cv::Rect> mergeAdjacentDigits(std::vector<cv::Rect> boxes)
 {
     if (boxes.size() < 2) return boxes;
@@ -107,7 +116,6 @@ std::vector<cv::Rect> mergeAdjacentDigits(std::vector<cv::Rect> boxes)
         const int gap = next.x - (current.x + current.width);
         const bool closeGap = gap >= 0 && gap < current.height * 0.8;
 
-        // ★ 垂直重叠 >= 60% 且水平靠得近 → 合并
         if (vOverlap >= 0.6 && closeGap) {
             const int x1 = std::min(current.x, next.x);
             const int y1 = std::min(current.y, next.y);
