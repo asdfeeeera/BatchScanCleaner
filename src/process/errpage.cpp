@@ -57,17 +57,18 @@ std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
         const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
         const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
 
-        if (h < options.minDigitHeight || h > options.maxDigitHeight) continue;
-        if (w < options.minDigitWidth || w > options.maxDigitWidth) continue;
-        if (area < 50) continue;
+        // ★ 放宽阈值，让带横线的 066 能通过
+        if (h < 15 || h > 250) continue;
+        if (w < 8 || w > 350) continue;
+        if (area < 40) continue;
 
         const double aspect = static_cast<double>(h) / std::max(1, w);
-        if (aspect < 0.15) continue;
-        if (aspect > 4.0) continue;
+        if (aspect < 0.1) continue;
+        if (aspect > 6.0) continue;
 
         const double fillRatio = static_cast<double>(area) /
                                   std::max(1, w * h);
-        if (fillRatio > 0.55) continue;
+        if (fillRatio > 0.7) continue;
 
         cv::Rect r(stats.at<int>(i, cv::CC_STAT_LEFT),
                    stats.at<int>(i, cv::CC_STAT_TOP),
@@ -525,8 +526,7 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
 }
 
 // ============================================================
-// 在指定区域检测数字块
-// ★ 直接对原始 ROI 做检测（不去横线，避免破坏 066）
+// 在指定区域检测数字块（★ 加诊断日志）
 // ============================================================
 void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
                                     const cv::Rect &region,
@@ -541,6 +541,43 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
     cv::Mat binary;
     cv::threshold(roi, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+
+    // ★ 诊断：打印所有连通域（不管是否通过过滤）
+    {
+        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 3));
+        cv::Mat dilated;
+        cv::dilate(binary, dilated, kernel);
+        cv::Mat labels, stats, centroids;
+        const int n = cv::connectedComponentsWithStats(
+            dilated, labels, stats, centroids, 8, CV_32S);
+
+        const QString diagPath = QDir::homePath() +
+                                 QStringLiteral("/Desktop/ocr_debug.txt");
+        QFile f(diagPath);
+        if (f.open(QIODevice::Append | QIODevice::Text)) {
+            QTextStream ts(&f);
+            ts.setCodec("UTF-8");
+            ts << QString::fromUtf8("  [诊断] 区域(%1,%2,%3x%4) 连通域=%5\n")
+                    .arg(r.x).arg(r.y).arg(r.width).arg(r.height).arg(n - 1);
+            for (int i = 1; i < n; ++i) {
+                const int area = stats.at<int>(i, cv::CC_STAT_AREA);
+                const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
+                const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
+                const int x = stats.at<int>(i, cv::CC_STAT_LEFT);
+                const int y = stats.at<int>(i, cv::CC_STAT_TOP);
+                const double fill = static_cast<double>(area) /
+                                    std::max(1, w * h);
+                ts << QString::fromUtf8("    cc%1: 局部(%2,%3 %4x%5) "
+                                         "全局(%6,%7) area=%8 fill=%9\n")
+                        .arg(i)
+                        .arg(x).arg(y).arg(w).arg(h)
+                        .arg(x + r.x).arg(y + r.y)
+                        .arg(area)
+                        .arg(fill, 0, 'f', 3);
+            }
+            f.close();
+        }
+    }
 
     std::vector<cv::Rect> digitBoxes = findDigitBoxes(binary, options);
     std::vector<cv::Rect> pageBoxes = mergeAdjacentDigits(digitBoxes);
