@@ -3,6 +3,8 @@ add_library(process STATIC
     deskew.cpp
     blackedge.h
     blackedge.cpp
+    denoise.h
+    denoise.cpp
 )
 
 target_include_directories(process PUBLIC

@@ -32,6 +32,7 @@
 #include "file_scanner.h"
 #include "deskew.h"
 #include "blackedge.h"
+#include "denoise.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -106,6 +107,9 @@ void MainWindow::setupToolBar()
 
     QAction *blackEdgeAction = toolBar->addAction(QString::fromUtf8("黑边去除"));
     connect(blackEdgeAction, &QAction::triggered, this, &MainWindow::onRemoveBlackEdge);
+
+    QAction *denoiseAction = toolBar->addAction(QString::fromUtf8("污点去除"));
+    connect(denoiseAction, &QAction::triggered, this, &MainWindow::onDenoise);
 
     toolBar->addSeparator();
     toolBar->addAction(QString::fromUtf8("输出设置"));
@@ -365,6 +369,7 @@ void MainWindow::onRemoveBlackEdge()
     options.darkPixelRatio     = 0.50;
     options.gapTolerance       = 3;
     options.smoothKernelSize   = 5;
+    options.expandPixels       = 5;
     options.fillWhite          = true;
 
     const process::BlackEdgeResult result =
@@ -394,6 +399,49 @@ void MainWindow::onRemoveBlackEdge()
                 .arg(result.rightPixels)
                 .arg(result.paperGray, 0, 'f', 1)
                 .arg(result.darkThreshold, 0, 'f', 1));
+    }
+}
+
+void MainWindow::onDenoise()
+{
+    if (!m_hasImage || m_currentMat.empty()) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+                                 QString::fromUtf8("请先打开一张图片。"));
+        return;
+    }
+
+    statusBar()->showMessage(QString::fromUtf8("正在去除污点..."));
+
+    process::DenoiseOptions options;
+    options.maxSpotArea   = 200;
+    options.maxSpotWidth  = 30;
+    options.maxSpotHeight = 30;
+    options.darkRatio     = 0.60;
+    options.protectRadius = 2;
+    options.strengthLevel = 1;   // 标准
+    options.useInpaint    = true;
+
+    const process::DenoiseResult result =
+        process::Denoise::removeSpots(m_currentMat, options);
+
+    if (!result.ok) {
+        QMessageBox::warning(this, QString::fromUtf8("错误"),
+                             QString::fromUtf8("污点去除失败。"));
+        statusBar()->showMessage(QString::fromUtf8("污点去除失败"));
+        return;
+    }
+
+    m_currentMat = result.image;
+    showMatOnPreview(m_currentMat);
+
+    if (result.skipped) {
+        statusBar()->showMessage(
+            QString::fromUtf8("污点去除：未检测到明显污点，已跳过"));
+    } else {
+        statusBar()->showMessage(
+            QString::fromUtf8("污点去除完成：检测到 %1 处污点，修补 %2 像素")
+                .arg(result.spotCount)
+                .arg(result.cleanedPixels));
     }
 }
 
