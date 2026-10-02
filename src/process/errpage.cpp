@@ -57,7 +57,6 @@ std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
         const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
         const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
 
-        // ★ 放宽阈值，让带横线的 066 能通过
         if (h < 15 || h > 250) continue;
         if (w < 8 || w > 350) continue;
         if (area < 40) continue;
@@ -525,9 +524,6 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     return -1;
 }
 
-// ============================================================
-// 在指定区域检测数字块（★ 加诊断日志）
-// ============================================================
 void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
                                     const cv::Rect &region,
                                     const ErrPageOptions &options,
@@ -541,43 +537,6 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
     cv::Mat binary;
     cv::threshold(roi, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
-
-    // ★ 诊断：打印所有连通域（不管是否通过过滤）
-    {
-        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 3));
-        cv::Mat dilated;
-        cv::dilate(binary, dilated, kernel);
-        cv::Mat labels, stats, centroids;
-        const int n = cv::connectedComponentsWithStats(
-            dilated, labels, stats, centroids, 8, CV_32S);
-
-        const QString diagPath = QDir::homePath() +
-                                 QStringLiteral("/Desktop/ocr_debug.txt");
-        QFile f(diagPath);
-        if (f.open(QIODevice::Append | QIODevice::Text)) {
-            QTextStream ts(&f);
-            ts.setCodec("UTF-8");
-            ts << QString::fromUtf8("  [诊断] 区域(%1,%2,%3x%4) 连通域=%5\n")
-                    .arg(r.x).arg(r.y).arg(r.width).arg(r.height).arg(n - 1);
-            for (int i = 1; i < n; ++i) {
-                const int area = stats.at<int>(i, cv::CC_STAT_AREA);
-                const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
-                const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
-                const int x = stats.at<int>(i, cv::CC_STAT_LEFT);
-                const int y = stats.at<int>(i, cv::CC_STAT_TOP);
-                const double fill = static_cast<double>(area) /
-                                    std::max(1, w * h);
-                ts << QString::fromUtf8("    cc%1: 局部(%2,%3 %4x%5) "
-                                         "全局(%6,%7) area=%8 fill=%9\n")
-                        .arg(i)
-                        .arg(x).arg(y).arg(w).arg(h)
-                        .arg(x + r.x).arg(y + r.y)
-                        .arg(area)
-                        .arg(fill, 0, 'f', 3);
-            }
-            f.close();
-        }
-    }
 
     std::vector<cv::Rect> digitBoxes = findDigitBoxes(binary, options);
     std::vector<cv::Rect> pageBoxes = mergeAdjacentDigits(digitBoxes);
@@ -633,7 +592,11 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
 }
 
 // ============================================================
-// 划线检测（只看数字 bbox 内部 ±3 像素范围）
+// ★ 划线检测（改成"黑像素跨度"检测，对虚线有效）
+// 原理：逐行扫描，找第一个和最后一个黑像素，计算跨度。
+// 横线穿过数字时，跨度接近 100% 宽度；
+// 数字笔画本身跨度有限。
+// 附加条件：黑像素数 >= 跨度 25%，排除左右两端各一个孤立噪点。
 // ============================================================
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
@@ -657,15 +620,27 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     const int yEnd = binary.rows - 3;
     if (yEnd <= yStart) return false;
 
-    const int minCount = static_cast<int>(binary.cols * 0.7);
+    double ratio = 0.7;
+    if (crossLineRatio > 0.1 && crossLineRatio < 0.95) {
+        ratio = crossLineRatio;
+    }
+    const int minSpan = static_cast<int>(binary.cols * ratio);
 
     for (int y = yStart; y < yEnd; ++y) {
         const uchar *row = binary.ptr<uchar>(y);
+        int firstX = -1;
+        int lastX = -1;
         int count = 0;
         for (int x = 0; x < binary.cols; ++x) {
-            if (row[x] > 0) ++count;
+            if (row[x] > 0) {
+                if (firstX < 0) firstX = x;
+                lastX = x;
+                ++count;
+            }
         }
-        if (count >= minCount) {
+        if (firstX < 0) continue;
+        const int span = lastX - firstX + 1;
+        if (span >= minSpan && count >= span / 4) {
             return true;
         }
     }
