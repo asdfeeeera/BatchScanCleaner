@@ -32,11 +32,19 @@ jobs:
       run: |
         cd $env:GITHUB_WORKSPACE
         git clone https://github.com/microsoft/vcpkg.git
+        if ($LASTEXITCODE -ne 0) { Write-Error "git clone vcpkg failed"; exit 1 }
         cd vcpkg
         git checkout a1a1cbc975abf909a6c8985a6a2b8fe20bbd9bd6
-        ./bootstrap-vcpkg.bat -disableMetrics
-        ./vcpkg install tesseract:x64-windows
-        echo "vcpkg install done"
+        if ($LASTEXITCODE -ne 0) { Write-Error "git checkout failed"; exit 1 }
+        
+        & cmd /c "bootstrap-vcpkg.bat -disableMetrics"
+        if ($LASTEXITCODE -ne 0) { Write-Error "bootstrap-vcpkg failed"; exit 1 }
+        if (-not (Test-Path ".\vcpkg.exe")) { Write-Error "vcpkg.exe not found"; exit 1 }
+        
+        & ".\vcpkg.exe" install "tesseract" "--triplet" "x64-windows"
+        if ($LASTEXITCODE -ne 0) { Write-Error "vcpkg install tesseract failed"; exit 1 }
+        
+        Write-Host "vcpkg install done"
 
     - name: Setup vcpkg (cache hit)
       if: steps.cache-vcpkg.outputs.cache-hit == 'true'
