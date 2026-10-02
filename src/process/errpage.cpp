@@ -148,13 +148,28 @@ bool isPageMatch(int recognized, int correctPage)
 }
 
 // ============================================================
-// ★ 核心：OCR 前的图像预处理
-// 1. 二值化（黑字白底 → 白字黑底）
-// 2. 水平开运算提取横线
-// 3. 减去横线
-// 4. 3x3 小闭运算修复细小缺口
-// 5. 1x7 垂直闭运算，把被横线切开的数字重新拼起来
-// 6. 反色回白底黑字，给 Tesseract
+// ★ 去横线（只去横线，不做闭运算，保留字符原始形状）
+// 输入：灰度图；输出：白字黑底的二值图
+// ============================================================
+cv::Mat removeHorizontalLines(const cv::Mat &gray)
+{
+    cv::Mat binary;
+    cv::threshold(gray, binary, 0, 255,
+                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+
+    const int kernelW = std::max(10, static_cast<int>(gray.cols * 0.35));
+    cv::Mat hKernel = cv::getStructuringElement(
+        cv::MORPH_RECT, cv::Size(kernelW, 1));
+    cv::Mat hLines;
+    cv::morphologyEx(binary, hLines, cv::MORPH_OPEN, hKernel);
+
+    cv::Mat noLines;
+    cv::subtract(binary, hLines, noLines);
+    return noLines; // 白字黑底
+}
+
+// ============================================================
+// ★ 预处理（用于整体识别）
 // ============================================================
 cv::Mat preprocessForOcr(const cv::Mat &digitImage)
 {
@@ -167,72 +182,40 @@ cv::Mat preprocessForOcr(const cv::Mat &digitImage)
         gray = digitImage.clone();
     }
 
-    // 二值化：白字黑底
-    cv::Mat binary;
-    cv::threshold(gray, binary, 0, 255,
-                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+    cv::Mat noLines = removeHorizontalLines(gray);
 
-    // 提取长横线：核宽度用图宽的 0.35 倍
-    const int kernelW = std::max(10, static_cast<int>(gray.cols * 0.35));
-    cv::Mat hKernel = cv::getStructuringElement(
-        cv::MORPH_RECT, cv::Size(kernelW, 1));
-    cv::Mat hLines;
-    cv::morphologyEx(binary, hLines, cv::MORPH_OPEN, hKernel);
-
-    // 从二值图中减去横线
-    cv::Mat noLines;
-    cv::subtract(binary, hLines, noLines);
-
-    // 修复 1：小的全方向闭运算，修复细小缺口
+    // 3x3 全方向闭运算修复小缺口
     cv::Mat kernel3 = cv::getStructuringElement(
         cv::MORPH_RECT, cv::Size(3, 3));
     cv::Mat repaired1;
     cv::morphologyEx(noLines, repaired1, cv::MORPH_CLOSE, kernel3);
 
-    // 修复 2：垂直闭运算，连接被横线切开的上下部分（核高 7，比较温和）
+    // 垂直闭运算连接上下断裂
     cv::Mat vKernel = cv::getStructuringElement(
         cv::MORPH_RECT, cv::Size(1, 7));
     cv::Mat repaired2;
     cv::morphologyEx(repaired1, repaired2, cv::MORPH_CLOSE, vKernel);
 
-    // 反色回白底黑字
     cv::Mat result;
     cv::bitwise_not(repaired2, result);
-
-    return result;
+    return result; // 白底黑字
 }
 
 // ============================================================
-// ★ 新增：用垂直投影把数字块切成单字符
-// 输入是白底黑字的图像，内部会反色成白字黑底来做投影
-// 返回的矩形基于原图尺寸，可以直接在原图上裁剪
+// ★ 垂直投影分割（输入是白字黑底的二值图）
 // ============================================================
-std::vector<cv::Rect> splitByVerticalProjection(const cv::Mat &image)
+std::vector<cv::Rect> splitByVerticalProjection(const cv::Mat &binary)
 {
     std::vector<cv::Rect> boxes;
-    if (image.empty()) return boxes;
+    if (binary.empty()) return boxes;
 
-    // 转成灰度
-    cv::Mat gray;
-    if (image.channels() == 3) {
-        cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
-    } else {
-        gray = image.clone();
-    }
-
-    // 反色成白字黑底
-    cv::Mat binary;
-    cv::threshold(gray, binary, 0, 255,
-                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
-
-    // 垂直投影：每列的像素和
     cv::Mat proj;
     cv::reduce(binary, proj, 0, cv::REDUCE_SUM, CV_32S);
 
     bool inChar = false;
     int start = 0;
     for (int x = 0; x < binary.cols; ++x) {
-        int colSum = proj.at<int>(0, x);
+        const int colSum = proj.at<int>(0, x);
         if (!inChar && colSum > 0) {
             inChar = true;
             start = x;
@@ -246,12 +229,11 @@ std::vector<cv::Rect> splitByVerticalProjection(const cv::Mat &image)
     if (inChar && binary.cols - start >= 3) {
         boxes.push_back(cv::Rect(start, 0, binary.cols - start, binary.rows));
     }
-
     return boxes;
 }
 
 // ============================================================
-// 用 Tesseract 识别（单次）
+// 单次 Tesseract 识别
 // ============================================================
 struct OcrAttempt
 {
@@ -271,7 +253,6 @@ OcrAttempt tryRecognize(const cv::Mat &image, const QString &tessExe,
     const QString tmpPng = tempDir.path() + QStringLiteral("/digit.png");
     const QString tmpOutBase = tempDir.path() + QStringLiteral("/out");
 
-    // 放大 4 倍
     cv::Mat enlarged;
     cv::resize(image, enlarged, cv::Size(), 4.0, 4.0, cv::INTER_CUBIC);
 
@@ -322,10 +303,53 @@ OcrAttempt tryRecognize(const cv::Mat &image, const QString &tessExe,
     return result;
 }
 
+// ============================================================
+// ★ 识别单个字符（输入是白字黑底的二值图，输出 0-9）
+// ============================================================
+bool recognizeSingleChar(const cv::Mat &charBinary,
+                          const QString &tessExe,
+                          const QString &tessdataDir,
+                          int &outDigit)
+{
+    if (charBinary.empty()) return false;
+
+    // 垂直闭运算：连接被横线切开的上下两部分
+    const int vH = std::max(3, static_cast<int>(charBinary.rows * 0.25));
+    cv::Mat vKernel = cv::getStructuringElement(
+        cv::MORPH_RECT, cv::Size(1, vH));
+    cv::Mat repaired1;
+    cv::morphologyEx(charBinary, repaired1, cv::MORPH_CLOSE, vKernel);
+
+    // 3x3 全方向小闭运算
+    cv::Mat k3 = cv::getStructuringElement(
+        cv::MORPH_RECT, cv::Size(3, 3));
+    cv::Mat repaired2;
+    cv::morphologyEx(repaired1, repaired2, cv::MORPH_CLOSE, k3);
+
+    // 反色成白底黑字
+    cv::Mat out;
+    cv::bitwise_not(repaired2, out);
+
+    const QStringList modes = {
+        QStringLiteral("10"),  // 单字符
+        QStringLiteral("8"),   // 单字
+        QStringLiteral("7")    // 单行
+    };
+
+    for (const QString &m : modes) {
+        OcrAttempt r = tryRecognize(out, tessExe, tessdataDir, m);
+        if (r.number >= 0 && r.text.length() == 1) {
+            outDigit = r.number;
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 // ============================================================
-// Tesseract OCR 识别（多次尝试）
+// Tesseract OCR 识别（多方案竞争，选位数最多的成功结果）
 // ============================================================
 int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
@@ -371,7 +395,7 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     const QString tessDir = QFileInfo(tessExe).absolutePath();
     const QString tessdataDir = tessDir + QStringLiteral("/tessdata");
 
-    // 方案 1：先按原图直接识别
+    // ---------- 方案 1：原图 psm7 直接识别 ----------
     {
         OcrAttempt r = tryRecognize(digitImage, tessExe, tessdataDir,
                                      QStringLiteral("7"));
@@ -380,41 +404,57 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                   : QString::fromUtf8("失败")));
         if (r.number >= 0) {
             outText = r.text;
-            outConfidence = 0.9;
+            outConfidence = 0.95;
             writeDiag(QString::fromUtf8("→ 采用原图识别结果"));
             diagFile.close();
             return r.number;
         }
     }
 
-    // 方案 2：预处理后识别
-    cv::Mat cleaned = preprocessForOcr(digitImage);
+    // ---------- 方案 2：预处理后整体识别（多 PSM，记录位数最多的） ----------
+    int bestNumber = -1;
+    QString bestText;
+    int bestDigits = 0;
 
-    const QStringList psmModes = {
-        QStringLiteral("7"),
-        QStringLiteral("8"),
-        QStringLiteral("13"),
-        QStringLiteral("6")
-    };
+    {
+        cv::Mat cleaned = preprocessForOcr(digitImage);
+        const QStringList psmModes = {
+            QStringLiteral("7"),
+            QStringLiteral("8"),
+            QStringLiteral("13"),
+            QStringLiteral("6")
+        };
 
-    for (const QString &psm : psmModes) {
-        OcrAttempt r = tryRecognize(cleaned, tessExe, tessdataDir, psm);
-        if (r.number >= 0) {
-            outText = r.text;
-            outConfidence = 0.9;
-            writeDiag(QString::fromUtf8("预处理+psm%1：成功 %2（采用）")
-                          .arg(psm).arg(r.number));
-            diagFile.close();
-            return r.number;
-        } else {
-            writeDiag(QString::fromUtf8("预处理+psm%1：失败").arg(psm));
+        for (const QString &psm : psmModes) {
+            OcrAttempt r = tryRecognize(cleaned, tessExe, tessdataDir, psm);
+            if (r.number >= 0) {
+                writeDiag(QString::fromUtf8("预处理+psm%1：成功 %2")
+                              .arg(psm).arg(r.text));
+                const int d = r.text.length();
+                if (d > bestDigits) {
+                    bestNumber = r.number;
+                    bestText = r.text;
+                    bestDigits = d;
+                }
+            } else {
+                writeDiag(QString::fromUtf8("预处理+psm%1：失败").arg(psm));
+            }
         }
     }
 
-    // ★ 方案 3：垂直分割后逐个字符识别
+    // ---------- 方案 3：去横线 + 垂直分割 + 单字符识别 ----------
     {
-        std::vector<cv::Rect> charBoxes = splitByVerticalProjection(cleaned);
-        writeDiag(QString::fromUtf8("垂直分割得到 %1 个字符块")
+        cv::Mat grayOrig;
+        if (digitImage.channels() == 3) {
+            cv::cvtColor(digitImage, grayOrig, cv::COLOR_BGR2GRAY);
+        } else {
+            grayOrig = digitImage.clone();
+        }
+
+        cv::Mat noLines = removeHorizontalLines(grayOrig);
+        std::vector<cv::Rect> charBoxes = splitByVerticalProjection(noLines);
+
+        writeDiag(QString::fromUtf8("原图去横线后分割得到 %1 个字符块")
                       .arg(static_cast<int>(charBoxes.size())));
 
         if (charBoxes.size() >= 2 && charBoxes.size() <= 6) {
@@ -422,22 +462,19 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
             bool allOk = true;
 
             for (size_t i = 0; i < charBoxes.size(); ++i) {
-                const cv::Rect &cb = charBoxes[i];
-                if (cb.width <= 0 || cb.height <= 0) { allOk = false; break; }
-                cv::Mat charImg = cleaned(cb).clone();
-
-                OcrAttempt cr = tryRecognize(charImg, tessExe, tessdataDir,
-                                              QStringLiteral("8"));
-                if (cr.number < 0) {
-                    cr = tryRecognize(charImg, tessExe, tessdataDir,
-                                       QStringLiteral("7"));
+                cv::Rect safe = charBoxes[i] &
+                    cv::Rect(0, 0, noLines.cols, noLines.rows);
+                if (safe.width <= 0 || safe.height <= 0) {
+                    allOk = false;
+                    break;
                 }
+                cv::Mat cbImg = noLines(safe).clone();
 
-                if (cr.number >= 0) {
-                    combined += QString::number(cr.number);
+                int digit = -1;
+                if (recognizeSingleChar(cbImg, tessExe, tessdataDir, digit)) {
+                    combined += QString::number(digit);
                     writeDiag(QString::fromUtf8("  字符%1：成功 %2")
-                                  .arg(static_cast<int>(i))
-                                  .arg(cr.number));
+                                  .arg(static_cast<int>(i)).arg(digit));
                 } else {
                     allOk = false;
                     writeDiag(QString::fromUtf8("  字符%1：失败")
@@ -447,18 +484,29 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
             }
 
             if (allOk && !combined.isEmpty()) {
-                bool ok = false;
-                const int num = combined.toInt(&ok);
-                if (ok) {
-                    outText = combined;
-                    outConfidence = 0.85;
-                    writeDiag(QString::fromUtf8("垂直分割识别成功：%1（采用）")
-                                  .arg(combined));
-                    diagFile.close();
-                    return num;
+                const int d = combined.length();
+                if (d > bestDigits) {
+                    bool ok = false;
+                    const int num = combined.toInt(&ok);
+                    if (ok) {
+                        bestNumber = num;
+                        bestText = combined;
+                        bestDigits = d;
+                        writeDiag(QString::fromUtf8(
+                            "→ 分割识别胜出：%1").arg(combined));
+                    }
                 }
             }
         }
+    }
+
+    if (bestNumber >= 0) {
+        outText = bestText;
+        outConfidence = 0.9;
+        writeDiag(QString::fromUtf8("最终采用：%1（位数 %2）")
+                      .arg(bestText).arg(bestDigits));
+        diagFile.close();
+        return bestNumber;
     }
 
     writeDiag(QString::fromUtf8("所有方案均失败"));
@@ -693,4 +741,4 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
     return result;
 }
 
-} // namespace processs
+} // namespace process
