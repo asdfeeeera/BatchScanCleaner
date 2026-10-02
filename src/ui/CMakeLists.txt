@@ -8,6 +8,7 @@ target_include_directories(ui PUBLIC
     ${CMAKE_SOURCE_DIR}/src/image
     ${CMAKE_SOURCE_DIR}/src/core
     ${CMAKE_SOURCE_DIR}/src/process
+    ${CMAKE_SOURCE_DIR}/src/protect
 )
 
 target_link_libraries(ui PUBLIC
@@ -17,4 +18,5 @@ target_link_libraries(ui PUBLIC
     image
     core
     process
+    protect
 )
