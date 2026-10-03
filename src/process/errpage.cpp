@@ -335,7 +335,10 @@ bool recognizeSingleChar(const cv::Mat &charImage,
 }
 
 // ============================================================
-// 涂白 block：只涂该块内的黑色像素
+// 涂白 block：
+//   - 只涂"整个连通域完全在 box 内"的黑色像素
+//   - 判断：连通域 bbox 的 left >= box.x 且 right <= box.x+width
+//   - 这样可以避免涂掉相邻的 0009
 // ============================================================
 void eraseBlock(cv::Mat &dst,
                 const cv::Mat &srcGray,
@@ -354,83 +357,36 @@ void eraseBlock(cv::Mat &dst,
     cv::Mat bin;
     cv::threshold(roiGray, bin, 200, 255, cv::THRESH_BINARY_INV);
 
-    // 只保留质心在原始 box 内的连通域
     cv::Mat labels, stats, centroids;
     const int n = cv::connectedComponentsWithStats(bin, labels, stats,
                                                      centroids, 8, CV_32S);
 
-    const double ox1 = 3.0;
-    const double oy1 = 3.0;
-    const double ox2 = ox1 + box.width;
-    const double oy2 = oy1 + box.height;
+    // box 在 ROI 内的坐标
+    const int boxLeft = 3;
+    const int boxRight = boxLeft + box.width;
 
     cv::Mat keep = cv::Mat::zeros(bin.size(), CV_8UC1);
     for (int i = 1; i < n; ++i) {
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
         if (area < 10) continue;
-        const double cx = centroids.at<double>(i, 0);
-        const double cy = centroids.at<double>(i, 1);
-        if (cx < ox1 || cx > ox2) continue;
-        if (cy < oy1 || cy > oy2) continue;
+
+        const int cLeft = stats.at<int>(i, cv::CC_STAT_LEFT);
+        const int cWidth = stats.at<int>(i, cv::CC_STAT_WIDTH);
+        const int cRight = cLeft + cWidth;
+
+        // ★ 整个连通域必须完全在 box 内
+        //   （允许左右各 2 像素的容差）
+        if (cLeft < boxLeft - 2) continue;
+        if (cRight > boxRight + 2) continue;
+
         keep.setTo(255, labels == i);
     }
 
-    // 膨胀 5x5 覆盖淡灰轮廓
     cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
     cv::dilate(keep, keep, k);
 
     cv::Mat roiDst = dst(r);
     roiDst.setTo(white, keep);
-}
-
-// ============================================================
-// 恢复 block：用该块内的黑色像素，从原图恢复
-// 只恢复"质心在 box 内"的连通域
-// ============================================================
-void restoreBlock(cv::Mat &dst,
-                  const cv::Mat &srcColor,
-                  const cv::Mat &srcGray,
-                  const cv::Rect &box)
-{
-    cv::Rect r = box;
-    r.x -= 3;
-    r.y -= 3;
-    r.width += 6;
-    r.height += 6;
-    r &= cv::Rect(0, 0, dst.cols, dst.rows);
-    if (r.width <= 0 || r.height <= 0) return;
-
-    cv::Mat roiGray = srcGray(r);
-    cv::Mat bin;
-    cv::threshold(roiGray, bin, 200, 255, cv::THRESH_BINARY_INV);
-
-    cv::Mat labels, stats, centroids;
-    const int n = cv::connectedComponentsWithStats(bin, labels, stats,
-                                                     centroids, 8, CV_32S);
-
-    const double ox1 = 3.0;
-    const double oy1 = 3.0;
-    const double ox2 = ox1 + box.width;
-    const double oy2 = oy1 + box.height;
-
-    cv::Mat keep = cv::Mat::zeros(bin.size(), CV_8UC1);
-    for (int i = 1; i < n; ++i) {
-        const int area = stats.at<int>(i, cv::CC_STAT_AREA);
-        if (area < 5) continue;
-        const double cx = centroids.at<double>(i, 0);
-        const double cy = centroids.at<double>(i, 1);
-        if (cx < ox1 || cx > ox2) continue;
-        if (cy < oy1 || cy > oy2) continue;
-        keep.setTo(255, labels == i);
-    }
-
-    // 膨胀 2x2
-    cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
-    cv::dilate(keep, keep, k);
-
-    cv::Mat srcRoi = srcColor(r);
-    cv::Mat dstRoi = dst(r);
-    srcRoi.copyTo(dstRoi, keep);
 }
 
 } // namespace
@@ -860,37 +816,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
     writeDiag(QString::fromUtf8("过滤后剩余 %1 个候选块")
                   .arg(static_cast<int>(candidates.size())));
 
-    // 判断每个候选：是否要涂白
-    // 涂白条件：识别 >= 10（多位数字）+ 有划线 + 不匹配正确页码
-    std::vector<bool> willErase(candidates.size(), false);
-
-    for (size_t i = 0; i < candidates.size(); ++i) {
-        const auto &it = candidates[i];
-        const bool matchesCorrect = fuzzyMatchPage(it.recognizedNumber,
-                                                     result.correctPage);
-        const bool ocrFailed = (it.recognizedNumber < 0);
-
-        if (matchesCorrect) {
-            willErase[i] = false;
-        } else if (ocrFailed) {
-            willErase[i] = false;
-        } else if (it.isCrossed && it.recognizedNumber >= 10) {
-            willErase[i] = true;
-        } else {
-            willErase[i] = false;
-        }
-
-        writeDiag(QString::fromUtf8("  候选%1：识别=%2 划线=%3 匹配=%4 → %5")
-                      .arg(static_cast<int>(i))
-                      .arg(it.recognizedNumber)
-                      .arg(it.isCrossed ? QStringLiteral("是") : QStringLiteral("否"))
-                      .arg(matchesCorrect ? QStringLiteral("是") : QStringLiteral("否"))
-                      .arg(willErase[i] ? QStringLiteral("涂白") : QStringLiteral("保留")));
-    }
-
-    // ============================================================
-    // 第一遍：涂白所有 willErase = true 的块
-    // ============================================================
     cv::Mat dst = src.clone();
     cv::Scalar white;
     if (dst.channels() == 4) {
@@ -899,20 +824,29 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         white = cv::Scalar(255, 255, 255);
     }
 
-    for (size_t i = 0; i < candidates.size(); ++i) {
-        if (!willErase[i]) continue;
-        eraseBlock(dst, gray, candidates[i].boundingBox, white);
-        ++result.crossedRemoved;
-    }
+    for (auto &item : candidates) {
+        const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber,
+                                                     result.correctPage);
+        const bool ocrFailed = (item.recognizedNumber < 0);
 
-    // ============================================================
-    // 第二遍：从原图恢复所有非涂白块的实际笔画
-    // （包括 OCR 失败的 0009、正确页码块等）
-    // ============================================================
-    for (size_t i = 0; i < candidates.size(); ++i) {
-        if (willErase[i]) continue;
-        restoreBlock(dst, src, gray, candidates[i].boundingBox);
-        ++result.pendingCount;
+        if (matchesCorrect) {
+            continue;
+        }
+        if (ocrFailed) {
+            ++result.pendingCount;
+            continue;
+        }
+
+        if (item.isCrossed && item.recognizedNumber >= 10) {
+            eraseBlock(dst, gray, item.boundingBox, white);
+            ++result.crossedRemoved;
+            writeDiag(QString::fromUtf8("  → 识别=%1，划线=是，涂白")
+                          .arg(item.recognizedNumber));
+        } else {
+            ++result.pendingCount;
+            writeDiag(QString::fromUtf8("  → 识别=%1，划线=否，加待确认")
+                          .arg(item.recognizedNumber));
+        }
     }
 
     {
@@ -922,17 +856,30 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
     }
 
     cv::Mat marked = src.clone();
-    for (size_t i = 0; i < candidates.size(); ++i) {
-        const auto &item = candidates[i];
+    int idx = 0;
+    for (const auto &item : candidates) {
         const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber,
                                                      result.correctPage);
 
         cv::Scalar color;
         if (matchesCorrect)      color = cv::Scalar(0, 255, 0);
-        else if (willErase[i])   color = cv::Scalar(0, 0, 255);
+        else if (item.isCrossed) color = cv::Scalar(0, 0, 255);
         else                     color = cv::Scalar(0, 165, 255);
 
         cv::rectangle(marked, item.boundingBox, color, 2);
+
+        QString info = QString::fromUtf8("块%1:").arg(idx++);
+        if (item.recognizedNumber >= 0) {
+            info += QString::number(item.recognizedNumber);
+        } else {
+            info += item.recognizedText.left(25);
+        }
+
+        cv::putText(marked, info.toStdString(),
+                    cv::Point(item.boundingBox.x,
+                              item.boundingBox.y - 5),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5,
+                    cv::Scalar(255, 0, 255), 1);
     }
 
     result.image = dst;
