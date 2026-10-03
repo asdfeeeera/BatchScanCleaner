@@ -181,15 +181,15 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     else if (options.strengthLevel == 1) maxSpotArea = 30;
     else if (options.strengthLevel == 2) maxSpotArea = 60;
 
-    // 装订孔区域
-    const bool isPortrait = (H > W);
-    const int edgeThreshold = isPortrait
-        ? static_cast<int>(W * 0.06)
-        : static_cast<int>(H * 0.06);
+    // ★ 边缘区域：四条边各 6%
+    const int edgeX = static_cast<int>(W * 0.06);
+    const int edgeY = static_cast<int>(H * 0.06);
 
+    // ★ 边缘区域允许的暗块上限（装订孔、边缘污渍）
     const int bindingMaxArea = 5000;
+    // ★ 边缘区域允许的宽高比（长条污渍）
+    const double bindingMaxAspect = 20.0;
 
-    // ★ 两个 mask：普通 spot 和装订孔 spot
     cv::Mat spotMask = cv::Mat::zeros(H, W, CV_8UC1);
     cv::Mat bindingMask = cv::Mat::zeros(H, W, CV_8UC1);
 
@@ -205,30 +205,32 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
 
         if (area < 2) continue;
 
-        bool isBinding = false;
-        if (isPortrait) {
-            isBinding = (x < edgeThreshold);
-        } else {
-            isBinding = (y < edgeThreshold);
-        }
+        // ★ 判断是否在四条边的任意一条的边缘区域
+        const bool nearLeft   = (x < edgeX);
+        const bool nearRight  = ((x + w) > (W - edgeX));
+        const bool nearTop    = (y < edgeY);
+        const bool nearBottom = ((y + h) > (H - edgeY));
 
-        const int localMaxArea = isBinding ? bindingMaxArea : maxSpotArea;
+        const bool isEdge = (nearLeft || nearRight || nearTop || nearBottom);
+
+        const int localMaxArea = isEdge ? bindingMaxArea : maxSpotArea;
         if (area > localMaxArea) continue;
 
         const double aspect = static_cast<double>(std::max(w, h))
                               / std::max(1, std::min(w, h));
-        if (aspect > 5.0) continue;
+
+        // ★ 边缘区允许大宽高比（长条污渍），中心区严格
+        const double localMaxAspect = isEdge ? bindingMaxAspect : 5.0;
+        if (aspect > localMaxAspect) continue;
 
         cv::Rect r(x, y, w, h);
         r &= cv::Rect(0, 0, W, H);
 
-        // 装订孔区域：不受 protectMask 限制
-        if (!isBinding) {
+        if (!isEdge) {
             cv::Mat roi = protectMask(r);
             if (cv::countNonZero(roi) > 0) continue;
             cv::rectangle(spotMask, r, cv::Scalar(255), cv::FILLED);
         } else {
-            // ★ 装订孔：画到独立的 bindingMask
             cv::rectangle(bindingMask, r, cv::Scalar(255), cv::FILLED);
         }
 
@@ -242,14 +244,11 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     } else {
         cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
 
-        // 普通 spot：膨胀 + 过滤 protectMask
         cv::dilate(spotMask, spotMask, kernel);
         cv::bitwise_and(spotMask, ~protectMask, spotMask);
 
-        // ★ 装订孔 mask：膨胀后不做 protectMask 过滤
         cv::dilate(bindingMask, bindingMask, kernel);
 
-        // 合并
         cv::Mat finalMask;
         cv::bitwise_or(spotMask, bindingMask, finalMask);
 
