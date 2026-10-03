@@ -171,71 +171,84 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     cv::Mat binary;
     cv::threshold(whitenedGray, binary, darkThreshold, 255, cv::THRESH_BINARY_INV);
 
-    cv::Mat labels, stats, centroids;
-    int nLabels = cv::connectedComponentsWithStats(
-        binary, labels, stats, centroids, 8, CV_32S);
+    // ============================================================
+    // ★ 核心：先腐蚀，去除细线
+    //   细边框线（3~5 像素宽）→ 腐蚀后消失
+    //   装订孔（实心 20~30 像素）→ 腐蚀后残留
+    //   页码笔画（2~4 像素）→ 腐蚀后消失
+    //   表格线（1~3 像素）→ 腐蚀后消失
+    // ============================================================
+    cv::Mat kErode = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+    cv::Mat eroded;
+    cv::erode(binary, eroded, kErode);
 
-    // 普通区域的小污点上限（按强度）
+    // 对腐蚀后的图做连通域分析
+    cv::Mat labelsE, statsE, centroidsE;
+    int nE = cv::connectedComponentsWithStats(
+        eroded, labelsE, statsE, centroidsE, 8, CV_32S);
+
+    cv::Mat bindingMask = cv::Mat::zeros(H, W, CV_8UC1);
+    int spotCount = 0;
+    int totalPixels = 0;
+
+    // 从腐蚀图里找"实心块"（装订孔、长条污渍）
+    for (int i = 1; i < nE; ++i) {
+        const int erodedArea = statsE.at<int>(i, cv::CC_STAT_AREA);
+        if (erodedArea < 15) continue;   // 腐蚀后剩余太小，忽略
+
+        const int ex = statsE.at<int>(i, cv::CC_STAT_LEFT);
+        const int ey = statsE.at<int>(i, cv::CC_STAT_TOP);
+        const int ew = statsE.at<int>(i, cv::CC_STAT_WIDTH);
+        const int eh = statsE.at<int>(i, cv::CC_STAT_HEIGHT);
+
+        // 膨胀回原大小（左右上下各扩 3 像素）
+        cv::Rect r(ex - 3, ey - 3, ew + 6, eh + 6);
+        r &= cv::Rect(0, 0, W, H);
+
+        // 面积过滤
+        if (r.width * r.height > 60000) continue;   // 太大，跳过
+        if (r.width * r.height < 30) continue;      // 太小
+
+        cv::rectangle(bindingMask, r, cv::Scalar(255), cv::FILLED);
+        ++spotCount;
+        totalPixels += erodedArea * 9;   // 粗略估算
+    }
+
+    // 小污点检测（用原始二值图，不受腐蚀影响）
     int maxSpotArea = 30;
     if (options.strengthLevel == 0) maxSpotArea = 15;
     else if (options.strengthLevel == 1) maxSpotArea = 30;
     else if (options.strengthLevel == 2) maxSpotArea = 60;
 
+    cv::Mat labelsB, statsB, centroidsB;
+    int nB = cv::connectedComponentsWithStats(
+        binary, labelsB, statsB, centroidsB, 8, CV_32S);
+
     cv::Mat spotMask = cv::Mat::zeros(H, W, CV_8UC1);
-    cv::Mat bindingMask = cv::Mat::zeros(H, W, CV_8UC1);
 
-    int spotCount = 0;
-    int totalPixels = 0;
+    for (int i = 1; i < nB; ++i) {
+        const int area = statsB.at<int>(i, cv::CC_STAT_AREA);
+        if (area < 2 || area > maxSpotArea) continue;
 
-    // ============================================================
-    // ★ 只看形状，不看位置
-    // ============================================================
-    for (int i = 1; i < nLabels; ++i) {
-        const int area = stats.at<int>(i, cv::CC_STAT_AREA);
-        const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
-        const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
-        const int x = stats.at<int>(i, cv::CC_STAT_LEFT);
-        const int y = stats.at<int>(i, cv::CC_STAT_TOP);
-
-        if (area < 2) continue;
-
-        const double fillRatio = static_cast<double>(area)
-                                 / std::max(1, w * h);
-        const double aspect = static_cast<double>(std::max(w, h))
-                              / std::max(1, std::min(w, h));
-        const int thickness = std::min(w, h);
+        const int x = statsB.at<int>(i, cv::CC_STAT_LEFT);
+        const int y = statsB.at<int>(i, cv::CC_STAT_TOP);
+        const int w = statsB.at<int>(i, cv::CC_STAT_WIDTH);
+        const int h = statsB.at<int>(i, cv::CC_STAT_HEIGHT);
 
         cv::Rect r(x, y, w, h);
         r &= cv::Rect(0, 0, W, H);
 
-        // 分类 1：装订孔（实心大块）
-        const bool isSolidBlob = (fillRatio > 0.65)
-                                 && (area >= 300)
-                                 && (area <= 5000);
+        // 检查是否已被 bindingMask 覆盖
+        cv::Mat roiB = bindingMask(r);
+        if (cv::countNonZero(roiB) > 0) continue;
 
-        // 分类 2：长条污渍（宽高比大 + 有厚度，避免误伤表格线）
-        const bool isLongStrip = (aspect >= 6.0)
-                                 && (thickness >= 15)
-                                 && (area >= 500)
-                                 && (area <= 50000);
+        // 检查 protectMask
+        cv::Mat roiP = protectMask(r);
+        if (cv::countNonZero(roiP) > 0) continue;
 
-        // 分类 3：普通小污点
-        const bool isSmallSpot = (area <= maxSpotArea);
-
-        if (isSolidBlob || isLongStrip) {
-            // 装订孔 / 长条污渍 → 去掉，不受 protectMask 限制
-            cv::rectangle(bindingMask, r, cv::Scalar(255), cv::FILLED);
-            ++spotCount;
-            totalPixels += area;
-        } else if (isSmallSpot) {
-            // 小污点 → 检查 protectMask
-            cv::Mat roi = protectMask(r);
-            if (cv::countNonZero(roi) > 0) continue;
-            cv::rectangle(spotMask, r, cv::Scalar(255), cv::FILLED);
-            ++spotCount;
-            totalPixels += area;
-        }
-        // 其它：保留（页码、正文、表格线等）
+        cv::rectangle(spotMask, r, cv::Scalar(255), cv::FILLED);
+        ++spotCount;
+        totalPixels += area;
     }
 
     cv::Mat finalImage;
