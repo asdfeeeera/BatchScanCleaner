@@ -335,36 +335,51 @@ bool recognizeSingleChar(const cv::Mat &charImage,
 }
 
 // ============================================================
-// 按像素涂白：只涂数字本身的黑色像素，不动相邻区域
+// 按像素涂白：
+//   - ROI 用 box 收缩 3 像素，避免侵入相邻数字
+//   - 只涂 ROI 内面积 >= 20 的连通域（数字本身）
+//   - 膨胀 3x3 覆盖描边
 // ============================================================
 void eraseByPixels(cv::Mat &dst,
                    const cv::Mat &srcGray,
                    const cv::Rect &box,
                    const cv::Scalar &white)
 {
-    // 取稍大一点的 ROI（左右各扩 5 像素，上下各扩 3 像素）
+    // 收缩 3 像素
     cv::Rect r = box;
-    r.x -= 5;
-    r.y -= 3;
-    r.width += 10;
-    r.height += 6;
+    r.x += 3;
+    r.y += 3;
+    r.width -= 6;
+    r.height -= 6;
     r &= cv::Rect(0, 0, dst.cols, dst.rows);
     if (r.width <= 0 || r.height <= 0) return;
 
     cv::Mat roiGray = srcGray(r);
 
-    // 二值化：黑像素 = 数字
+    // 固定阈值 128
     cv::Mat bin;
-    cv::threshold(roiGray, bin, 0, 255,
-                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+    cv::threshold(roiGray, bin, 128, 255, cv::THRESH_BINARY_INV);
 
-    // 膨胀 3 像素覆盖描边
-    cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
-    cv::dilate(bin, bin, k);
+    // 连通域过滤：只保留面积 >= 20 的块
+    cv::Mat labels, stats, centroids;
+    const int n = cv::connectedComponentsWithStats(bin, labels, stats,
+                                                     centroids, 8, CV_32S);
 
-    // 只把 mask 内的像素涂白
+    cv::Mat keep = cv::Mat::zeros(bin.size(), CV_8UC1);
+    for (int i = 1; i < n; ++i) {
+        const int area = stats.at<int>(i, cv::CC_STAT_AREA);
+        if (area >= 20) {
+            keep.setTo(255, labels == i);
+        }
+    }
+
+    // 膨胀 3x3 覆盖描边
+    cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+    cv::dilate(keep, keep, k);
+
+    // 只涂 ROI 内像素
     cv::Mat roiDst = dst(r);
-    roiDst.setTo(white, bin);
+    roiDst.setTo(white, keep);
 }
 
 } // namespace
@@ -804,9 +819,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         white = cv::Scalar(255, 255, 255);
     }
 
-    // ============================================================
-    // 按像素涂白：只涂数字本身的黑色像素
-    // ============================================================
     for (auto &item : candidates) {
         const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber,
                                                      result.correctPage);
