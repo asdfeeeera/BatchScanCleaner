@@ -795,62 +795,43 @@ void MainWindow::onProcessErrPage()
         crossedBoxes.push_back(it.boundingBox);
     }
 
-    // Step 3: merge adjacent crossed boxes on the same row
-    std::vector<cv::Rect> mergedBoxes;
-    if (!crossedBoxes.empty()) {
-        std::sort(crossedBoxes.begin(), crossedBoxes.end(),
-                  [](const cv::Rect &a, const cv::Rect &b) {
-                      if (std::abs(a.y - b.y) < a.height / 2) return a.x < b.x;
-                      return a.y < b.y;
-                  });
-
-        cv::Rect current = crossedBoxes[0];
-        for (size_t i = 1; i < crossedBoxes.size(); ++i) {
-            const cv::Rect &next = crossedBoxes[i];
-
-            const int sameRow = std::abs(current.y - next.y) < current.height / 2;
-            const int gap = next.x - (current.x + current.width);
-            const bool closeGap = gap >= 0 && gap < current.height * 2;
-
-            if (sameRow && closeGap) {
-                const int x1 = std::min(current.x, next.x);
-                const int y1 = std::min(current.y, next.y);
-                const int x2 = std::max(current.x + current.width,
-                                         next.x + next.width);
-                const int y2 = std::max(current.y + current.height,
-                                         next.y + next.height);
-                current = cv::Rect(x1, y1, x2 - x1, y2 - y1);
-            } else {
-                mergedBoxes.push_back(current);
-                current = next;
-            }
-        }
-        mergedBoxes.push_back(current);
-    }
-
-    // Step 4: add one pending item per merged box
+    // Step 3: merge ALL crossed boxes into ONE bounding box
+    // (assume at most one wrong page number per image)
     const QFileInfo fi(m_currentImagePath);
     int addedCount = 0;
-    for (const cv::Rect &box : mergedBoxes) {
+
+    if (!crossedBoxes.empty()) {
+        cv::Rect finalBox = crossedBoxes[0];
+        for (size_t i = 1; i < crossedBoxes.size(); ++i) {
+            const cv::Rect &r = crossedBoxes[i];
+            const int x1 = std::min(finalBox.x, r.x);
+            const int y1 = std::min(finalBox.y, r.y);
+            const int x2 = std::max(finalBox.x + finalBox.width,
+                                     r.x + r.width);
+            const int y2 = std::max(finalBox.y + finalBox.height,
+                                     r.y + r.height);
+            finalBox = cv::Rect(x1, y1, x2 - x1, y2 - y1);
+        }
+
         analyze::PendingItem p;
         p.type = analyze::PendingType::WrongPageNumber;
         p.suggestedAction = analyze::PendingAction::Remove;
         p.sourceImagePath = m_currentImagePath;
         p.fileName = fi.fileName();
-        p.boundingBox = box;
+        p.boundingBox = finalBox;
         p.confidence = 0.9;
         p.reason = QString::fromUtf8("检测到划线数字，与正确页码不符");
         p.detail = QString::fromUtf8("划线区域，正确页码：%1")
                        .arg(result.correctPage);
 
-        cv::Rect safe = box &
+        cv::Rect safe = finalBox &
                         cv::Rect(0, 0, srcForThumb.cols, srcForThumb.rows);
         if (safe.width > 0 && safe.height > 0) {
             p.thumbnail = srcForThumb(safe).clone();
         }
 
         analyze::PendingCenter::instance().addItem(p);
-        ++addedCount;
+        addedCount = 1;
     }
 
     QString pageInfo;
