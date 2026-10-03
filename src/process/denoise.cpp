@@ -68,6 +68,64 @@ void Denoise::buildProtectMask(const cv::Mat &gray,
     }
 }
 
+// ============================================================
+// ★ 检测黄色污渍（HSV 色相 15~45，饱和度 > 50，明度 > 60）
+//   不自动删除，返回给上层加到"待确认中心"
+// ============================================================
+void Denoise::detectYellowBlobs(const cv::Mat &src,
+                                 std::vector<cv::Rect> &outBlobs)
+{
+    outBlobs.clear();
+    if (src.empty() || src.channels() < 3) return;
+
+    cv::Mat bgr;
+    if (src.channels() == 4) {
+        cv::cvtColor(src, bgr, cv::COLOR_BGRA2BGR);
+    } else {
+        bgr = src;
+    }
+
+    cv::Mat hsv;
+    cv::cvtColor(bgr, hsv, cv::COLOR_BGR2HSV);
+
+    std::vector<cv::Mat> hsvCh;
+    cv::split(hsv, hsvCh);
+
+    cv::Mat hMask, sMask, vMask, mask;
+    cv::inRange(hsvCh[0], 15, 45, hMask);
+    cv::inRange(hsvCh[1], 50, 255, sMask);
+    cv::inRange(hsvCh[2], 60, 255, vMask);
+
+    cv::bitwise_and(hMask, sMask, mask);
+    cv::bitwise_and(mask, vMask, mask);
+
+    // 形态学闭运算，把碎片连起来
+    cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+    cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, k);
+
+    cv::Mat labels, stats, centroids;
+    const int n = cv::connectedComponentsWithStats(
+        mask, labels, stats, centroids, 8, CV_32S);
+
+    const int W = src.cols;
+    const int H = src.rows;
+
+    for (int i = 1; i < n; ++i) {
+        const int area = stats.at<int>(i, cv::CC_STAT_AREA);
+        if (area < 100) continue;
+
+        cv::Rect r(stats.at<int>(i, cv::CC_STAT_LEFT),
+                   stats.at<int>(i, cv::CC_STAT_TOP),
+                   stats.at<int>(i, cv::CC_STAT_WIDTH),
+                   stats.at<int>(i, cv::CC_STAT_HEIGHT));
+        r &= cv::Rect(0, 0, W, H);
+
+        if (r.width <= 0 || r.height <= 0) continue;
+
+        outBlobs.push_back(r);
+    }
+}
+
 namespace {
 
 cv::Mat whitenBackground(const cv::Mat &src, const cv::Mat &protectMask)
@@ -170,6 +228,10 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     cv::Mat binary;
     cv::threshold(whitenedGray, binary, darkThreshold, 255, cv::THRESH_BINARY_INV);
 
+    cv::Mat labels, stats, centroids;
+    int nLabels = cv::connectedComponentsWithStats(
+        binary, labels, stats, centroids, 8, CV_32S);
+
     // 小污点面积上限
     int maxSpotArea = 30;
     if (options.strengthLevel == 0) maxSpotArea = 15;
@@ -182,87 +244,62 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     int spotCount = 0;
     int totalPixels = 0;
 
-    // ============================================================
-    // ★ 第一步：腐蚀 3x3，得到"实心块候选"
-    // ============================================================
-    cv::Mat kErode = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
-    cv::Mat eroded;
-    cv::erode(binary, eroded, kErode);
+    // 装订孔方向：竖版看左边，横版看顶部
+    const bool isPortrait = (H > W);
+    const int edgeThreshold = isPortrait
+        ? static_cast<int>(W * 0.06)
+        : static_cast<int>(H * 0.06);
 
-    cv::Mat labelsE, statsE, centroidsE;
-    int nE = cv::connectedComponentsWithStats(
-        eroded, labelsE, statsE, centroidsE, 8, CV_32S);
+    // 装订孔面积范围
+    const int bindingMinArea = 200;
+    const int bindingMaxArea = 3000;
+    // 装订孔要求深黑
+    const double bindingMaxGray = 100.0;
 
-    for (int i = 1; i < nE; ++i) {
-        const int erodedArea = statsE.at<int>(i, cv::CC_STAT_AREA);
-        if (erodedArea < 20) continue;   // 腐蚀后残留太小，忽略
+    for (int i = 1; i < nLabels; ++i) {
+        const int area = stats.at<int>(i, cv::CC_STAT_AREA);
+        const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
+        const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
+        const int x = stats.at<int>(i, cv::CC_STAT_LEFT);
+        const int y = stats.at<int>(i, cv::CC_STAT_TOP);
 
-        const int ex = statsE.at<int>(i, cv::CC_STAT_LEFT);
-        const int ey = statsE.at<int>(i, cv::CC_STAT_TOP);
-        const int ew = statsE.at<int>(i, cv::CC_STAT_WIDTH);
-        const int eh = statsE.at<int>(i, cv::CC_STAT_HEIGHT);
-
-        // ★ 膨胀回原大小（+3 像素）
-        cv::Rect r(ex - 3, ey - 3, ew + 6, eh + 6);
-        r &= cv::Rect(0, 0, W, H);
-        if (r.width <= 0 || r.height <= 0) continue;
-
-        // ★ 在原始二值图上，统计该矩形内的黑像素数
-        cv::Mat roi = binary(r);
-        const int origCount = cv::countNonZero(roi);
-        const double fillRatio = static_cast<double>(origCount)
-                                 / std::max(1, r.width * r.height);
-        const double aspect = static_cast<double>(std::max(r.width, r.height))
-                              / std::max(1, std::min(r.width, r.height));
-
-        // ★ 形状验证：必须满足"实心圆"或"长条"
-        const bool isSolidBlob = (fillRatio > 0.55)
-                                 && (aspect < 3.0)
-                                 && (r.width * r.height >= 200)
-                                 && (r.width * r.height <= 5000);
-
-        const bool isLongStrip = (aspect >= 5.0)
-                                 && (fillRatio > 0.35)
-                                 && (std::min(r.width, r.height) >= 10)
-                                 && (r.width * r.height <= 60000);
-
-        if (isSolidBlob || isLongStrip) {
-            cv::rectangle(bindingMask, r, cv::Scalar(255), cv::FILLED);
-            ++spotCount;
-            totalPixels += origCount;
-        }
-    }
-
-    // ============================================================
-    // ★ 第二步：普通小污点（原始二值图上，面积小）
-    // ============================================================
-    cv::Mat labelsB, statsB, centroidsB;
-    int nB = cv::connectedComponentsWithStats(
-        binary, labelsB, statsB, centroidsB, 8, CV_32S);
-
-    for (int i = 1; i < nB; ++i) {
-        const int area = statsB.at<int>(i, cv::CC_STAT_AREA);
-        if (area < 2 || area > maxSpotArea) continue;
-
-        const int x = statsB.at<int>(i, cv::CC_STAT_LEFT);
-        const int y = statsB.at<int>(i, cv::CC_STAT_TOP);
-        const int w = statsB.at<int>(i, cv::CC_STAT_WIDTH);
-        const int h = statsB.at<int>(i, cv::CC_STAT_HEIGHT);
+        if (area < 2) continue;
 
         cv::Rect r(x, y, w, h);
         r &= cv::Rect(0, 0, W, H);
+        if (r.width <= 0 || r.height <= 0) continue;
 
-        // 已被 bindingMask 覆盖 → 跳过
-        cv::Mat roiB = bindingMask(r);
-        if (cv::countNonZero(roiB) > 0) continue;
+        // ---- 装订孔判断：位置 + 深黑 + 面积 ----
+        bool isBinding = false;
+        if (isPortrait) {
+            isBinding = (x < edgeThreshold);
+        } else {
+            isBinding = (y < edgeThreshold);
+        }
 
-        // 检查 protectMask
-        cv::Mat roiP = protectMask(r);
-        if (cv::countNonZero(roiP) > 0) continue;
+        if (isBinding
+            && area >= bindingMinArea
+            && area <= bindingMaxArea) {
+            // 该区域在原始灰度图上的平均灰度
+            cv::Mat roiGray = gray(r);
+            const double meanVal = cv::mean(roiGray)[0];
+            if (meanVal < bindingMaxGray) {
+                cv::rectangle(bindingMask, r, cv::Scalar(255), cv::FILLED);
+                ++spotCount;
+                totalPixels += area;
+                continue;
+            }
+        }
 
-        cv::rectangle(spotMask, r, cv::Scalar(255), cv::FILLED);
-        ++spotCount;
-        totalPixels += area;
+        // ---- 普通小污点 ----
+        if (area <= maxSpotArea) {
+            // 检查 protectMask
+            cv::Mat roiP = protectMask(r);
+            if (cv::countNonZero(roiP) > 0) continue;
+            cv::rectangle(spotMask, r, cv::Scalar(255), cv::FILLED);
+            ++spotCount;
+            totalPixels += area;
+        }
     }
 
     cv::Mat finalImage;
@@ -288,6 +325,9 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         }
         finalImage = dst;
     }
+
+    // ★ 检测黄色污渍（不删除，返回给上层）
+    detectYellowBlobs(src, result.yellowBlobs);
 
     result.image = finalImage;
     result.spotCount = spotCount;
