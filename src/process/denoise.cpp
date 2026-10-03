@@ -6,6 +6,10 @@
 #include <algorithm>
 #include <cmath>
 
+#include <QDir>
+#include <QFile>
+#include <QTextStream>
+
 namespace process {
 
 double Denoise::estimatePaperGray(const cv::Mat &gray)
@@ -239,9 +243,25 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         ? static_cast<int>(W * 0.06)
         : static_cast<int>(H * 0.06);
 
-    // ★ 放宽装订孔面积范围
-    const int bindingMinArea = 80;     // 80~10000
+    const int bindingMinArea = 80;
     const int bindingMaxArea = 10000;
+
+    // ★ 诊断日志
+    const QString diagPath = QDir::homePath() +
+        QStringLiteral("/Desktop/denoise_debug.txt");
+    QFile diagFile(diagPath);
+    diagFile.open(QIODevice::WriteOnly | QIODevice::Text);
+    QTextStream diag(&diagFile);
+    diag.setCodec("UTF-8");
+
+    diag << QString::fromUtf8("页面尺寸：%1 x %2\n").arg(W).arg(H);
+    diag << QString::fromUtf8("竖版：%1\n")
+                .arg(isPortrait ? QStringLiteral("是") : QStringLiteral("否"));
+    diag << QString::fromUtf8("边缘阈值：%1\n").arg(edgeThreshold);
+    diag << QString::fromUtf8("纸张灰度：%1\n").arg(paperGray, 0, 'f', 1);
+    diag << QString::fromUtf8("暗阈值：%1\n").arg(darkThreshold, 0, 'f', 1);
+    diag << QString::fromUtf8("连通域数量：%1\n").arg(nLabels - 1);
+    diag << QString::fromUtf8("----------------------------------------\n");
 
     for (int i = 1; i < nLabels; ++i) {
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
@@ -256,7 +276,9 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         r &= cv::Rect(0, 0, W, H);
         if (r.width <= 0 || r.height <= 0) continue;
 
-        // ★ 装订孔：位置在边缘 + 面积符合 + 不含太多"白"像素
+        cv::Mat roiGray = gray(r);
+        const double meanVal = cv::mean(roiGray)[0];
+
         bool isBinding = false;
         if (isPortrait) {
             isBinding = (x < edgeThreshold);
@@ -264,30 +286,41 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
             isBinding = (y < edgeThreshold);
         }
 
+        diag << QString::fromUtf8("块%1: bbox=(%2,%3,%4x%5) 面积=%6 灰度=%7 边缘=%8\n")
+                    .arg(i).arg(x).arg(y).arg(w).arg(h)
+                    .arg(area).arg(meanVal, 0, 'f', 1)
+                    .arg(isBinding ? QStringLiteral("是") : QStringLiteral("否"));
+
+        // 装订孔判断
         if (isBinding
             && area >= bindingMinArea
-            && area <= bindingMaxArea) {
-            // 该区域在原始灰度图上的平均灰度
-            cv::Mat roiGray = gray(r);
-            const double meanVal = cv::mean(roiGray)[0];
-            // ★ 从 100 放宽到 130
-            if (meanVal < 130.0) {
-                cv::rectangle(bindingMask, r, cv::Scalar(255), cv::FILLED);
-                ++spotCount;
-                totalPixels += area;
-                continue;
-            }
+            && area <= bindingMaxArea
+            && meanVal < 130.0) {
+            cv::rectangle(bindingMask, r, cv::Scalar(255), cv::FILLED);
+            ++spotCount;
+            totalPixels += area;
+            diag << QString::fromUtf8("  → 装订孔，删除\n");
+            continue;
         }
 
         // 普通小污点
         if (area <= maxSpotArea) {
             cv::Mat roiP = protectMask(r);
-            if (cv::countNonZero(roiP) > 0) continue;
+            if (cv::countNonZero(roiP) > 0) {
+                diag << QString::fromUtf8("  → 小污点，但被保护掩膜覆盖，跳过\n");
+                continue;
+            }
             cv::rectangle(spotMask, r, cv::Scalar(255), cv::FILLED);
             ++spotCount;
             totalPixels += area;
+            diag << QString::fromUtf8("  → 小污点，删除\n");
+            continue;
         }
+
+        diag << QString::fromUtf8("  → 保留\n");
     }
+
+    diag.close();
 
     cv::Mat finalImage;
     if (spotCount == 0) {
