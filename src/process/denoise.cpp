@@ -111,7 +111,7 @@ void Denoise::detectYellowBlobs(const cv::Mat &src,
 
     for (int i = 1; i < n; ++i) {
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
-        if (area < 100) continue;
+        if (area < 800) continue;
 
         cv::Rect r(stats.at<int>(i, cv::CC_STAT_LEFT),
                    stats.at<int>(i, cv::CC_STAT_TOP),

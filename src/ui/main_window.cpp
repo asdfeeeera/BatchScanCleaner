@@ -665,6 +665,24 @@ void MainWindow::onDenoise()
                 .arg(result.cleanedPixels));
     }
 
+    // ★ 先清掉本文件旧的黄色污渍项（避免重复）
+    {
+        const QList<analyze::PendingItem> allOld =
+            analyze::PendingCenter::instance().allItems();
+        QList<int> idsToDrop;
+        for (const analyze::PendingItem &x : allOld) {
+            if (x.sourceImagePath == m_currentImagePath &&
+                x.type == analyze::PendingType::YellowBlob) {
+                idsToDrop.append(x.id);
+            }
+        }
+        if (!idsToDrop.isEmpty()) {
+            analyze::PendingCenter::instance().setDecisionByIds(
+                idsToDrop, analyze::PendingDecision::Rejected);
+            analyze::PendingCenter::instance().clearDecided();
+        }
+    }
+
     // ★ 把黄色污渍加入待确认中心
     if (!result.yellowBlobs.empty()) {
         const QFileInfo fi(m_currentImagePath);
