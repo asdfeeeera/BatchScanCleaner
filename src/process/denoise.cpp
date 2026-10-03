@@ -136,7 +136,6 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     cv::Mat protectMask;
     buildProtectMask(gray, protectMask, options.protectRadius);
 
-    // 1.1 合并外部保护掩膜
     if (!options.protectMask.empty()) {
         cv::Mat ext = options.protectMask;
         if (ext.size() != gray.size()) {
@@ -155,7 +154,7 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     // 2. 填底色
     cv::Mat whitened = whitenBackground(src, protectMask);
 
-    // 3. 在填白后的图上做污点检测
+    // 3. 二值化
     cv::Mat whitenedGray;
     if (whitened.channels() == 3) {
         cv::cvtColor(whitened, whitenedGray, cv::COLOR_BGR2GRAY);
@@ -171,60 +170,75 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     cv::Mat binary;
     cv::threshold(whitenedGray, binary, darkThreshold, 255, cv::THRESH_BINARY_INV);
 
+    // 小污点面积上限
+    int maxSpotArea = 30;
+    if (options.strengthLevel == 0) maxSpotArea = 15;
+    else if (options.strengthLevel == 1) maxSpotArea = 30;
+    else if (options.strengthLevel == 2) maxSpotArea = 60;
+
+    cv::Mat spotMask = cv::Mat::zeros(H, W, CV_8UC1);
+    cv::Mat bindingMask = cv::Mat::zeros(H, W, CV_8UC1);
+
+    int spotCount = 0;
+    int totalPixels = 0;
+
     // ============================================================
-    // ★ 核心：先腐蚀，去除细线
-    //   细边框线（3~5 像素宽）→ 腐蚀后消失
-    //   装订孔（实心 20~30 像素）→ 腐蚀后残留
-    //   页码笔画（2~4 像素）→ 腐蚀后消失
-    //   表格线（1~3 像素）→ 腐蚀后消失
+    // ★ 第一步：腐蚀 3x3，得到"实心块候选"
     // ============================================================
     cv::Mat kErode = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
     cv::Mat eroded;
     cv::erode(binary, eroded, kErode);
 
-    // 对腐蚀后的图做连通域分析
     cv::Mat labelsE, statsE, centroidsE;
     int nE = cv::connectedComponentsWithStats(
         eroded, labelsE, statsE, centroidsE, 8, CV_32S);
 
-    cv::Mat bindingMask = cv::Mat::zeros(H, W, CV_8UC1);
-    int spotCount = 0;
-    int totalPixels = 0;
-
-    // 从腐蚀图里找"实心块"（装订孔、长条污渍）
     for (int i = 1; i < nE; ++i) {
         const int erodedArea = statsE.at<int>(i, cv::CC_STAT_AREA);
-        if (erodedArea < 15) continue;   // 腐蚀后剩余太小，忽略
+        if (erodedArea < 20) continue;   // 腐蚀后残留太小，忽略
 
         const int ex = statsE.at<int>(i, cv::CC_STAT_LEFT);
         const int ey = statsE.at<int>(i, cv::CC_STAT_TOP);
         const int ew = statsE.at<int>(i, cv::CC_STAT_WIDTH);
         const int eh = statsE.at<int>(i, cv::CC_STAT_HEIGHT);
 
-        // 膨胀回原大小（左右上下各扩 3 像素）
+        // ★ 膨胀回原大小（+3 像素）
         cv::Rect r(ex - 3, ey - 3, ew + 6, eh + 6);
         r &= cv::Rect(0, 0, W, H);
+        if (r.width <= 0 || r.height <= 0) continue;
 
-        // 面积过滤
-        if (r.width * r.height > 60000) continue;   // 太大，跳过
-        if (r.width * r.height < 30) continue;      // 太小
+        // ★ 在原始二值图上，统计该矩形内的黑像素数
+        cv::Mat roi = binary(r);
+        const int origCount = cv::countNonZero(roi);
+        const double fillRatio = static_cast<double>(origCount)
+                                 / std::max(1, r.width * r.height);
+        const double aspect = static_cast<double>(std::max(r.width, r.height))
+                              / std::max(1, std::min(r.width, r.height));
 
-        cv::rectangle(bindingMask, r, cv::Scalar(255), cv::FILLED);
-        ++spotCount;
-        totalPixels += erodedArea * 9;   // 粗略估算
+        // ★ 形状验证：必须满足"实心圆"或"长条"
+        const bool isSolidBlob = (fillRatio > 0.55)
+                                 && (aspect < 3.0)
+                                 && (r.width * r.height >= 200)
+                                 && (r.width * r.height <= 5000);
+
+        const bool isLongStrip = (aspect >= 5.0)
+                                 && (fillRatio > 0.35)
+                                 && (std::min(r.width, r.height) >= 10)
+                                 && (r.width * r.height <= 60000);
+
+        if (isSolidBlob || isLongStrip) {
+            cv::rectangle(bindingMask, r, cv::Scalar(255), cv::FILLED);
+            ++spotCount;
+            totalPixels += origCount;
+        }
     }
 
-    // 小污点检测（用原始二值图，不受腐蚀影响）
-    int maxSpotArea = 30;
-    if (options.strengthLevel == 0) maxSpotArea = 15;
-    else if (options.strengthLevel == 1) maxSpotArea = 30;
-    else if (options.strengthLevel == 2) maxSpotArea = 60;
-
+    // ============================================================
+    // ★ 第二步：普通小污点（原始二值图上，面积小）
+    // ============================================================
     cv::Mat labelsB, statsB, centroidsB;
     int nB = cv::connectedComponentsWithStats(
         binary, labelsB, statsB, centroidsB, 8, CV_32S);
-
-    cv::Mat spotMask = cv::Mat::zeros(H, W, CV_8UC1);
 
     for (int i = 1; i < nB; ++i) {
         const int area = statsB.at<int>(i, cv::CC_STAT_AREA);
@@ -238,7 +252,7 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         cv::Rect r(x, y, w, h);
         r &= cv::Rect(0, 0, W, H);
 
-        // 检查是否已被 bindingMask 覆盖
+        // 已被 bindingMask 覆盖 → 跳过
         cv::Mat roiB = bindingMask(r);
         if (cv::countNonZero(roiB) > 0) continue;
 
