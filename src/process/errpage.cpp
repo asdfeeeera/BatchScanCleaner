@@ -336,8 +336,8 @@ bool recognizeSingleChar(const cv::Mat &charImage,
 
 // ============================================================
 // 按像素涂白：
-//   - ROI 用 box 收缩 3 像素，避免侵入相邻数字
-//   - 只涂 ROI 内面积 >= 20 的连通域（数字本身）
+//   - ROI 扩张 3 像素
+//   - 只保留"质心在原始框内"的连通域
 //   - 膨胀 3x3 覆盖描边
 // ============================================================
 void eraseByPixels(cv::Mat &dst,
@@ -345,39 +345,46 @@ void eraseByPixels(cv::Mat &dst,
                    const cv::Rect &box,
                    const cv::Scalar &white)
 {
-    // 收缩 3 像素
     cv::Rect r = box;
-    r.x += 3;
-    r.y += 3;
-    r.width -= 6;
-    r.height -= 6;
+    r.x -= 3;
+    r.y -= 3;
+    r.width += 6;
+    r.height += 6;
     r &= cv::Rect(0, 0, dst.cols, dst.rows);
     if (r.width <= 0 || r.height <= 0) return;
 
     cv::Mat roiGray = srcGray(r);
 
-    // 固定阈值 128
     cv::Mat bin;
-    cv::threshold(roiGray, bin, 128, 255, cv::THRESH_BINARY_INV);
+    cv::threshold(roiGray, bin, 0, 255,
+                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    // 连通域过滤：只保留面积 >= 20 的块
     cv::Mat labels, stats, centroids;
     const int n = cv::connectedComponentsWithStats(bin, labels, stats,
                                                      centroids, 8, CV_32S);
 
+    const double ox1 = 3.0;
+    const double oy1 = 3.0;
+    const double ox2 = ox1 + box.width;
+    const double oy2 = oy1 + box.height;
+
     cv::Mat keep = cv::Mat::zeros(bin.size(), CV_8UC1);
     for (int i = 1; i < n; ++i) {
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
-        if (area >= 20) {
-            keep.setTo(255, labels == i);
-        }
+        if (area < 10) continue;
+
+        const double cx = centroids.at<double>(i, 0);
+        const double cy = centroids.at<double>(i, 1);
+
+        if (cx < ox1 || cx > ox2) continue;
+        if (cy < oy1 || cy > oy2) continue;
+
+        keep.setTo(255, labels == i);
     }
 
-    // 膨胀 3x3 覆盖描边
     cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
     cv::dilate(keep, keep, k);
 
-    // 只涂 ROI 内像素
     cv::Mat roiDst = dst(r);
     roiDst.setTo(white, keep);
 }
