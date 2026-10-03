@@ -181,9 +181,7 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     else if (options.strengthLevel == 1) maxSpotArea = 30;
     else if (options.strengthLevel == 2) maxSpotArea = 60;
 
-    // 装订孔区域：
-    //   竖版（H > W）：左边缘 6% 宽度
-    //   横版（W >= H）：上边缘 6% 高度
+    // 装订孔区域
     const bool isPortrait = (H > W);
     const int edgeThreshold = isPortrait
         ? static_cast<int>(W * 0.06)
@@ -191,7 +189,10 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
 
     const int bindingMaxArea = 5000;
 
+    // ★ 两个 mask：普通 spot 和装订孔 spot
     cv::Mat spotMask = cv::Mat::zeros(H, W, CV_8UC1);
+    cv::Mat bindingMask = cv::Mat::zeros(H, W, CV_8UC1);
+
     int spotCount = 0;
     int totalPixels = 0;
 
@@ -204,7 +205,6 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
 
         if (area < 2) continue;
 
-        // 判断是否为装订孔：块的左边缘（或上边缘）落在边缘区域
         bool isBinding = false;
         if (isPortrait) {
             isBinding = (x < edgeThreshold);
@@ -222,13 +222,16 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         cv::Rect r(x, y, w, h);
         r &= cv::Rect(0, 0, W, H);
 
-        // 装订孔区域：即使被 protectMask 保护，也允许去除
+        // 装订孔区域：不受 protectMask 限制
         if (!isBinding) {
             cv::Mat roi = protectMask(r);
             if (cv::countNonZero(roi) > 0) continue;
+            cv::rectangle(spotMask, r, cv::Scalar(255), cv::FILLED);
+        } else {
+            // ★ 装订孔：画到独立的 bindingMask
+            cv::rectangle(bindingMask, r, cv::Scalar(255), cv::FILLED);
         }
 
-        cv::rectangle(spotMask, r, cv::Scalar(255), cv::FILLED);
         ++spotCount;
         totalPixels += area;
     }
@@ -238,17 +241,24 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         finalImage = whitened;
     } else {
         cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+
+        // 普通 spot：膨胀 + 过滤 protectMask
         cv::dilate(spotMask, spotMask, kernel);
         cv::bitwise_and(spotMask, ~protectMask, spotMask);
 
-        // 但装订孔区域不能被 protectMask 限制，所以重新并回去
-        // （简单做法：装订孔区域单独处理）
+        // ★ 装订孔 mask：膨胀后不做 protectMask 过滤
+        cv::dilate(bindingMask, bindingMask, kernel);
+
+        // 合并
+        cv::Mat finalMask;
+        cv::bitwise_or(spotMask, bindingMask, finalMask);
+
         cv::Mat dst;
         if (options.useInpaint) {
-            cv::inpaint(whitened, spotMask, dst, 3, cv::INPAINT_TELEA);
+            cv::inpaint(whitened, finalMask, dst, 3, cv::INPAINT_TELEA);
         } else {
             cv::medianBlur(whitened, dst, 3);
-            whitened.copyTo(dst, ~spotMask);
+            whitened.copyTo(dst, ~finalMask);
         }
         finalImage = dst;
     }
