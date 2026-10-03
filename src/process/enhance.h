@@ -7,29 +7,26 @@ namespace process {
 struct EnhanceResult
 {
     cv::Mat image;
-    double paperGray = 0.0;      // 估算的纸张灰度
-    double darkGray = 0.0;       // 估算的文字暗部灰度
-    int enhancedPixels = 0;      // 被加深的像素数
+    double paperGray = 0.0;
+    double darkGray = 0.0;
+    int enhancedPixels = 0;
     bool ok = false;
     bool skipped = false;
 };
 
 struct EnhanceOptions
 {
-    // 强度：0=轻微, 1=标准, 2=强力
     int strengthLevel = 1;
-
-    // 保护彩色内容：彩色像素不做加深
+    double gamma = 1.6;
     bool protectColor = true;
-
-    // 目标文字灰度（越小越黑）
     int targetDarkGray = 0;
-
-    // 背景保持的灰度（越大越白）
     int targetPaperGray = 255;
-
-    // 彩色饱和度阈值：超过此值认为彩色
     int colorSaturationThreshold = 40;
+
+    // ★ 自动跳过阈值：
+    //   文字灰度 <= 此值 → 文字已够黑，跳过加深
+    //   文字灰度 >  此值 → 文字偏淡，执行加深
+    int minDarkGrayToEnhance = 110;
 };
 
 class Enhance
@@ -39,13 +36,8 @@ public:
                                       const EnhanceOptions &options = EnhanceOptions());
 
 private:
-    // 估算纸张灰度（亮部 90 百分位）
     static double estimatePaperGray(const cv::Mat &gray);
-
-    // 估算文字暗部灰度（暗部 5 百分位）
     static double estimateDarkGray(const cv::Mat &gray);
-
-    // 构建彩色保护掩膜
     static void buildColorProtectMask(const cv::Mat &src,
                                        cv::Mat &colorMask,
                                        int saturationThreshold);

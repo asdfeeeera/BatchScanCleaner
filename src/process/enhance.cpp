@@ -125,6 +125,7 @@ EnhanceResult Enhance::enhanceText(const cv::Mat &src,
     result.paperGray = paperGray;
     result.darkGray = darkGray;
 
+    // ---- 跳过条件 1：纸张太暗 ----
     if (paperGray < 150.0) {
         result.image = src.clone();
         result.ok = true;
@@ -132,26 +133,46 @@ EnhanceResult Enhance::enhanceText(const cv::Mat &src,
         return result;
     }
 
-    double gamma = 1.0;
-    if (options.strengthLevel == 0) gamma = 1.3;
-    else if (options.strengthLevel == 1) gamma = 1.6;
-    else if (options.strengthLevel == 2) gamma = 2.0;
+    // ---- 跳过条件 2：文字已足够黑 ----
+    // 文字灰度 <= 阈值（默认 110）→ 不需要加深
+    if (darkGray <= static_cast<double>(options.minDarkGrayToEnhance)) {
+        result.image = src.clone();
+        result.ok = true;
+        result.skipped = true;
+        return result;
+    }
 
+    // 从 options 读取参数
+    double gamma = options.gamma;
+    if (gamma < 0.5) gamma = 0.5;
+    if (gamma > 4.0) gamma = 4.0;
+
+    int dTarget = options.targetDarkGray;
+    if (dTarget < 0) dTarget = 0;
+    if (dTarget > 100) dTarget = 100;
+
+    int pTarget = options.targetPaperGray;
+    if (pTarget < 200) pTarget = 200;
+    if (pTarget > 255) pTarget = 255;
+
+    const double midPoint = (dTarget + pTarget) * 0.5;
     const double contentThreshold = paperGray * 0.75;
 
     uchar lut[256];
     for (int v = 0; v < 256; ++v) {
         if (v <= darkGray) {
-            lut[v] = 0;
+            lut[v] = static_cast<uchar>(dTarget);
         } else if (v >= paperGray) {
-            lut[v] = 255;
+            lut[v] = static_cast<uchar>(pTarget);
         } else if (v < contentThreshold) {
-            double t = (v - darkGray) / std::max(1.0, contentThreshold - darkGray);
+            double t = (v - darkGray) /
+                       std::max(1.0, contentThreshold - darkGray);
             t = std::pow(t, gamma);
-            lut[v] = static_cast<uchar>(std::min(255.0, t * 128.0));
+            lut[v] = static_cast<uchar>(dTarget + t * (midPoint - dTarget));
         } else {
-            double t = (v - contentThreshold) / std::max(1.0, paperGray - contentThreshold);
-            lut[v] = static_cast<uchar>(std::min(255.0, 128.0 + t * 127.0));
+            double t = (v - contentThreshold) /
+                       std::max(1.0, paperGray - contentThreshold);
+            lut[v] = static_cast<uchar>(midPoint + t * (pTarget - midPoint));
         }
     }
 
@@ -175,7 +196,6 @@ EnhanceResult Enhance::enhanceText(const cv::Mat &src,
         std::vector<cv::Mat> labCh;
         cv::split(lab, labCh);
 
-        // 增强后的 L 通道
         cv::Mat LEnhanced;
         cv::LUT(labCh[0], lutMat, LEnhanced);
 
@@ -184,14 +204,11 @@ EnhanceResult Enhance::enhanceText(const cv::Mat &src,
             buildColorProtectMask(srcBgr, colorMask,
                                    options.colorSaturationThreshold);
 
-            // 膨胀 5x5，保护彩色边缘
             cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE,
                                                    cv::Size(5, 5));
             cv::Mat colorMaskDilated;
             cv::dilate(colorMask, colorMaskDilated, k);
 
-            // ★ 关键修复：把原 L 写回 LEnhanced 的彩色区域
-            //   labCh[0] 是原 L，colorMaskDilated 非零的地方是彩色
             labCh[0].copyTo(LEnhanced, colorMaskDilated);
 
             result.enhancedPixels =
@@ -201,7 +218,6 @@ EnhanceResult Enhance::enhanceText(const cv::Mat &src,
             result.enhancedPixels = static_cast<int>(srcBgr.total());
         }
 
-        // 把增强后的 L 写回 labCh[0]
         LEnhanced.copyTo(labCh[0]);
 
         cv::merge(labCh, lab);

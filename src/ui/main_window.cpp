@@ -664,11 +664,50 @@ void MainWindow::onDenoise()
 }
 
 void MainWindow::onEnhance()
+{void MainWindow::onEnhance()
 {
     if (!m_hasImage || m_currentMat.empty()) {
         QMessageBox::information(this, QString::fromUtf8("提示"),
                                  QString::fromUtf8("请先打开一张图片。"));
         return;
+    }
+
+    statusBar()->showMessage(QString::fromUtf8("正在加深浅色文字..."));
+
+    process::EnhanceOptions options = currentEnhanceOptions();
+
+    const process::EnhanceResult result =
+        process::Enhance::enhanceText(m_currentMat, options);
+
+    if (!result.ok) {
+        QMessageBox::warning(this, QString::fromUtf8("错误"),
+                             QString::fromUtf8("文字加深失败。"));
+        statusBar()->showMessage(QString::fromUtf8("文字加深失败"));
+        return;
+    }
+
+    m_currentMat = result.image;
+    showMatOnPreview(m_currentMat);
+
+    if (result.skipped) {
+        // ★ 区分两种跳过原因
+        if (result.paperGray < 150.0) {
+            statusBar()->showMessage(
+                QString::fromUtf8("文字加深：纸张过暗，已跳过（纸张灰度 %1）")
+                    .arg(result.paperGray, 0, 'f', 1));
+        } else {
+            statusBar()->showMessage(
+                QString::fromUtf8("文字加深：文字已足够黑（文字灰度 %1），跳过")
+                    .arg(result.darkGray, 0, 'f', 1));
+        }
+    } else {
+        statusBar()->showMessage(
+            QString::fromUtf8("文字加深完成：纸张灰度 %1，文字灰度 %2，加深 %3 像素")
+                .arg(result.paperGray, 0, 'f', 1)
+                .arg(result.darkGray, 0, 'f', 1)
+                .arg(result.enhancedPixels));
+    }
+}
     }
 
     statusBar()->showMessage(QString::fromUtf8("正在加深浅色文字..."));
