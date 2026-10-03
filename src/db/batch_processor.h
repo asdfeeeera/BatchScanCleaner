@@ -2,10 +2,11 @@
 
 #include "batch_step.h"
 
-#include <QObject>
+#include <QThread>
 #include <QString>
 #include <QStringList>
 #include <QList>
+#include <QMutex>
 
 #include <opencv2/core.hpp>
 
@@ -67,9 +68,9 @@ struct BatchResult
 };
 
 // ============================================================
-// 批处理引擎
+// 批处理引擎（独立线程）
 // ============================================================
-class BatchProcessor : public QObject
+class BatchProcessor : public QThread
 {
     Q_OBJECT
 
@@ -77,7 +78,10 @@ public:
     explicit BatchProcessor(QObject *parent = nullptr);
     ~BatchProcessor() override;
 
-    void start(const BatchOptions &options);
+    // 开始处理（会启动线程）
+    void startBatch(const BatchOptions &options);
+
+    // 控制（线程安全）
     void pause();
     void resume();
     void cancel();
@@ -91,12 +95,11 @@ signals:
     void fileStarted(const QString &filePath);
     void fileFinished(const QString &filePath, bool success);
     void finished(const BatchResult &result);
-
-    // ★ 预览图就绪：before=true 表示处理前，false 表示处理后
     void previewImageReady(const cv::Mat &mat, bool before);
 
-private slots:
-    void processNext();
+protected:
+    // QThread 入口
+    void run() override;
 
 private:
     bool processOneFile(const QString &inputPath, QString &outError);
@@ -110,14 +113,12 @@ private:
     bool runColorLine(cv::Mat &img);
 
     QString makeOutputPath(const QString &inputPath) const;
-
-    // ★ 缩放为预览用（最长边 <= maxSize）
     cv::Mat makePreview(const cv::Mat &img, int maxSize = 1000) const;
 
     BatchOptions m_options;
-    bool m_running = false;
-    bool m_paused = false;
-    bool m_cancelled = false;
+    volatile bool m_running = false;
+    volatile bool m_paused = false;
+    volatile bool m_cancelled = false;
 
     int m_index = 0;
     int m_succeeded = 0;

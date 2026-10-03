@@ -3,7 +3,6 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QDateTime>
-#include <QTimer>
 #include <QDebug>
 
 #include <opencv2/imgproc.hpp>
@@ -11,16 +10,20 @@
 namespace batch {
 
 BatchProcessor::BatchProcessor(QObject *parent)
-    : QObject(parent)
+    : QThread(parent)
 {
 }
 
-BatchProcessor::~BatchProcessor() = default;
+BatchProcessor::~BatchProcessor()
+{
+    cancel();
+    wait(5000);
+}
 
 // ============================================================
-// 开始
+// 开始（启动线程）
 // ============================================================
-void BatchProcessor::start(const BatchOptions &options)
+void BatchProcessor::startBatch(const BatchOptions &options)
 {
     if (m_running) return;
 
@@ -39,11 +42,12 @@ void BatchProcessor::start(const BatchOptions &options)
 
     QDir().mkpath(m_options.outputDir);
 
-    QTimer::singleShot(0, this, &BatchProcessor::processNext);
+    // 启动线程（会调用 run()）
+    QThread::start();
 }
 
 // ============================================================
-// 控制
+// 控制（线程安全）
 // ============================================================
 void BatchProcessor::pause()
 {
@@ -54,9 +58,7 @@ void BatchProcessor::pause()
 void BatchProcessor::resume()
 {
     if (!m_running) return;
-    if (!m_paused) return;
     m_paused = false;
-    QTimer::singleShot(0, this, &BatchProcessor::processNext);
 }
 
 void BatchProcessor::cancel()
@@ -66,119 +68,131 @@ void BatchProcessor::cancel()
 }
 
 // ============================================================
-// 核心：处理下一张
+// QThread 入口
 // ============================================================
-void BatchProcessor::processNext()
+void BatchProcessor::run()
 {
-    if (!m_running) return;
-
-    if (m_cancelled) {
-        m_running = false;
-        BatchResult result;
-        result.ok = true;
-        result.cancelled = true;
-        result.total = m_options.inputFiles.size();
-        result.succeeded = m_succeeded;
-        result.failed = m_failed;
-        result.failedFiles = m_failedFiles;
-        result.totalSeconds =
-            (QDateTime::currentMSecsSinceEpoch() - m_startMs) / 1000.0;
-        emit finished(result);
-        return;
-    }
-
-    if (m_paused) {
-        QTimer::singleShot(100, this, &BatchProcessor::processNext);
-        return;
-    }
-
     const int total = m_options.inputFiles.size();
-    if (m_index >= total) {
-        m_running = false;
-        BatchResult result;
-        result.ok = true;
-        result.cancelled = false;
-        result.total = total;
-        result.succeeded = m_succeeded;
-        result.failed = m_failed;
-        result.failedFiles = m_failedFiles;
-        result.totalSeconds =
-            (QDateTime::currentMSecsSinceEpoch() - m_startMs) / 1000.0;
-        emit finished(result);
-        return;
-    }
 
-    const QString inputPath = m_options.inputFiles[m_index];
-    const QFileInfo fi(inputPath);
+    for (m_index = 0; m_index < total; ++m_index) {
 
-    emit fileStarted(inputPath);
-
-    // ★ 读取图片后立刻发"原图预览"
-    {
-        cv::Mat img;
-        image::ImageMeta meta;
-        if (image::ImageIO::read(inputPath, img, meta)) {
-            emit previewImageReady(makePreview(img), true);
+        // 取消
+        if (m_cancelled) {
+            m_running = false;
+            BatchResult result;
+            result.ok = true;
+            result.cancelled = true;
+            result.total = total;
+            result.succeeded = m_succeeded;
+            result.failed = m_failed;
+            result.failedFiles = m_failedFiles;
+            result.totalSeconds =
+                (QDateTime::currentMSecsSinceEpoch() - m_startMs) / 1000.0;
+            emit finished(result);
+            return;
         }
-    }
 
-    const qint64 t0 = QDateTime::currentMSecsSinceEpoch();
-    QString errMsg;
-    const bool ok = processOneFile(inputPath, errMsg);
-    const qint64 t1 = QDateTime::currentMSecsSinceEpoch();
-    const qint64 duration = t1 - t0;
+        // 暂停：循环等待
+        while (m_paused && !m_cancelled) {
+            QThread::msleep(100);
+        }
+        if (m_cancelled) {
+            m_running = false;
+            BatchResult result;
+            result.ok = true;
+            result.cancelled = true;
+            result.total = total;
+            result.succeeded = m_succeeded;
+            result.failed = m_failed;
+            result.failedFiles = m_failedFiles;
+            result.totalSeconds =
+                (QDateTime::currentMSecsSinceEpoch() - m_startMs) / 1000.0;
+            emit finished(result);
+            return;
+        }
 
-    m_fileDurations.append(duration);
+        const QString inputPath = m_options.inputFiles[m_index];
+        const QFileInfo fi(inputPath);
 
-    if (ok) {
-        ++m_succeeded;
-    } else {
-        ++m_failed;
-        m_failedFiles.append(inputPath);
-    }
+        emit fileStarted(inputPath);
 
-    emit fileFinished(inputPath, ok);
+        // 读取原图，发预览
+        {
+            cv::Mat img;
+            image::ImageMeta meta;
+            if (image::ImageIO::read(inputPath, img, meta)) {
+                emit previewImageReady(makePreview(img), true);
+            }
+        }
 
-    // ★ 处理完：如果成功，读输出图发"结果预览"；失败则再发原图
-    {
-        cv::Mat preview;
+        const qint64 t0 = QDateTime::currentMSecsSinceEpoch();
+        QString errMsg;
+        const bool ok = processOneFile(inputPath, errMsg);
+        const qint64 t1 = QDateTime::currentMSecsSinceEpoch();
+        const qint64 duration = t1 - t0;
+
+        m_fileDurations.append(duration);
+
         if (ok) {
-            const QString outPath = makeOutputPath(inputPath);
-            image::ImageMeta m2;
-            if (image::ImageIO::read(outPath, preview, m2)) {
-                emit previewImageReady(makePreview(preview), false);
-            }
+            ++m_succeeded;
         } else {
-            cv::Mat img2;
-            image::ImageMeta m3;
-            if (image::ImageIO::read(inputPath, img2, m3)) {
-                emit previewImageReady(makePreview(img2), false);
+            ++m_failed;
+            m_failedFiles.append(inputPath);
+        }
+
+        emit fileFinished(inputPath, ok);
+
+        // 结果预览
+        {
+            cv::Mat preview;
+            if (ok) {
+                const QString outPath = makeOutputPath(inputPath);
+                image::ImageMeta m2;
+                if (image::ImageIO::read(outPath, preview, m2)) {
+                    emit previewImageReady(makePreview(preview), false);
+                }
+            } else {
+                cv::Mat img2;
+                image::ImageMeta m3;
+                if (image::ImageIO::read(inputPath, img2, m3)) {
+                    emit previewImageReady(makePreview(img2), false);
+                }
             }
         }
+
+        // 进度
+        BatchProgress prog;
+        prog.current = m_index + 1;
+        prog.total = total;
+        prog.currentFile = fi.fileName();
+        prog.succeeded = m_succeeded;
+        prog.failed = m_failed;
+        prog.elapsedSeconds =
+            (QDateTime::currentMSecsSinceEpoch() - m_startMs) / 1000.0;
+
+        if (!m_fileDurations.isEmpty()) {
+            double sum = 0.0;
+            for (qint64 d : m_fileDurations) sum += d;
+            const double avg = sum / m_fileDurations.size();
+            const int remain = total - (m_index + 1);
+            prog.remainingSeconds = avg * remain / 1000.0;
+        }
+
+        emit progressChanged(prog);
     }
 
-    ++m_index;
-
-    BatchProgress prog;
-    prog.current = m_index;
-    prog.total = total;
-    prog.currentFile = fi.fileName();
-    prog.succeeded = m_succeeded;
-    prog.failed = m_failed;
-    prog.elapsedSeconds =
+    // 全部完成
+    m_running = false;
+    BatchResult result;
+    result.ok = true;
+    result.cancelled = false;
+    result.total = total;
+    result.succeeded = m_succeeded;
+    result.failed = m_failed;
+    result.failedFiles = m_failedFiles;
+    result.totalSeconds =
         (QDateTime::currentMSecsSinceEpoch() - m_startMs) / 1000.0;
-
-    if (!m_fileDurations.isEmpty()) {
-        double sum = 0.0;
-        for (qint64 d : m_fileDurations) sum += d;
-        const double avg = sum / m_fileDurations.size();
-        const int remain = total - m_index;
-        prog.remainingSeconds = avg * remain / 1000.0;
-    }
-
-    emit progressChanged(prog);
-
-    QTimer::singleShot(0, this, &BatchProcessor::processNext);
+    emit finished(result);
 }
 
 // ============================================================
@@ -196,19 +210,15 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
     for (const StepItem &step : m_options.steps) {
         if (!step.enabled) continue;
 
-        bool stepOk = true;
-
         switch (step.type) {
-        case StepType::Deskew:      stepOk = runDeskew(img); break;
-        case StepType::BlackEdge:   stepOk = runBlackEdge(img); break;
-        case StepType::Denoise:     stepOk = runDenoise(img); break;
-        case StepType::Enhance:     stepOk = runEnhance(img); break;
-        case StepType::ErrPage:     stepOk = runErrPage(img, inputPath); break;
-        case StepType::Background:  stepOk = runBackground(img); break;
-        case StepType::ColorLine:   stepOk = runColorLine(img); break;
+        case StepType::Deskew:      runDeskew(img); break;
+        case StepType::BlackEdge:   runBlackEdge(img); break;
+        case StepType::Denoise:     runDenoise(img); break;
+        case StepType::Enhance:     runEnhance(img); break;
+        case StepType::ErrPage:     runErrPage(img, inputPath); break;
+        case StepType::Background:  runBackground(img); break;
+        case StepType::ColorLine:   runColorLine(img); break;
         }
-
-        Q_UNUSED(stepOk);
     }
 
     const QString outputPath = makeOutputPath(inputPath);

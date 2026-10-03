@@ -280,7 +280,7 @@ void BatchDialog::onStart()
     m_logEdit->clear();
     appendLog(QString::fromUtf8("开始批处理，共 %1 张").arg(m_inputFiles.size()));
 
-    m_processor->start(opt);
+    m_processor->startBatch(opt);
     updateButtonsState();
 }
 
