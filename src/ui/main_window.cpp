@@ -14,6 +14,9 @@
 #include <QGraphicsPixmapItem>
 #include <QScrollArea>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QGridLayout>
+#include <QGroupBox>
 #include <QWidget>
 #include <QAction>
 #include <QFileDialog>
@@ -22,6 +25,8 @@
 #include <QFileInfo>
 #include <QResizeEvent>
 #include <QTimer>
+#include <QSlider>
+#include <QSpinBox>
 #include <QDir>
 #include <QDebug>
 
@@ -48,6 +53,12 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setWindowTitle(QString::fromUtf8("批量扫描图片净化增强软件"));
     resize(1280, 800);
+
+    // 防抖定时器（300ms）
+    m_enhanceDebounceTimer = new QTimer(this);
+    m_enhanceDebounceTimer->setSingleShot(true);
+    connect(m_enhanceDebounceTimer, &QTimer::timeout,
+            this, &MainWindow::onEnhanceDebounceTimeout);
 
     setupMenuBar();
     setupToolBar();
@@ -196,16 +207,21 @@ void MainWindow::setupCentralWidget()
     QScrollArea *paramScroll = new QScrollArea(this);
     QWidget *paramWidget = new QWidget(paramScroll);
     QVBoxLayout *paramLayout = new QVBoxLayout(paramWidget);
+
     paramLayout->addWidget(new QLabel(QString::fromUtf8("预设")));
     paramLayout->addWidget(new QLabel(QString::fromUtf8("污点去除")));
     paramLayout->addWidget(new QLabel(QString::fromUtf8("黑边去除")));
     paramLayout->addWidget(new QLabel(QString::fromUtf8("自动扶正")));
-    paramLayout->addWidget(new QLabel(QString::fromUtf8("浅色文字加深")));
+
+    // ★ 文字加深参数面板
+    buildEnhancePanel(paramLayout);
+
     paramLayout->addWidget(new QLabel(QString::fromUtf8("彩色故障细线")));
     paramLayout->addWidget(new QLabel(QString::fromUtf8("签名印章保护")));
     paramLayout->addWidget(new QLabel(QString::fromUtf8("底色处理")));
     paramLayout->addWidget(new QLabel(QString::fromUtf8("输出设置")));
     paramLayout->addStretch();
+
     paramScroll->setWidget(paramWidget);
     paramScroll->setWidgetResizable(true);
 
@@ -217,6 +233,161 @@ void MainWindow::setupCentralWidget()
     mainSplitter->setStretchFactor(2, 1);
 
     setCentralWidget(mainSplitter);
+}
+
+// ============================================================
+// ★ 文字加深参数面板
+// ============================================================
+void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
+{
+    QGroupBox *group = new QGroupBox(QString::fromUtf8("浅色文字加深"), this);
+    QGridLayout *grid = new QGridLayout(group);
+    grid->setContentsMargins(6, 6, 6, 6);
+    grid->setHorizontalSpacing(6);
+    grid->setVerticalSpacing(4);
+
+    int row = 0;
+
+    // ---- 强度（0.1 ~ 3.0，步进 0.1，内部存 ×10） ----
+    grid->addWidget(new QLabel(QString::fromUtf8("强度"), this), row, 0);
+    m_enhanceStrengthSlider = new QSlider(Qt::Horizontal, this);
+    m_enhanceStrengthSlider->setRange(1, 30);
+    m_enhanceStrengthSlider->setValue(16);
+    m_enhanceStrengthSpin = new QSpinBox(this);
+    m_enhanceStrengthSpin->setRange(1, 30);
+    m_enhanceStrengthSpin->setValue(16);
+    m_enhanceStrengthSpin->setSuffix(QString::fromUtf8(" ×0.1"));
+    grid->addWidget(m_enhanceStrengthSlider, row, 1);
+    grid->addWidget(m_enhanceStrengthSpin, row, 2);
+    ++row;
+
+    // ---- 彩色保护阈值（0 ~ 255） ----
+    grid->addWidget(new QLabel(QString::fromUtf8("彩色保护"), this), row, 0);
+    m_enhanceColorSatSlider = new QSlider(Qt::Horizontal, this);
+    m_enhanceColorSatSlider->setRange(0, 255);
+    m_enhanceColorSatSlider->setValue(40);
+    m_enhanceColorSatSpin = new QSpinBox(this);
+    m_enhanceColorSatSpin->setRange(0, 255);
+    m_enhanceColorSatSpin->setValue(40);
+    grid->addWidget(m_enhanceColorSatSlider, row, 1);
+    grid->addWidget(m_enhanceColorSatSpin, row, 2);
+    ++row;
+
+    // ---- 目标暗部（0 ~ 100） ----
+    grid->addWidget(new QLabel(QString::fromUtf8("暗部目标"), this), row, 0);
+    m_enhanceDarkTargetSlider = new QSlider(Qt::Horizontal, this);
+    m_enhanceDarkTargetSlider->setRange(0, 100);
+    m_enhanceDarkTargetSlider->setValue(0);
+    m_enhanceDarkTargetSpin = new QSpinBox(this);
+    m_enhanceDarkTargetSpin->setRange(0, 100);
+    m_enhanceDarkTargetSpin->setValue(0);
+    grid->addWidget(m_enhanceDarkTargetSlider, row, 1);
+    grid->addWidget(m_enhanceDarkTargetSpin, row, 2);
+    ++row;
+
+    // ---- 目标纸张（200 ~ 255） ----
+    grid->addWidget(new QLabel(QString::fromUtf8("纸张目标"), this), row, 0);
+    m_enhancePaperTargetSlider = new QSlider(Qt::Horizontal, this);
+    m_enhancePaperTargetSlider->setRange(200, 255);
+    m_enhancePaperTargetSlider->setValue(255);
+    m_enhancePaperTargetSpin = new QSpinBox(this);
+    m_enhancePaperTargetSpin->setRange(200, 255);
+    m_enhancePaperTargetSpin->setValue(255);
+    grid->addWidget(m_enhancePaperTargetSlider, row, 1);
+    grid->addWidget(m_enhancePaperTargetSpin, row, 2);
+    ++row;
+
+    // ---- 连接：滑块 <-> 数字框 ----
+    connect(m_enhanceStrengthSlider, &QSlider::valueChanged,
+            m_enhanceStrengthSpin, &QSpinBox::setValue);
+    connect(m_enhanceStrengthSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+            m_enhanceStrengthSlider, &QSlider::setValue);
+
+    connect(m_enhanceColorSatSlider, &QSlider::valueChanged,
+            m_enhanceColorSatSpin, &QSpinBox::setValue);
+    connect(m_enhanceColorSatSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+            m_enhanceColorSatSlider, &QSlider::setValue);
+
+    connect(m_enhanceDarkTargetSlider, &QSlider::valueChanged,
+            m_enhanceDarkTargetSpin, &QSpinBox::setValue);
+    connect(m_enhanceDarkTargetSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+            m_enhanceDarkTargetSlider, &QSlider::setValue);
+
+    connect(m_enhancePaperTargetSlider, &QSlider::valueChanged,
+            m_enhancePaperTargetSpin, &QSpinBox::setValue);
+    connect(m_enhancePaperTargetSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+            m_enhancePaperTargetSlider, &QSlider::setValue);
+
+    // ---- 任一控件变化 → 触发防抖预览 ----
+    connect(m_enhanceStrengthSlider, &QSlider::valueChanged,
+            this, &MainWindow::onEnhanceParamChanged);
+    connect(m_enhanceColorSatSlider, &QSlider::valueChanged,
+            this, &MainWindow::onEnhanceParamChanged);
+    connect(m_enhanceDarkTargetSlider, &QSlider::valueChanged,
+            this, &MainWindow::onEnhanceParamChanged);
+    connect(m_enhancePaperTargetSlider, &QSlider::valueChanged,
+            this, &MainWindow::onEnhanceParamChanged);
+
+    paramLayout->addWidget(group);
+}
+
+// ============================================================
+// 从 UI 读取当前参数
+// ============================================================
+process::EnhanceOptions MainWindow::currentEnhanceOptions() const
+{
+    process::EnhanceOptions opt;
+
+    // 强度（1~30 → 0.1~3.0）
+    const double strength = m_enhanceStrengthSlider->value() / 10.0;
+    // 映射到 0/1/2 档（用于 gamma）
+    if (strength <= 1.3) opt.strengthLevel = 0;
+    else if (strength <= 1.8) opt.strengthLevel = 1;
+    else opt.strengthLevel = 2;
+
+    opt.protectColor = true;
+    opt.colorSaturationThreshold = m_enhanceColorSatSlider->value();
+    opt.targetDarkGray = m_enhanceDarkTargetSlider->value();
+    opt.targetPaperGray = m_enhancePaperTargetSlider->value();
+
+    return opt;
+}
+
+// ============================================================
+// 滑块变化 → 触发防抖
+// ============================================================
+void MainWindow::onEnhanceParamChanged()
+{
+    if (!m_hasImage || m_enhancePreviewBase.empty()) return;
+
+    // 重启防抖定时器（300ms 内的连续变化只触发一次）
+    m_enhanceDebounceTimer->start(300);
+}
+
+// ============================================================
+// 防抖超时 → 立即对 m_enhancePreviewBase 做增强并显示
+// ============================================================
+void MainWindow::onEnhanceDebounceTimeout()
+{
+    if (m_enhancePreviewBase.empty()) return;
+
+    process::EnhanceOptions opt = currentEnhanceOptions();
+
+    // ★ 临时：由于 Enhance 的 LUT 里 gamma 是硬编码，需要根据 strength 映射
+    //   这里通过多次调用调节 gamma 效果（简化处理：直接调用一次，用档位控制）
+    //   如果以后要精细控制，需改 enhance.cpp 支持传入 gamma
+    const process::EnhanceResult result =
+        process::Enhance::enhanceText(m_enhancePreviewBase, opt);
+
+    if (!result.ok) return;
+
+    showMatOnPreview(result.image);
+
+    statusBar()->showMessage(
+        QString::fromUtf8("预览：纸张 %1，文字 %2，加深 %3 像素")
+            .arg(result.paperGray, 0, 'f', 1)
+            .arg(result.darkGray, 0, 'f', 1)
+            .arg(result.enhancedPixels));
 }
 
 void MainWindow::setupStatusBar()
@@ -498,12 +669,7 @@ void MainWindow::onEnhance()
 
     statusBar()->showMessage(QString::fromUtf8("正在加深浅色文字..."));
 
-    process::EnhanceOptions options;
-    options.strengthLevel = 1;
-    options.protectColor = true;
-    options.targetDarkGray = 0;
-    options.targetPaperGray = 255;
-    options.colorSaturationThreshold = 40;
+    process::EnhanceOptions options = currentEnhanceOptions();
 
     const process::EnhanceResult result =
         process::Enhance::enhanceText(m_currentMat, options);
@@ -549,7 +715,6 @@ void MainWindow::onBackground()
     options.protectColor     = true;
     options.colorSatMin      = 40;
 
-    // 同时启用印章签名保护（双保险）
     {
         protect::StampProtectOptions protectOpt;
         const protect::StampProtectResult pr =
@@ -661,12 +826,7 @@ void MainWindow::onOneClickProcess()
 
     statusBar()->showMessage(QString::fromUtf8("一键处理：正在加深文字..."));
     {
-        process::EnhanceOptions opt;
-        opt.strengthLevel = 1;
-        opt.protectColor = true;
-        opt.targetDarkGray = 0;
-        opt.targetPaperGray = 255;
-        opt.colorSaturationThreshold = 40;
+        process::EnhanceOptions opt = currentEnhanceOptions();
 
         const process::EnhanceResult r =
             process::Enhance::enhanceText(m_currentMat, opt);
@@ -818,7 +978,7 @@ void MainWindow::onProcessErrPage()
     }
 
     m_currentMat = result.image;
-    showMatOnPreview(result.markedImage);
+    showMatOnPreview(result.image);
 
     {
         const QList<analyze::PendingItem> allItems =
@@ -836,51 +996,37 @@ void MainWindow::onProcessErrPage()
         }
     }
 
-    std::vector<cv::Rect> crossedBoxes;
+    const QFileInfo fi(m_currentImagePath);
+    int addedCount = 0;
+
     for (const auto &it : result.items) {
         const bool matchesCorrect =
             (result.correctPage >= 0 &&
              it.recognizedNumber == result.correctPage);
         if (matchesCorrect) continue;
         if (!it.isCrossed) continue;
-
-        crossedBoxes.push_back(it.boundingBox);
-    }
-
-    const QFileInfo fi(m_currentImagePath);
-    int addedCount = 0;
-
-    if (!crossedBoxes.empty()) {
-        cv::Rect finalBox = crossedBoxes[0];
-        int maxArea = finalBox.width * finalBox.height;
-        for (size_t i = 1; i < crossedBoxes.size(); ++i) {
-            const cv::Rect &r = crossedBoxes[i];
-            const int a = r.width * r.height;
-            if (a > maxArea) {
-                maxArea = a;
-                finalBox = r;
-            }
-        }
+        if (it.recognizedNumber < 10) continue;
 
         analyze::PendingItem p;
         p.type = analyze::PendingType::WrongPageNumber;
         p.suggestedAction = analyze::PendingAction::Remove;
         p.sourceImagePath = m_currentImagePath;
         p.fileName = fi.fileName();
-        p.boundingBox = finalBox;
-        p.confidence = 0.9;
+        p.boundingBox = it.boundingBox;
+        p.confidence = it.confidence;
         p.reason = QString::fromUtf8("检测到划线数字，与正确页码不符");
-        p.detail = QString::fromUtf8("划线区域，正确页码：%1")
+        p.detail = QString::fromUtf8("识别结果：%1，正确页码：%2")
+                       .arg(it.recognizedNumber)
                        .arg(result.correctPage);
 
-        cv::Rect safe = finalBox &
+        cv::Rect safe = it.boundingBox &
                         cv::Rect(0, 0, srcForThumb.cols, srcForThumb.rows);
         if (safe.width > 0 && safe.height > 0) {
             p.thumbnail = srcForThumb(safe).clone();
         }
 
         analyze::PendingCenter::instance().addItem(p);
-        addedCount = 1;
+        ++addedCount;
     }
 
     QString pageInfo;
@@ -1023,6 +1169,9 @@ void MainWindow::showImageOnPreview(const QString &path)
     m_originalMat = mat.clone();
     m_currentMat = mat;
     m_currentImagePath = path;
+
+    // ★ 保存用于实时预览的原图
+    m_enhancePreviewBase = mat.clone();
 
     showMatOnPreview(m_currentMat);
 

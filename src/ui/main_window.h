@@ -4,11 +4,16 @@
 #include <QStringList>
 #include <opencv2/core.hpp>
 
+#include "enhance.h"
+
 class QGraphicsScene;
 class QGraphicsView;
 class QTreeView;
 class QTableView;
 class QStandardItemModel;
+class QSlider;
+class QSpinBox;
+class QTimer;
 
 class MainWindow : public QMainWindow
 {
@@ -36,7 +41,11 @@ private slots:
     void onProcessErrPage();
     void onStampProtectTest();
     void onPendingCenter();
-    void onBackground();          // ★ 新增：底色处理
+    void onBackground();
+
+    // ★ 文字加深参数
+    void onEnhanceParamChanged();
+    void onEnhanceDebounceTimeout();
 
 private:
     void setupMenuBar();
@@ -47,6 +56,10 @@ private:
     void showMatOnPreview(const cv::Mat &mat);
     void fitPreviewToWindow();
     void fillFileTable(const QStringList &files);
+
+    // ★ 增强参数面板
+    void buildEnhancePanel(QVBoxLayout *paramLayout);
+    process::EnhanceOptions currentEnhanceOptions() const;
 
     QTreeView *m_folderTree = nullptr;
     QTableView *m_fileTable = nullptr;
@@ -61,4 +74,21 @@ private:
 
     // 彩色细线：检测时的原图（供清除用）
     cv::Mat m_colorLineSource;
+
+    // ★ 文字加深参数控件
+    QSlider *m_enhanceStrengthSlider = nullptr;
+    QSpinBox *m_enhanceStrengthSpin = nullptr;
+
+    QSlider *m_enhanceColorSatSlider = nullptr;
+    QSpinBox *m_enhanceColorSatSpin = nullptr;
+
+    QSlider *m_enhanceDarkTargetSlider = nullptr;
+    QSpinBox *m_enhanceDarkTargetSpin = nullptr;
+
+    QSlider *m_enhancePaperTargetSlider = nullptr;
+    QSpinBox *m_enhancePaperTargetSpin = nullptr;
+
+    // ★ 实时预览防抖
+    QTimer *m_enhanceDebounceTimer = nullptr;
+    cv::Mat m_enhancePreviewBase;   // 实时预览的原图（首次打开图时保存）
 };
