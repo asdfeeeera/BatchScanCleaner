@@ -36,7 +36,6 @@ void Denoise::buildProtectMask(const cv::Mat &gray,
                                 cv::Mat &protectMask,
                                 int protectRadius)
 {
-    // 用相对纸张灰度检测内容（包括淡文字）
     const double paperGray = estimatePaperGray(gray);
     const double contentThresh = paperGray * 0.85;
 
@@ -49,7 +48,6 @@ void Denoise::buildProtectMask(const cv::Mat &gray,
 
     protectMask = cv::Mat::zeros(gray.rows, gray.cols, CV_8UC1);
 
-    // 保护所有面积 >= 5 的暗块
     const int protectArea = 5;
     for (int i = 1; i < nLabels; ++i) {
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
@@ -72,7 +70,6 @@ void Denoise::buildProtectMask(const cv::Mat &gray,
 
 namespace {
 
-// 填底色：只把"与局部背景差距小"的像素填白，不碰文字
 cv::Mat whitenBackground(const cv::Mat &src, const cv::Mat &protectMask)
 {
     if (src.empty()) return src.clone();
@@ -86,25 +83,20 @@ cv::Mat whitenBackground(const cv::Mat &src, const cv::Mat &protectMask)
         gray = src.clone();
     }
 
-    // 大核闭运算估计局部背景（核越大，背景估计越平滑）
     const int bgSize = 61;
     cv::Mat bgKernel = cv::getStructuringElement(
         cv::MORPH_RECT, cv::Size(bgSize, bgSize));
     cv::Mat background;
     cv::morphologyEx(gray, background, cv::MORPH_CLOSE, bgKernel);
 
-    // 原图与背景的差距
     cv::Mat diff;
     cv::absdiff(gray, background, diff);
 
-    // 差距 < 25 的像素认为"是背景"
     cv::Mat bgMask;
     cv::threshold(diff, bgMask, 25, 255, cv::THRESH_BINARY_INV);
 
-    // 保护掩膜内的像素（文字区域）不算背景
     cv::bitwise_and(bgMask, ~protectMask, bgMask);
 
-    // 只对背景填白
     cv::Mat result = src.clone();
     cv::Scalar white;
     if (result.channels() == 4) {
@@ -140,20 +132,18 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         gray = src.clone();
     }
 
-    // 1. 先建保护掩膜（文字、线条、印章、签名）
+    // 1. 建保护掩膜
     cv::Mat protectMask;
     buildProtectMask(gray, protectMask, options.protectRadius);
 
-    // 1.1 ★ 合并外部传入的保护掩膜（签名印章保护）
+    // 1.1 合并外部保护掩膜
     if (!options.protectMask.empty()) {
         cv::Mat ext = options.protectMask;
-        // 尺寸对齐
         if (ext.size() != gray.size()) {
             cv::Mat tmp;
             cv::resize(ext, tmp, gray.size(), 0, 0, cv::INTER_NEAREST);
             ext = tmp;
         }
-        // 类型对齐
         if (ext.type() != CV_8UC1) {
             cv::Mat tmp;
             ext.convertTo(tmp, CV_8UC1);
@@ -162,7 +152,7 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         cv::bitwise_or(protectMask, ext, protectMask);
     }
 
-    // 2. 填底色（保护掩膜内的像素不动）
+    // 2. 填底色
     cv::Mat whitened = whitenBackground(src, protectMask);
 
     // 3. 在填白后的图上做污点检测
@@ -185,10 +175,21 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     int nLabels = cv::connectedComponentsWithStats(
         binary, labels, stats, centroids, 8, CV_32S);
 
+    // ★ 普通区域的污点上限（按强度）
     int maxSpotArea = 30;
     if (options.strengthLevel == 0) maxSpotArea = 15;
     else if (options.strengthLevel == 1) maxSpotArea = 30;
     else if (options.strengthLevel == 2) maxSpotArea = 60;
+
+    // ★ 装订孔：边缘区域
+    //   竖版（H > W）：左边缘 6% 宽度
+    //   横版（W >= H）：上边缘 6% 高度
+    const bool isPortrait = (H > W);
+    const int edgeThreshold = isPortrait
+        ? static_cast<int>(W * 0.06)
+        : static_cast<int>(H * 0.06);
+
+    const int bindingMaxArea = 2500;   // 装订孔最大面积
 
     cv::Mat spotMask = cv::Mat::zeros(H, W, CV_8UC1);
     int spotCount = 0;
@@ -202,7 +203,19 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         const int y = stats.at<int>(i, cv::CC_STAT_TOP);
 
         if (area < 2) continue;
-        if (area > maxSpotArea) continue;
+
+        // ★ 判断该暗块是否落在装订孔区域
+        bool isBinding = false;
+        if (isPortrait) {
+            // 竖版：整条左边缘
+            isBinding = ((x + w) < edgeThreshold);
+        } else {
+            // 横版：整条上边缘
+            isBinding = ((y + h) < edgeThreshold);
+        }
+
+        const int localMaxArea = isBinding ? bindingMaxArea : maxSpotArea;
+        if (area > localMaxArea) continue;
 
         const double aspect = static_cast<double>(std::max(w, h))
                               / std::max(1, std::min(w, h));
