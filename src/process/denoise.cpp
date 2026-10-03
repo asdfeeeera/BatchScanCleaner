@@ -295,7 +295,7 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         if (isBinding
             && area >= bindingMinArea
             && area <= bindingMaxArea
-            && meanVal < 130.0) {
+            && meanVal < 200.0) {
             cv::rectangle(bindingMask, r, cv::Scalar(255), cv::FILLED);
             ++spotCount;
             totalPixels += area;
