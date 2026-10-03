@@ -335,52 +335,48 @@ bool recognizeSingleChar(const cv::Mat &charImage,
 }
 
 // ============================================================
-// 按像素涂白 + 保留掩膜保护
+// 按像素涂白 + 恢复保留区
+// 步骤：
+//   1. 涂白 box 内的黑像素（阈值 200 + 膨胀 5x5）
+//   2. 从原图恢复 keepMask 覆盖的区域（绝对安全）
 // ============================================================
 void eraseByPixels(cv::Mat &dst,
+                   const cv::Mat &srcColor,
                    const cv::Mat &srcGray,
                    const cv::Rect &box,
                    const cv::Scalar &white,
                    const cv::Mat &keepMask)
 {
-    // 使用精确 box（不扩张）
-    cv::Rect r = box & cv::Rect(0, 0, dst.cols, dst.rows);
+    cv::Rect r = box;
+    r.x -= 3;
+    r.y -= 3;
+    r.width += 6;
+    r.height += 6;
+    r &= cv::Rect(0, 0, dst.cols, dst.rows);
     if (r.width <= 0 || r.height <= 0) return;
 
     cv::Mat roiGray = srcGray(r);
 
-    // 阈值 200 抓淡灰
     cv::Mat bin;
     cv::threshold(roiGray, bin, 200, 255, cv::THRESH_BINARY_INV);
 
-    // ★ 从 bin 中排除 keepMask 覆盖的像素
-    if (!keepMask.empty()) {
-        cv::Rect kr = r & cv::Rect(0, 0, keepMask.cols, keepMask.rows);
-        if (kr.width > 0 && kr.height > 0) {
-            cv::Mat keepRoi = keepMask(kr);
-            cv::Mat binRoi = bin(cv::Rect(kr.x - r.x, kr.y - r.y,
-                                           kr.width, kr.height));
-            cv::bitwise_and(binRoi, ~keepRoi, binRoi);
-        }
-    }
-
-    // 膨胀 5x5 覆盖描边
     cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
     cv::dilate(bin, bin, k);
 
-    // 再排除一次 keepMask（膨胀后可能又侵入）
-    if (!keepMask.empty()) {
+    // 涂白
+    cv::Mat roiDst = dst(r);
+    roiDst.setTo(white, bin);
+
+    // ★ 从原图恢复 keepMask 覆盖的区域
+    if (!keepMask.empty() && !srcColor.empty()) {
         cv::Rect kr = r & cv::Rect(0, 0, keepMask.cols, keepMask.rows);
         if (kr.width > 0 && kr.height > 0) {
             cv::Mat keepRoi = keepMask(kr);
-            cv::Mat binRoi = bin(cv::Rect(kr.x - r.x, kr.y - r.y,
-                                           kr.width, kr.height));
-            cv::bitwise_and(binRoi, ~keepRoi, binRoi);
+            cv::Mat srcRoi = srcColor(kr);
+            cv::Mat dstRoi = dst(kr);
+            srcRoi.copyTo(dstRoi, keepRoi);
         }
     }
-
-    cv::Mat roiDst = dst(r);
-    roiDst.setTo(white, bin);
 }
 
 } // namespace
@@ -809,15 +805,15 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         if (keep) candidates.push_back(it);
     }
 
-    // ★ 构建保留掩膜：匹配正确页码的区域
+    // 构建保留掩膜：匹配正确页码的区域（外扩 10 像素）
     cv::Mat keepMask = cv::Mat::zeros(H, W, CV_8UC1);
     for (const auto &it : candidates) {
         if (!fuzzyMatchPage(it.recognizedNumber, result.correctPage)) continue;
         cv::Rect r = it.boundingBox;
-        r.x -= 5;
-        r.y -= 5;
-        r.width += 10;
-        r.height += 10;
+        r.x -= 10;
+        r.y -= 10;
+        r.width += 20;
+        r.height += 20;
         r &= cv::Rect(0, 0, W, H);
         cv::rectangle(keepMask, r, cv::Scalar(255), cv::FILLED);
         writeDiag(QString::fromUtf8("  [保留掩膜] 保护 bbox=(%1,%2,%3x%4)")
@@ -844,7 +840,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         }
 
         if (item.isCrossed) {
-            eraseByPixels(dst, gray, item.boundingBox, white, keepMask);
+            eraseByPixels(dst, src, gray, item.boundingBox, white, keepMask);
             ++result.crossedRemoved;
             writeDiag(QString::fromUtf8("  → 识别=%1，划线=是，按像素涂白")
                           .arg(item.recognizedNumber));
