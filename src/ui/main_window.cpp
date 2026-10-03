@@ -17,6 +17,7 @@
 #include <QHBoxLayout>
 #include <QGridLayout>
 #include <QGroupBox>
+#include <QToolButton>
 #include <QWidget>
 #include <QAction>
 #include <QFileDialog>
@@ -213,7 +214,7 @@ void MainWindow::setupCentralWidget()
     paramLayout->addWidget(new QLabel(QString::fromUtf8("黑边去除")));
     paramLayout->addWidget(new QLabel(QString::fromUtf8("自动扶正")));
 
-    // ★ 文字加深参数面板
+    // ★ 文字加深参数面板（可折叠）
     buildEnhancePanel(paramLayout);
 
     paramLayout->addWidget(new QLabel(QString::fromUtf8("彩色故障细线")));
@@ -236,24 +237,34 @@ void MainWindow::setupCentralWidget()
 }
 
 // ============================================================
-// ★ 文字加深参数面板
+// ★ 文字加深参数面板（可折叠）
 // ============================================================
 void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
 {
-    QGroupBox *group = new QGroupBox(QString::fromUtf8("浅色文字加深"), this);
-    QGridLayout *grid = new QGridLayout(group);
-    grid->setContentsMargins(6, 6, 6, 6);
+    // ---- 折叠按钮（三角形 + 标题）----
+    QToolButton *toggleBtn = new QToolButton(this);
+    toggleBtn->setText(QString::fromUtf8("浅色文字加深"));
+    toggleBtn->setCheckable(true);
+    toggleBtn->setChecked(false);
+    toggleBtn->setArrowType(Qt::RightArrow);
+    toggleBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    toggleBtn->setAutoRaise(true);
+
+    // ---- 参数容器（默认隐藏）----
+    QWidget *body = new QWidget(this);
+    QGridLayout *grid = new QGridLayout(body);
+    grid->setContentsMargins(10, 4, 4, 4);
     grid->setHorizontalSpacing(6);
     grid->setVerticalSpacing(4);
 
     int row = 0;
 
-    // ---- 强度（0.1 ~ 3.0，步进 0.1，内部存 ×10） ----
-    grid->addWidget(new QLabel(QString::fromUtf8("强度"), this), row, 0);
-    m_enhanceStrengthSlider = new QSlider(Qt::Horizontal, this);
+    // ---- 强度（1 ~ 30，内部 ×0.1） ----
+    grid->addWidget(new QLabel(QString::fromUtf8("强度"), body), row, 0);
+    m_enhanceStrengthSlider = new QSlider(Qt::Horizontal, body);
     m_enhanceStrengthSlider->setRange(1, 30);
     m_enhanceStrengthSlider->setValue(16);
-    m_enhanceStrengthSpin = new QSpinBox(this);
+    m_enhanceStrengthSpin = new QSpinBox(body);
     m_enhanceStrengthSpin->setRange(1, 30);
     m_enhanceStrengthSpin->setValue(16);
     m_enhanceStrengthSpin->setSuffix(QString::fromUtf8(" ×0.1"));
@@ -262,11 +273,11 @@ void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
     ++row;
 
     // ---- 彩色保护阈值（0 ~ 255） ----
-    grid->addWidget(new QLabel(QString::fromUtf8("彩色保护"), this), row, 0);
-    m_enhanceColorSatSlider = new QSlider(Qt::Horizontal, this);
+    grid->addWidget(new QLabel(QString::fromUtf8("彩色保护"), body), row, 0);
+    m_enhanceColorSatSlider = new QSlider(Qt::Horizontal, body);
     m_enhanceColorSatSlider->setRange(0, 255);
     m_enhanceColorSatSlider->setValue(40);
-    m_enhanceColorSatSpin = new QSpinBox(this);
+    m_enhanceColorSatSpin = new QSpinBox(body);
     m_enhanceColorSatSpin->setRange(0, 255);
     m_enhanceColorSatSpin->setValue(40);
     grid->addWidget(m_enhanceColorSatSlider, row, 1);
@@ -274,11 +285,11 @@ void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
     ++row;
 
     // ---- 目标暗部（0 ~ 100） ----
-    grid->addWidget(new QLabel(QString::fromUtf8("暗部目标"), this), row, 0);
-    m_enhanceDarkTargetSlider = new QSlider(Qt::Horizontal, this);
+    grid->addWidget(new QLabel(QString::fromUtf8("暗部目标"), body), row, 0);
+    m_enhanceDarkTargetSlider = new QSlider(Qt::Horizontal, body);
     m_enhanceDarkTargetSlider->setRange(0, 100);
     m_enhanceDarkTargetSlider->setValue(0);
-    m_enhanceDarkTargetSpin = new QSpinBox(this);
+    m_enhanceDarkTargetSpin = new QSpinBox(body);
     m_enhanceDarkTargetSpin->setRange(0, 100);
     m_enhanceDarkTargetSpin->setValue(0);
     grid->addWidget(m_enhanceDarkTargetSlider, row, 1);
@@ -286,18 +297,20 @@ void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
     ++row;
 
     // ---- 目标纸张（200 ~ 255） ----
-    grid->addWidget(new QLabel(QString::fromUtf8("纸张目标"), this), row, 0);
-    m_enhancePaperTargetSlider = new QSlider(Qt::Horizontal, this);
+    grid->addWidget(new QLabel(QString::fromUtf8("纸张目标"), body), row, 0);
+    m_enhancePaperTargetSlider = new QSlider(Qt::Horizontal, body);
     m_enhancePaperTargetSlider->setRange(200, 255);
     m_enhancePaperTargetSlider->setValue(255);
-    m_enhancePaperTargetSpin = new QSpinBox(this);
+    m_enhancePaperTargetSpin = new QSpinBox(body);
     m_enhancePaperTargetSpin->setRange(200, 255);
     m_enhancePaperTargetSpin->setValue(255);
     grid->addWidget(m_enhancePaperTargetSlider, row, 1);
     grid->addWidget(m_enhancePaperTargetSpin, row, 2);
     ++row;
 
-    // ---- 连接：滑块 <-> 数字框 ----
+    body->setVisible(false);
+
+    // ---- 滑块 <-> 数字框联动 ----
     connect(m_enhanceStrengthSlider, &QSlider::valueChanged,
             m_enhanceStrengthSpin, &QSpinBox::setValue);
     connect(m_enhanceStrengthSpin, QOverload<int>::of(&QSpinBox::valueChanged),
@@ -318,7 +331,7 @@ void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
     connect(m_enhancePaperTargetSpin, QOverload<int>::of(&QSpinBox::valueChanged),
             m_enhancePaperTargetSlider, &QSlider::setValue);
 
-    // ---- 任一控件变化 → 触发防抖预览 ----
+    // ---- 任一滑块变化 → 防抖预览 ----
     connect(m_enhanceStrengthSlider, &QSlider::valueChanged,
             this, &MainWindow::onEnhanceParamChanged);
     connect(m_enhanceColorSatSlider, &QSlider::valueChanged,
@@ -328,19 +341,22 @@ void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
     connect(m_enhancePaperTargetSlider, &QSlider::valueChanged,
             this, &MainWindow::onEnhanceParamChanged);
 
-    paramLayout->addWidget(group);
+    // ---- 按钮切换展开/折叠 ----
+    connect(toggleBtn, &QToolButton::toggled, this,
+            [body, toggleBtn](bool on) {
+                body->setVisible(on);
+                toggleBtn->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+            });
+
+    paramLayout->addWidget(toggleBtn);
+    paramLayout->addWidget(body);
 }
 
-// ============================================================
-// 从 UI 读取当前参数
-// ============================================================
 process::EnhanceOptions MainWindow::currentEnhanceOptions() const
 {
     process::EnhanceOptions opt;
 
-    // 强度（1~30 → 0.1~3.0）
     const double strength = m_enhanceStrengthSlider->value() / 10.0;
-    // 映射到 0/1/2 档（用于 gamma）
     if (strength <= 1.3) opt.strengthLevel = 0;
     else if (strength <= 1.8) opt.strengthLevel = 1;
     else opt.strengthLevel = 2;
@@ -353,29 +369,17 @@ process::EnhanceOptions MainWindow::currentEnhanceOptions() const
     return opt;
 }
 
-// ============================================================
-// 滑块变化 → 触发防抖
-// ============================================================
 void MainWindow::onEnhanceParamChanged()
 {
     if (!m_hasImage || m_enhancePreviewBase.empty()) return;
-
-    // 重启防抖定时器（300ms 内的连续变化只触发一次）
     m_enhanceDebounceTimer->start(300);
 }
 
-// ============================================================
-// 防抖超时 → 立即对 m_enhancePreviewBase 做增强并显示
-// ============================================================
 void MainWindow::onEnhanceDebounceTimeout()
 {
     if (m_enhancePreviewBase.empty()) return;
 
     process::EnhanceOptions opt = currentEnhanceOptions();
-
-    // ★ 临时：由于 Enhance 的 LUT 里 gamma 是硬编码，需要根据 strength 映射
-    //   这里通过多次调用调节 gamma 效果（简化处理：直接调用一次，用档位控制）
-    //   如果以后要精细控制，需改 enhance.cpp 支持传入 gamma
     const process::EnhanceResult result =
         process::Enhance::enhanceText(m_enhancePreviewBase, opt);
 
