@@ -801,16 +801,17 @@ void MainWindow::onProcessErrPage()
     int addedCount = 0;
 
     if (!crossedBoxes.empty()) {
+                // ★ 只取最大的划线块（面积最大），不做并集
         cv::Rect finalBox = crossedBoxes[0];
+        int maxArea = finalBox.width * finalBox.height;
         for (size_t i = 1; i < crossedBoxes.size(); ++i) {
             const cv::Rect &r = crossedBoxes[i];
-            const int x1 = std::min(finalBox.x, r.x);
-            const int y1 = std::min(finalBox.y, r.y);
-            const int x2 = std::max(finalBox.x + finalBox.width,
-                                     r.x + r.width);
-            const int y2 = std::max(finalBox.y + finalBox.height,
-                                     r.y + r.height);
-            finalBox = cv::Rect(x1, y1, x2 - x1, y2 - y1);
+            const int a = r.width * r.height;
+            if (a > maxArea) {
+                maxArea = a;
+                finalBox = r;
+            }
+        }
         }
 
         analyze::PendingItem p;
