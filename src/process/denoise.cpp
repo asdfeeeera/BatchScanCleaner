@@ -175,20 +175,24 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     int nLabels = cv::connectedComponentsWithStats(
         binary, labels, stats, centroids, 8, CV_32S);
 
-    // 普通区域的污点上限（按强度）
+    // 普通区域的污点上限
     int maxSpotArea = 30;
     if (options.strengthLevel == 0) maxSpotArea = 15;
     else if (options.strengthLevel == 1) maxSpotArea = 30;
     else if (options.strengthLevel == 2) maxSpotArea = 60;
 
-    // ★ 边缘区域：四条边各 6%
+    // 边缘区域：四条边各 6%
     const int edgeX = static_cast<int>(W * 0.06);
     const int edgeY = static_cast<int>(H * 0.06);
 
-    // ★ 边缘区域允许的暗块上限（装订孔、边缘污渍）
+    // 边缘区域允许的暗块上限
     const int bindingMaxArea = 5000;
-    // ★ 边缘区域允许的宽高比（长条污渍）
-    const double bindingMaxAspect = 20.0;
+
+    // 长条污渍判定：宽高比
+    const double longStripAspect = 8.0;
+
+    // 装订孔方向
+    const bool isPortrait = (H > W);
 
     cv::Mat spotMask = cv::Mat::zeros(H, W, CV_8UC1);
     cv::Mat bindingMask = cv::Mat::zeros(H, W, CV_8UC1);
@@ -205,33 +209,48 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
 
         if (area < 2) continue;
 
-        // ★ 判断是否在四条边的任意一条的边缘区域
+        const double aspect = static_cast<double>(std::max(w, h))
+                              / std::max(1, std::min(w, h));
+
+        // ★ 装订孔：竖版左边缘 / 横版上边缘（块状：宽高比 < 3）
+        bool isBinding = false;
+        if (isPortrait) {
+            isBinding = (x < edgeX) && (aspect < 3.0);
+        } else {
+            isBinding = (y < edgeY) && (aspect < 3.0);
+        }
+
+        // ★ 长条污渍：任意边缘 + 宽高比 > 8
         const bool nearLeft   = (x < edgeX);
         const bool nearRight  = ((x + w) > (W - edgeX));
         const bool nearTop    = (y < edgeY);
         const bool nearBottom = ((y + h) > (H - edgeY));
-
         const bool isEdge = (nearLeft || nearRight || nearTop || nearBottom);
 
-        const int localMaxArea = isEdge ? bindingMaxArea : maxSpotArea;
+        const bool isLongStrip = isEdge && (aspect >= longStripAspect);
+
+        // ★ 边缘区域只允许这两类去除
+        const bool allowRemove = isBinding || isLongStrip;
+
+        if (isEdge && !allowRemove) {
+            // 边缘的其它块（包括页码）保留
+            continue;
+        }
+
+        const int localMaxArea = allowRemove ? bindingMaxArea : maxSpotArea;
         if (area > localMaxArea) continue;
 
-        const double aspect = static_cast<double>(std::max(w, h))
-                              / std::max(1, std::min(w, h));
-
-        // ★ 边缘区允许大宽高比（长条污渍），中心区严格
-        const double localMaxAspect = isEdge ? bindingMaxAspect : 5.0;
-        if (aspect > localMaxAspect) continue;
+        if (!allowRemove && aspect > 5.0) continue;
 
         cv::Rect r(x, y, w, h);
         r &= cv::Rect(0, 0, W, H);
 
-        if (!isEdge) {
+        if (allowRemove) {
+            cv::rectangle(bindingMask, r, cv::Scalar(255), cv::FILLED);
+        } else {
             cv::Mat roi = protectMask(r);
             if (cv::countNonZero(roi) > 0) continue;
             cv::rectangle(spotMask, r, cv::Scalar(255), cv::FILLED);
-        } else {
-            cv::rectangle(bindingMask, r, cv::Scalar(255), cv::FILLED);
         }
 
         ++spotCount;
