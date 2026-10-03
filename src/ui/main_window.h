@@ -47,7 +47,6 @@ private slots:
     void onBackground();
     void onBatchProcess();
 
-    // ★ 接收批处理预览图
     void onBatchPreview(const cv::Mat &mat, bool before);
 
     void onEnhanceParamChanged();
@@ -65,6 +64,9 @@ private:
 
     void buildEnhancePanel(QVBoxLayout *paramLayout);
     process::EnhanceOptions currentEnhanceOptions() const;
+
+    // ★ 新增：应用"待确认中心"里已接受的黄色污渍
+    void applyAcceptedYellowBlobs();
 
     QTreeView *m_folderTree = nullptr;
     QTableView *m_fileTable = nullptr;
@@ -95,6 +97,5 @@ private:
     QTimer *m_enhanceDebounceTimer = nullptr;
     cv::Mat m_enhancePreviewBase;
 
-    // ★ 批处理对话框
     batch::BatchDialog *m_batchDialog = nullptr;
 };

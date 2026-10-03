@@ -48,6 +48,7 @@
 #include "../protect/stamp_protect.h"
 #include "../analyze/pending_center.h"
 #include "../analyze/pending_dialog.h"
+#include "../analyze/pending_item.h"
 #include "../db/batch_dialog.h"
 
 MainWindow::MainWindow(QWidget *parent)
@@ -614,7 +615,7 @@ void MainWindow::onRemoveBlackEdge()
 }
 
 void MainWindow::onDenoise()
-{
+{    const cv::Mat srcBackup = m_currentMat.clone();
     if (!m_hasImage || m_currentMat.empty()) {
         QMessageBox::information(this, QString::fromUtf8("提示"),
                                  QString::fromUtf8("请先打开一张图片。"));
@@ -663,8 +664,29 @@ void MainWindow::onDenoise()
                 .arg(result.spotCount)
                 .arg(result.cleanedPixels));
     }
-}
 
+    // ★ 把黄色污渍加入待确认中心
+    if (!result.yellowBlobs.empty()) {
+        const QFileInfo fi(m_currentImagePath);
+        for (const cv::Rect &r : result.yellowBlobs) {
+            analyze::PendingItem p;
+            p.type = analyze::PendingType::YellowBlob;
+            p.suggestedAction = analyze::PendingAction::Remove;
+            p.sourceImagePath = m_currentImagePath;
+            p.fileName = fi.fileName();
+            p.boundingBox = r;
+            p.confidence = 0.7;
+            p.reason = QString::fromUtf8("检测到黄色污渍");
+            p.detail = QString::fromUtf8("位置：(%1,%2) 大小：%3x%4")
+                           .arg(r.x).arg(r.y).arg(r.width).arg(r.height);
+            cv::Rect safe = r & cv::Rect(0, 0, srcBackup.cols, srcBackup.rows);
+            if (safe.width > 0 && safe.height > 0) {
+                p.thumbnail = srcBackup(safe).clone();
+            }
+            analyze::PendingCenter::instance().addItem(p);
+        }
+    }
+}
 void MainWindow::onEnhance()
 {
     if (!m_hasImage || m_currentMat.empty()) {
@@ -1176,6 +1198,46 @@ void MainWindow::onPendingCenter()
 {
     analyze::PendingDialog dlg(this);
     dlg.exec();
+
+    // ★ 对话框关闭后，应用所有"已接受"的黄色污渍
+    applyAcceptedYellowBlobs();
+}
+// ============================================================
+// 应用"待确认中心"里已接受的黄色污渍
+// ============================================================
+void MainWindow::applyAcceptedYellowBlobs()
+{
+    if (m_currentMat.empty()) return;
+
+    const QList<analyze::PendingItem> allItems =
+        analyze::PendingCenter::instance().allItems();
+
+    int applied = 0;
+    cv::Scalar white;
+    if (m_currentMat.channels() == 4) {
+        white = cv::Scalar(255, 255, 255, 255);
+    } else {
+        white = cv::Scalar(255, 255, 255);
+    }
+
+    for (const analyze::PendingItem &item : allItems) {
+        if (item.type != analyze::PendingType::YellowBlob) continue;
+        if (item.decision != analyze::PendingDecision::Accepted) continue;
+        if (item.sourceImagePath != m_currentImagePath) continue;
+
+        cv::Rect r = item.boundingBox &
+            cv::Rect(0, 0, m_currentMat.cols, m_currentMat.rows);
+        if (r.width <= 0 || r.height <= 0) continue;
+
+        cv::rectangle(m_currentMat, r, white, cv::FILLED);
+        ++applied;
+    }
+
+    if (applied > 0) {
+        showMatOnPreview(m_currentMat);
+        statusBar()->showMessage(
+            QString::fromUtf8("已处理 %1 处黄色污渍").arg(applied));
+    }
 }
 
 void MainWindow::showMatOnPreview(const cv::Mat &mat)

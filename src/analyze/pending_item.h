@@ -12,10 +12,11 @@ namespace analyze {
 enum class PendingType
 {
     Unknown = 0,
-    WrongPageNumber,     // detected page number does not match filename
-    ColorLineDetected,   // colored thin line detected
-    SpotSuspected,       // suspected spot
-    SignatureOverlap,    // signature area needs confirmation
+    WrongPageNumber,     // 错误页码
+    ColorLineDetected,   // 彩色细线
+    SpotSuspected,       // 疑似污点
+    SignatureOverlap,    // 签名重叠
+    YellowBlob,          // ★ 新增：黄色污渍
     Other
 };
 
@@ -25,9 +26,9 @@ enum class PendingType
 enum class PendingAction
 {
     Unknown = 0,
-    Keep,                // keep the item in image
-    Remove,              // remove the item from image
-    ManualReview         // needs manual check
+    Keep,                // 保留
+    Remove,              // 删除
+    ManualReview         // 人工检查
 };
 
 // ============================================================
@@ -35,10 +36,10 @@ enum class PendingAction
 // ============================================================
 enum class PendingDecision
 {
-    Pending = 0,         // not decided yet
-    Accepted,            // user accepted suggested action
-    Rejected,            // user rejected suggested action
-    Ignored              // user ignored
+    Pending = 0,
+    Accepted,
+    Rejected,
+    Ignored
 };
 
 // ============================================================
@@ -51,16 +52,15 @@ struct PendingItem
     PendingAction suggestedAction = PendingAction::Unknown;
     PendingDecision decision = PendingDecision::Pending;
 
-    QString sourceImagePath;   // full path of the image
-    QString fileName;          // ★ file name only (for display)
-    cv::Rect boundingBox;      // location inside image (for overlay)
-    cv::Mat thumbnail;         // small preview (BGR or GRAY)
-    QString reason;            // human-readable reason
-    QString detail;            // extra detail (e.g. recognized number)
-    double confidence = 0.0;   // 0.0 - 1.0
-    QDateTime createdAt;       // when added
+    QString sourceImagePath;
+    QString fileName;
+    cv::Rect boundingBox;
+    cv::Mat thumbnail;
+    QString reason;
+    QString detail;
+    double confidence = 0.0;
+    QDateTime createdAt;
 
-    // Helper: short text of type
     static QString typeToString(PendingType t)
     {
         switch (t) {
@@ -68,12 +68,12 @@ struct PendingItem
         case PendingType::ColorLineDetected: return QString::fromUtf8("彩色细线");
         case PendingType::SpotSuspected: return QString::fromUtf8("疑似污点");
         case PendingType::SignatureOverlap: return QString::fromUtf8("签名重叠");
+        case PendingType::YellowBlob: return QString::fromUtf8("黄色污渍");
         case PendingType::Other: return QString::fromUtf8("其它");
         default: return QString::fromUtf8("未知");
         }
     }
 
-    // Helper: short text of suggested action
     static QString actionToString(PendingAction a)
     {
         switch (a) {
@@ -84,7 +84,6 @@ struct PendingItem
         }
     }
 
-    // Helper: short text of decision
     static QString decisionToString(PendingDecision d)
     {
         switch (d) {
