@@ -44,7 +44,10 @@ private slots:
     void onPendingCenter();
     void onBackground();
 
-    // ★ 文字加深参数
+    // ★ 批量处理
+    void onBatchProcess();
+
+    // 文字加深参数
     void onEnhanceParamChanged();
     void onEnhanceDebounceTimeout();
 
@@ -58,7 +61,6 @@ private:
     void fitPreviewToWindow();
     void fillFileTable(const QStringList &files);
 
-    // ★ 增强参数面板
     void buildEnhancePanel(QVBoxLayout *paramLayout);
     process::EnhanceOptions currentEnhanceOptions() const;
 
@@ -70,13 +72,13 @@ private:
     bool m_hasImage = false;
     QStringList m_currentFiles;
     QString m_currentImagePath;
+    QString m_currentFolder;      // ★ 最近一次扫描的文件夹
     cv::Mat m_currentMat;
     cv::Mat m_originalMat;
 
-    // 彩色细线：检测时的原图（供清除用）
     cv::Mat m_colorLineSource;
 
-    // ★ 文字加深参数控件
+    // 文字加深参数控件
     QSlider *m_enhanceStrengthSlider = nullptr;
     QSpinBox *m_enhanceStrengthSpin = nullptr;
 
@@ -89,7 +91,6 @@ private:
     QSlider *m_enhancePaperTargetSlider = nullptr;
     QSpinBox *m_enhancePaperTargetSpin = nullptr;
 
-    // ★ 实时预览防抖
     QTimer *m_enhanceDebounceTimer = nullptr;
-    cv::Mat m_enhancePreviewBase;   // 实时预览的原图（首次打开图时保存）
+    cv::Mat m_enhancePreviewBase;
 };

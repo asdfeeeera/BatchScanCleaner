@@ -48,6 +48,7 @@
 #include "../protect/stamp_protect.h"
 #include "../analyze/pending_center.h"
 #include "../analyze/pending_dialog.h"
+#include "../db/batch_dialog.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -97,6 +98,9 @@ void MainWindow::setupMenuBar()
 
     QAction *pendingAct = toolMenu->addAction(QString::fromUtf8("待确认中心"));
     connect(pendingAct, &QAction::triggered, this, &MainWindow::onPendingCenter);
+
+    QAction *batchAct = toolMenu->addAction(QString::fromUtf8("批量处理"));
+    connect(batchAct, &QAction::triggered, this, &MainWindow::onBatchProcess);
 
     toolMenu->addAction(QString::fromUtf8("任务队列"));
     toolMenu->addAction(QString::fromUtf8("日志与报告"));
@@ -157,6 +161,9 @@ void MainWindow::setupToolBar()
 
     QAction *backgroundAction = toolBar->addAction(QString::fromUtf8("底色处理"));
     connect(backgroundAction, &QAction::triggered, this, &MainWindow::onBackground);
+
+    QAction *batchAction = toolBar->addAction(QString::fromUtf8("批量处理"));
+    connect(batchAction, &QAction::triggered, this, &MainWindow::onBatchProcess);
 
     toolBar->addSeparator();
     toolBar->addAction(QString::fromUtf8("输出设置"));
@@ -431,6 +438,7 @@ void MainWindow::onAddFolder()
 
     const QStringList files = core::FileScanner::scanFolder(folder);
     m_currentFiles = files;
+    m_currentFolder = folder;
     fillFileTable(files);
 
     statusBar()->showMessage(
@@ -1122,6 +1130,18 @@ void MainWindow::onStampProtectTest()
             .arg(result.protectedPixels)
             .arg(ratio, 0, 'f', 2)
             .arg(hwRatio, 0, 'f', 2));
+}
+
+void MainWindow::onBatchProcess()
+{
+    if (m_currentFiles.isEmpty()) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+                                 QString::fromUtf8("请先点\"添加文件夹\"扫描图片。"));
+        return;
+    }
+
+    batch::BatchDialog dlg(m_currentFiles, m_currentFolder, this);
+    dlg.exec();
 }
 
 void MainWindow::onPendingCenter()

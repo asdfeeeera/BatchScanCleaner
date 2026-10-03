@@ -10,6 +10,7 @@ target_include_directories(ui PUBLIC
     ${CMAKE_SOURCE_DIR}/src/process
     ${CMAKE_SOURCE_DIR}/src/protect
     ${CMAKE_SOURCE_DIR}/src/analyze
+    ${CMAKE_SOURCE_DIR}/src/db
 )
 
 target_link_libraries(ui PUBLIC
@@ -21,4 +22,5 @@ target_link_libraries(ui PUBLIC
     process
     protect
     analyze
+    db
 )
