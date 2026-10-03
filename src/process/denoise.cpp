@@ -320,7 +320,8 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         diag << QString::fromUtf8("  → 保留\n");
     }
 
-    diag.close();
+    diag.flush();
+    diagFile.close();
 
     cv::Mat finalImage;
     if (spotCount == 0) {
