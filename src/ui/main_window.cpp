@@ -55,7 +55,6 @@ MainWindow::MainWindow(QWidget *parent)
     setWindowTitle(QString::fromUtf8("批量扫描图片净化增强软件"));
     resize(1280, 800);
 
-    // 防抖定时器（300ms）
     m_enhanceDebounceTimer = new QTimer(this);
     m_enhanceDebounceTimer->setSingleShot(true);
     connect(m_enhanceDebounceTimer, &QTimer::timeout,
@@ -214,7 +213,6 @@ void MainWindow::setupCentralWidget()
     paramLayout->addWidget(new QLabel(QString::fromUtf8("黑边去除")));
     paramLayout->addWidget(new QLabel(QString::fromUtf8("自动扶正")));
 
-    // ★ 文字加深参数面板（可折叠）
     buildEnhancePanel(paramLayout);
 
     paramLayout->addWidget(new QLabel(QString::fromUtf8("彩色故障细线")));
@@ -236,12 +234,8 @@ void MainWindow::setupCentralWidget()
     setCentralWidget(mainSplitter);
 }
 
-// ============================================================
-// ★ 文字加深参数面板（可折叠）
-// ============================================================
 void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
 {
-    // ---- 折叠按钮（三角形 + 标题）----
     QToolButton *toggleBtn = new QToolButton(this);
     toggleBtn->setText(QString::fromUtf8("浅色文字加深"));
     toggleBtn->setCheckable(true);
@@ -250,7 +244,6 @@ void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
     toggleBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     toggleBtn->setAutoRaise(true);
 
-    // ---- 参数容器（默认隐藏）----
     QWidget *body = new QWidget(this);
     QGridLayout *grid = new QGridLayout(body);
     grid->setContentsMargins(10, 4, 4, 4);
@@ -259,7 +252,6 @@ void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
 
     int row = 0;
 
-    // ---- 强度（1 ~ 30，内部 ×0.1） ----
     grid->addWidget(new QLabel(QString::fromUtf8("强度"), body), row, 0);
     m_enhanceStrengthSlider = new QSlider(Qt::Horizontal, body);
     m_enhanceStrengthSlider->setRange(1, 30);
@@ -272,7 +264,6 @@ void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
     grid->addWidget(m_enhanceStrengthSpin, row, 2);
     ++row;
 
-    // ---- 彩色保护阈值（0 ~ 255） ----
     grid->addWidget(new QLabel(QString::fromUtf8("彩色保护"), body), row, 0);
     m_enhanceColorSatSlider = new QSlider(Qt::Horizontal, body);
     m_enhanceColorSatSlider->setRange(0, 255);
@@ -284,7 +275,6 @@ void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
     grid->addWidget(m_enhanceColorSatSpin, row, 2);
     ++row;
 
-    // ---- 目标暗部（0 ~ 100） ----
     grid->addWidget(new QLabel(QString::fromUtf8("暗部目标"), body), row, 0);
     m_enhanceDarkTargetSlider = new QSlider(Qt::Horizontal, body);
     m_enhanceDarkTargetSlider->setRange(0, 100);
@@ -296,7 +286,6 @@ void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
     grid->addWidget(m_enhanceDarkTargetSpin, row, 2);
     ++row;
 
-    // ---- 目标纸张（200 ~ 255） ----
     grid->addWidget(new QLabel(QString::fromUtf8("纸张目标"), body), row, 0);
     m_enhancePaperTargetSlider = new QSlider(Qt::Horizontal, body);
     m_enhancePaperTargetSlider->setRange(200, 255);
@@ -310,7 +299,6 @@ void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
 
     body->setVisible(false);
 
-    // ---- 滑块 <-> 数字框联动 ----
     connect(m_enhanceStrengthSlider, &QSlider::valueChanged,
             m_enhanceStrengthSpin, &QSpinBox::setValue);
     connect(m_enhanceStrengthSpin, QOverload<int>::of(&QSpinBox::valueChanged),
@@ -331,7 +319,6 @@ void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
     connect(m_enhancePaperTargetSpin, QOverload<int>::of(&QSpinBox::valueChanged),
             m_enhancePaperTargetSlider, &QSlider::setValue);
 
-    // ---- 任一滑块变化 → 防抖预览 ----
     connect(m_enhanceStrengthSlider, &QSlider::valueChanged,
             this, &MainWindow::onEnhanceParamChanged);
     connect(m_enhanceColorSatSlider, &QSlider::valueChanged,
@@ -341,7 +328,6 @@ void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
     connect(m_enhancePaperTargetSlider, &QSlider::valueChanged,
             this, &MainWindow::onEnhanceParamChanged);
 
-    // ---- 按钮切换展开/折叠 ----
     connect(toggleBtn, &QToolButton::toggled, this,
             [body, toggleBtn](bool on) {
                 body->setVisible(on);
@@ -356,9 +342,12 @@ process::EnhanceOptions MainWindow::currentEnhanceOptions() const
 {
     process::EnhanceOptions opt;
 
-    const double strength = m_enhanceStrengthSlider->value() / 10.0;
-    if (strength <= 1.3) opt.strengthLevel = 0;
-    else if (strength <= 1.8) opt.strengthLevel = 1;
+    double raw = m_enhanceStrengthSlider->value() / 10.0;
+    if (raw < 0.5) raw = 0.5;
+    opt.gamma = raw;
+
+    if (raw <= 1.3) opt.strengthLevel = 0;
+    else if (raw <= 1.8) opt.strengthLevel = 1;
     else opt.strengthLevel = 2;
 
     opt.protectColor = true;
@@ -387,11 +376,17 @@ void MainWindow::onEnhanceDebounceTimeout()
 
     showMatOnPreview(result.image);
 
-    statusBar()->showMessage(
-        QString::fromUtf8("预览：纸张 %1，文字 %2，加深 %3 像素")
-            .arg(result.paperGray, 0, 'f', 1)
-            .arg(result.darkGray, 0, 'f', 1)
-            .arg(result.enhancedPixels));
+    if (result.skipped) {
+        statusBar()->showMessage(
+            QString::fromUtf8("预览：文字已足够黑（文字灰度 %1），跳过")
+                .arg(result.darkGray, 0, 'f', 1));
+    } else {
+        statusBar()->showMessage(
+            QString::fromUtf8("预览：纸张 %1，文字 %2，加深 %3 像素")
+                .arg(result.paperGray, 0, 'f', 1)
+                .arg(result.darkGray, 0, 'f', 1)
+                .arg(result.enhancedPixels));
+    }
 }
 
 void MainWindow::setupStatusBar()
@@ -534,7 +529,6 @@ void MainWindow::onSaveAs()
     statusBar()->showMessage(
         QString::fromUtf8("已保存：%1").arg(savePath));
 }
-
 void MainWindow::onDeskew()
 {
     if (!m_hasImage || m_currentMat.empty()) {
@@ -664,7 +658,6 @@ void MainWindow::onDenoise()
 }
 
 void MainWindow::onEnhance()
-{void MainWindow::onEnhance()
 {
     if (!m_hasImage || m_currentMat.empty()) {
         QMessageBox::information(this, QString::fromUtf8("提示"),
@@ -690,7 +683,6 @@ void MainWindow::onEnhance()
     showMatOnPreview(m_currentMat);
 
     if (result.skipped) {
-        // ★ 区分两种跳过原因
         if (result.paperGray < 150.0) {
             statusBar()->showMessage(
                 QString::fromUtf8("文字加深：纸张过暗，已跳过（纸张灰度 %1）")
@@ -700,37 +692,6 @@ void MainWindow::onEnhance()
                 QString::fromUtf8("文字加深：文字已足够黑（文字灰度 %1），跳过")
                     .arg(result.darkGray, 0, 'f', 1));
         }
-    } else {
-        statusBar()->showMessage(
-            QString::fromUtf8("文字加深完成：纸张灰度 %1，文字灰度 %2，加深 %3 像素")
-                .arg(result.paperGray, 0, 'f', 1)
-                .arg(result.darkGray, 0, 'f', 1)
-                .arg(result.enhancedPixels));
-    }
-}
-    }
-
-    statusBar()->showMessage(QString::fromUtf8("正在加深浅色文字..."));
-
-    process::EnhanceOptions options = currentEnhanceOptions();
-
-    const process::EnhanceResult result =
-        process::Enhance::enhanceText(m_currentMat, options);
-
-    if (!result.ok) {
-        QMessageBox::warning(this, QString::fromUtf8("错误"),
-                             QString::fromUtf8("文字加深失败。"));
-        statusBar()->showMessage(QString::fromUtf8("文字加深失败"));
-        return;
-    }
-
-    m_currentMat = result.image;
-    showMatOnPreview(m_currentMat);
-
-    if (result.skipped) {
-        statusBar()->showMessage(
-            QString::fromUtf8("文字加深：纸张过暗，已跳过（纸张灰度 %1）")
-                .arg(result.paperGray, 0, 'f', 1));
     } else {
         statusBar()->showMessage(
             QString::fromUtf8("文字加深完成：纸张灰度 %1，文字灰度 %2，加深 %3 像素")
@@ -1213,7 +1174,6 @@ void MainWindow::showImageOnPreview(const QString &path)
     m_currentMat = mat;
     m_currentImagePath = path;
 
-    // ★ 保存用于实时预览的原图
     m_enhancePreviewBase = mat.clone();
 
     showMatOnPreview(m_currentMat);
