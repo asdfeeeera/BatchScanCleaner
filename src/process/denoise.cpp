@@ -99,7 +99,8 @@ void Denoise::detectYellowBlobs(const cv::Mat &src,
     cv::bitwise_and(hMask, sMask, mask);
     cv::bitwise_and(mask, vMask, mask);
 
-    cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+    // ★ 用大核闭运算，把散落的小黄点合并成一整块
+    cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(31, 31));
     cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, k);
 
     cv::Mat labels, stats, centroids;
@@ -111,7 +112,7 @@ void Denoise::detectYellowBlobs(const cv::Mat &src,
 
     for (int i = 1; i < n; ++i) {
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
-        if (area < 800) continue;
+        if (area < 1500) continue;
 
         cv::Rect r(stats.at<int>(i, cv::CC_STAT_LEFT),
                    stats.at<int>(i, cv::CC_STAT_TOP),
