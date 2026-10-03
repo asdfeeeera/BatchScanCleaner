@@ -941,7 +941,6 @@ void MainWindow::onClearColorLine()
             .arg(static_cast<int>(result.items.size()))
             .arg(result.clearedPixels));
 }
-
 void MainWindow::onProcessErrPage()
 {
     if (!m_hasImage || m_currentMat.empty()) {
@@ -1132,6 +1131,9 @@ void MainWindow::onStampProtectTest()
             .arg(hwRatio, 0, 'f', 2));
 }
 
+// ============================================================
+// 批量处理
+// ============================================================
 void MainWindow::onBatchProcess()
 {
     if (m_currentFiles.isEmpty()) {
@@ -1140,7 +1142,7 @@ void MainWindow::onBatchProcess()
         return;
     }
 
-    // 已经打开了，就置顶
+    // 已打开，置顶
     if (m_batchDialog) {
         m_batchDialog->raise();
         m_batchDialog->activateWindow();
@@ -1163,9 +1165,6 @@ void MainWindow::onBatchProcess()
     m_batchDialog->moveToTopRight();
 }
 
-    batch::BatchDialog dlg(m_currentFiles, m_currentFolder, this);
-    dlg.exec();
-}
 void MainWindow::onBatchPreview(const cv::Mat &mat, bool before)
 {
     Q_UNUSED(before);
