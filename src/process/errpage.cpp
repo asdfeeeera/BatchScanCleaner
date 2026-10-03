@@ -334,6 +334,39 @@ bool recognizeSingleChar(const cv::Mat &charImage,
     return false;
 }
 
+// ============================================================
+// 按像素涂白：只涂数字本身的黑色像素，不动相邻区域
+// ============================================================
+void eraseByPixels(cv::Mat &dst,
+                   const cv::Mat &srcGray,
+                   const cv::Rect &box,
+                   const cv::Scalar &white)
+{
+    // 取稍大一点的 ROI（左右各扩 5 像素，上下各扩 3 像素）
+    cv::Rect r = box;
+    r.x -= 5;
+    r.y -= 3;
+    r.width += 10;
+    r.height += 6;
+    r &= cv::Rect(0, 0, dst.cols, dst.rows);
+    if (r.width <= 0 || r.height <= 0) return;
+
+    cv::Mat roiGray = srcGray(r);
+
+    // 二值化：黑像素 = 数字
+    cv::Mat bin;
+    cv::threshold(roiGray, bin, 0, 255,
+                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+
+    // 膨胀 3 像素覆盖描边
+    cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+    cv::dilate(bin, bin, k);
+
+    // 只把 mask 内的像素涂白
+    cv::Mat roiDst = dst(r);
+    roiDst.setTo(white, bin);
+}
+
 } // namespace
 
 int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
@@ -772,7 +805,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
     }
 
     // ============================================================
-    // 第一遍：涂白划线块（扩张量从 8 降到 4）
+    // 按像素涂白：只涂数字本身的黑色像素
     // ============================================================
     for (auto &item : candidates) {
         const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber,
@@ -786,36 +819,14 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         }
 
         if (item.isCrossed) {
-            cv::Rect r = item.boundingBox;
-            r.x -= 4;
-            r.y -= 4;
-            r.width += 8;
-            r.height += 8;
-            r &= cv::Rect(0, 0, W, H);
-            cv::rectangle(dst, r, white, cv::FILLED);
+            eraseByPixels(dst, gray, item.boundingBox, white);
             ++result.crossedRemoved;
-            writeDiag(QString::fromUtf8("  → 识别=%1，划线=是，涂白")
+            writeDiag(QString::fromUtf8("  → 识别=%1，划线=是，按像素涂白")
                           .arg(item.recognizedNumber));
         } else {
             ++result.pendingCount;
             writeDiag(QString::fromUtf8("  → 识别=%1，划线=否，加待确认")
                           .arg(item.recognizedNumber));
-        }
-    }
-
-    // ============================================================
-    // 第二遍：把"匹配正确页码"的区域从原图恢复回来
-    // （防止涂白误伤正确页码的边缘）
-    // ============================================================
-    for (auto &item : candidates) {
-        if (!fuzzyMatchPage(item.recognizedNumber, result.correctPage)) continue;
-
-        cv::Rect r = item.boundingBox;
-        r &= cv::Rect(0, 0, W, H);
-        if (r.width > 0 && r.height > 0) {
-            src(r).copyTo(dst(r));
-            writeDiag(QString::fromUtf8("  → 恢复正确页码区域 (%1,%2,%3x%4)")
-                          .arg(r.x).arg(r.y).arg(r.width).arg(r.height));
         }
     }
 
