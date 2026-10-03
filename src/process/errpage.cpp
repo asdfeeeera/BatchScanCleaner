@@ -87,7 +87,6 @@ double verticalOverlap(const cv::Rect &a, const cv::Rect &b)
     return static_cast<double>(bot - top) / minH;
 }
 
-// 合并阈值 0.25，避免 0009 和 005 被粘连
 std::vector<cv::Rect> mergeAdjacentDigits(std::vector<cv::Rect> boxes)
 {
     if (boxes.size() < 2) return boxes;
@@ -140,7 +139,6 @@ QString locateTesseract(const QString &hint)
     return QString();
 }
 
-// 模糊匹配：识别值是否可能是正确页码
 bool fuzzyMatchPage(int recognized, int correctPage)
 {
     if (recognized < 0 || correctPage < 0) return false;
@@ -149,7 +147,6 @@ bool fuzzyMatchPage(int recognized, int correctPage)
     const QString recStr = QString::number(recognized);
     const QString corrStr = QString::number(correctPage);
 
-    // 长度差 > 1 -> 不匹配
     if (std::abs(recStr.length() - corrStr.length()) > 1) return false;
 
     if (corrStr.contains(recStr) || recStr.contains(corrStr)) return true;
@@ -606,7 +603,6 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
     }
 }
 
-// 划线检测：只往上扩 5 像素（横线在数字上方）
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
                                double crossLineRatio)
@@ -767,16 +763,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
     writeDiag(QString::fromUtf8("过滤后剩余 %1 个候选块")
                   .arg(static_cast<int>(candidates.size())));
 
-    for (size_t i = 0; i < candidates.size(); ++i) {
-        const auto &it = candidates[i];
-        writeDiag(QString::fromUtf8("  候选%1：识别=%2 划线=%3 bbox=(%4,%5,%6x%7)")
-                      .arg(static_cast<int>(i))
-                      .arg(it.recognizedNumber)
-                      .arg(it.isCrossed ? QStringLiteral("是") : QStringLiteral("否"))
-                      .arg(it.boundingBox.x).arg(it.boundingBox.y)
-                      .arg(it.boundingBox.width).arg(it.boundingBox.height));
-    }
-
     cv::Mat dst = src.clone();
     cv::Scalar white;
     if (dst.channels() == 4) {
@@ -785,29 +771,26 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         white = cv::Scalar(255, 255, 255);
     }
 
-    // 只按 isCrossed 涂白，不再依赖 hasCorrectMatch
+    // ============================================================
+    // 第一遍：涂白划线块（扩张量从 8 降到 4）
+    // ============================================================
     for (auto &item : candidates) {
         const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber,
                                                      result.correctPage);
 
-        if (matchesCorrect) {
-            writeDiag(QString::fromUtf8("  → 识别=%1 匹配正确页码，保留")
-                          .arg(item.recognizedNumber));
-            continue;
-        }
+        if (matchesCorrect) continue;
 
         if (item.recognizedNumber < 0) {
             ++result.pendingCount;
-            writeDiag(QString::fromUtf8("  → OCR 失败，加待确认"));
             continue;
         }
 
         if (item.isCrossed) {
             cv::Rect r = item.boundingBox;
-            r.x -= 8;
-            r.y -= 8;
-            r.width += 16;
-            r.height += 16;
+            r.x -= 4;
+            r.y -= 4;
+            r.width += 8;
+            r.height += 8;
             r &= cv::Rect(0, 0, W, H);
             cv::rectangle(dst, r, white, cv::FILLED);
             ++result.crossedRemoved;
@@ -817,6 +800,22 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             ++result.pendingCount;
             writeDiag(QString::fromUtf8("  → 识别=%1，划线=否，加待确认")
                           .arg(item.recognizedNumber));
+        }
+    }
+
+    // ============================================================
+    // 第二遍：把"匹配正确页码"的区域从原图恢复回来
+    // （防止涂白误伤正确页码的边缘）
+    // ============================================================
+    for (auto &item : candidates) {
+        if (!fuzzyMatchPage(item.recognizedNumber, result.correctPage)) continue;
+
+        cv::Rect r = item.boundingBox;
+        r &= cv::Rect(0, 0, W, H);
+        if (r.width > 0 && r.height > 0) {
+            src(r).copyTo(dst(r));
+            writeDiag(QString::fromUtf8("  → 恢复正确页码区域 (%1,%2,%3x%4)")
+                          .arg(r.x).arg(r.y).arg(r.width).arg(r.height));
         }
     }
 
