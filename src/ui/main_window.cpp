@@ -713,9 +713,6 @@ void MainWindow::onClearColorLine()
             .arg(result.clearedPixels));
 }
 
-// ============================================================
-// Wrong page number processing
-// ============================================================
 void MainWindow::onProcessErrPage()
 {
     if (!m_hasImage || m_currentMat.empty()) {
@@ -766,7 +763,6 @@ void MainWindow::onProcessErrPage()
     m_currentMat = result.image;
     showMatOnPreview(result.markedImage);
 
-    // Step 1: clear old pending items for this file
     {
         const QList<analyze::PendingItem> allItems =
             analyze::PendingCenter::instance().allItems();
@@ -783,7 +779,6 @@ void MainWindow::onProcessErrPage()
         }
     }
 
-    // Step 2: collect crossed boxes only
     std::vector<cv::Rect> crossedBoxes;
     for (const auto &it : result.items) {
         const bool matchesCorrect =
@@ -795,13 +790,10 @@ void MainWindow::onProcessErrPage()
         crossedBoxes.push_back(it.boundingBox);
     }
 
-    // Step 3: merge ALL crossed boxes into ONE bounding box
-    // (assume at most one wrong page number per image)
     const QFileInfo fi(m_currentImagePath);
     int addedCount = 0;
 
     if (!crossedBoxes.empty()) {
-                // ★ 只取最大的划线块（面积最大），不做并集
         cv::Rect finalBox = crossedBoxes[0];
         int maxArea = finalBox.width * finalBox.height;
         for (size_t i = 1; i < crossedBoxes.size(); ++i) {
@@ -811,7 +803,6 @@ void MainWindow::onProcessErrPage()
                 maxArea = a;
                 finalBox = r;
             }
-        }
         }
 
         analyze::PendingItem p;
@@ -926,9 +917,6 @@ void MainWindow::onStampProtectTest()
             .arg(hwRatio, 0, 'f', 2));
 }
 
-// ============================================================
-// Pending Center
-// ============================================================
 void MainWindow::onPendingCenter()
 {
     analyze::PendingDialog dlg(this);
