@@ -335,10 +335,7 @@ bool recognizeSingleChar(const cv::Mat &charImage,
 }
 
 // ============================================================
-// 按像素涂白：
-//   - ROI 扩张 3 像素
-//   - 只保留"质心在原始框内"的连通域
-//   - 膨胀 3x3 覆盖描边
+// 按像素涂白：阈值 200 + 膨胀 5x5 + 质心过滤
 // ============================================================
 void eraseByPixels(cv::Mat &dst,
                    const cv::Mat &srcGray,
@@ -355,9 +352,9 @@ void eraseByPixels(cv::Mat &dst,
 
     cv::Mat roiGray = srcGray(r);
 
+    // 固定阈值 200：抓住所有浅灰以上像素
     cv::Mat bin;
-    cv::threshold(roiGray, bin, 0, 255,
-                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+    cv::threshold(roiGray, bin, 200, 255, cv::THRESH_BINARY_INV);
 
     cv::Mat labels, stats, centroids;
     const int n = cv::connectedComponentsWithStats(bin, labels, stats,
@@ -382,7 +379,8 @@ void eraseByPixels(cv::Mat &dst,
         keep.setTo(255, labels == i);
     }
 
-    cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+    // 膨胀 5x5 覆盖淡灰轮廓
+    cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
     cv::dilate(keep, keep, k);
 
     cv::Mat roiDst = dst(r);
