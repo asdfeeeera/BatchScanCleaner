@@ -58,12 +58,6 @@ double Enhance::estimateDarkGray(const cv::Mat &gray)
     return static_cast<double>(sum) / count;
 }
 
-// ============================================================
-// 彩色保护掩膜（改进版）
-//   - Lab 空间：a、b 通道偏离 128 超过阈值 = 彩色
-//   - HSV 空间：饱和度 > 阈值 也算彩色
-//   - 两者取并集，非常保守
-// ============================================================
 void Enhance::buildColorProtectMask(const cv::Mat &src,
                                      cv::Mat &colorMask,
                                      int saturationThreshold)
@@ -98,7 +92,6 @@ void Enhance::buildColorProtectMask(const cv::Mat &src,
     cv::Mat bDiff;
     cv::absdiff(labCh[2], cv::Scalar(128), bDiff);
 
-    // 阈值 6（保守）：a 或 b 偏离 128 超过 6 就算彩色
     cv::Mat aMask;
     cv::threshold(aDiff, aMask, 6, 255, cv::THRESH_BINARY);
     cv::Mat bMask;
@@ -182,29 +175,34 @@ EnhanceResult Enhance::enhanceText(const cv::Mat &src,
         std::vector<cv::Mat> labCh;
         cv::split(lab, labCh);
 
+        // 增强后的 L 通道
         cv::Mat LEnhanced;
         cv::LUT(labCh[0], lutMat, LEnhanced);
 
         if (options.protectColor) {
             cv::Mat colorMask;
-            buildColorProtectMask(srcBgr, colorMask, options.colorSaturationThreshold);
+            buildColorProtectMask(srcBgr, colorMask,
+                                   options.colorSaturationThreshold);
 
-            // 用彩色掩膜保护 L 通道：彩色区域恢复原 L
-            LEnhanced.copyTo(labCh[0], colorMask);
-
-            // 额外：把彩色掩膜膨胀 2 像素，保护边缘
+            // 膨胀 5x5，保护彩色边缘
             cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE,
                                                    cv::Size(5, 5));
             cv::Mat colorMaskDilated;
             cv::dilate(colorMask, colorMaskDilated, k);
+
+            // ★ 关键修复：把原 L 写回 LEnhanced 的彩色区域
+            //   labCh[0] 是原 L，colorMaskDilated 非零的地方是彩色
             labCh[0].copyTo(LEnhanced, colorMaskDilated);
-            LEnhanced.copyTo(labCh[0]);
 
             result.enhancedPixels =
-                static_cast<int>(srcBgr.total()) - cv::countNonZero(colorMaskDilated);
+                static_cast<int>(srcBgr.total()) -
+                cv::countNonZero(colorMaskDilated);
         } else {
             result.enhancedPixels = static_cast<int>(srcBgr.total());
         }
+
+        // 把增强后的 L 写回 labCh[0]
+        LEnhanced.copyTo(labCh[0]);
 
         cv::merge(labCh, lab);
         cv::cvtColor(lab, output, cv::COLOR_Lab2BGR);
