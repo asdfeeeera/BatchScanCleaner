@@ -33,7 +33,6 @@ struct BatchOptions
     QList<StepItem> steps;     // 勾选的步骤（已排序）
 
     // 各步骤参数
-    process::DeskewOptions      deskewOpt;
     process::BlackEdgeOptions   blackEdgeOpt;
     process::DenoiseOptions     denoiseOpt;
     process::EnhanceOptions     enhanceOpt;

@@ -395,9 +395,6 @@ BatchOptions BatchDialog::buildOptions() const
     // 步骤排序：按 order 排（其实已经是列表顺序）
     opt.steps = m_steps;
 
-    // 各步骤参数（用默认值）
-    opt.deskewOpt = process::DeskewOptions();
-
     {
         process::BlackEdgeOptions b;
         b.paperSampleRatio   = 0.6;
