@@ -11,6 +11,7 @@ class QGraphicsView;
 class QTreeView;
 class QTableView;
 class QStandardItemModel;
+class QVBoxLayout;
 class QSlider;
 class QSpinBox;
 class QTimer;
