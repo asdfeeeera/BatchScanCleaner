@@ -139,10 +139,27 @@ QString locateTesseract(const QString &hint)
     return QString();
 }
 
-bool isPageMatch(int recognized, int correctPage)
+// ============================================================
+// 模糊匹配：识别值是否可能是正确页码
+// ============================================================
+bool fuzzyMatchPage(int recognized, int correctPage)
 {
     if (recognized < 0 || correctPage < 0) return false;
-    return recognized == correctPage;
+    if (recognized == correctPage) return true;
+
+    const QString recStr = QString::number(recognized);
+    const QString corrStr = QString::number(correctPage);
+
+    // 互相包含
+    if (corrStr.contains(recStr) || recStr.contains(corrStr)) return true;
+
+    // 长度差 <= 1 且有字符重叠
+    if (std::abs(recStr.length() - corrStr.length()) <= 1) {
+        for (const QChar &c : recStr) {
+            if (corrStr.contains(c)) return true;
+        }
+    }
+    return false;
 }
 
 cv::Mat removeHorizontalLinesByMask(const cv::Mat &gray)
@@ -711,36 +728,54 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         detectDigitsInRegion(gray, region, options, allItems);
     }
 
-    // Edge filter: digit boxes must be near page edge (within 10%)
-    const double EDGE_RATIO = 0.10;
-    const double marginX = W * EDGE_RATIO;
-    const double marginY = H * EDGE_RATIO;
+    // ============================================================
+    // 过滤 1：角落位置（左/右上、右下，25% x 25%）
+    // 过滤 2：字号（高度 >= 图高 × 1.3%）
+    // 页码是打码机打的，字号远大于表格数字
+    // ============================================================
+    const double CORNER_RATIO = 0.25;
+    const double MIN_H_RATIO  = 0.013;
 
-    std::vector<PageNumberItem> filtered;
-    filtered.reserve(allItems.size());
+    std::vector<PageNumberItem> candidates;
+    candidates.reserve(allItems.size());
 
     for (const auto &it : allItems) {
         const cv::Rect &b = it.boundingBox;
-        const bool nearLeft   = (b.x < marginX);
-        const bool nearRight  = ((b.x + b.width) > (W - marginX));
-        const bool nearTop    = (b.y < marginY);
-        const bool nearBottom = ((b.y + b.height) > (H - marginY));
+        const double cx = b.x + b.width / 2.0;
+        const double cy = b.y + b.height / 2.0;
 
-        const bool keep = (nearLeft || nearRight || nearTop || nearBottom);
+        const bool inLeft   = (cx < W * CORNER_RATIO);
+        const bool inRight  = (cx > W * (1.0 - CORNER_RATIO));
+        const bool inTop    = (cy < H * CORNER_RATIO);
+        const bool inBottom = (cy > H * (1.0 - CORNER_RATIO));
 
-        if (keep) {
-            filtered.push_back(it);
-        }
+        const bool inTopLeft     = (inLeft  && inTop);
+        const bool inTopRight    = (inRight && inTop);
+        const bool inBottomRight = (inRight && inBottom);
+
+        const bool inCorner = (inTopLeft || inTopRight || inBottomRight);
+
+        const bool bigEnough = (b.height >= H * MIN_H_RATIO);
+
+        const bool keep = (inCorner && bigEnough);
+
+        writeDiag(QString::fromUtf8("  [过滤] bbox=(%1,%2,%3x%4) 中心=(%5,%6) "
+                                     "角=%7 大=%8 → %9")
+                      .arg(b.x).arg(b.y).arg(b.width).arg(b.height)
+                      .arg(static_cast<int>(cx)).arg(static_cast<int>(cy))
+                      .arg(inCorner ? QStringLiteral("是") : QStringLiteral("否"))
+                      .arg(bigEnough ? QStringLiteral("是") : QStringLiteral("否"))
+                      .arg(keep ? QStringLiteral("保留") : QStringLiteral("丢弃")));
+
+        if (keep) candidates.push_back(it);
     }
 
-    allItems = filtered;
+    writeDiag(QString::fromUtf8("过滤后剩余 %1 个候选块")
+                  .arg(static_cast<int>(candidates.size())));
 
-    writeDiag(QString::fromUtf8("边缘过滤后剩余 %1 个块")
-                  .arg(static_cast<int>(allItems.size())));
-
-    for (size_t i = 0; i < allItems.size(); ++i) {
-        const auto &it = allItems[i];
-        writeDiag(QString::fromUtf8("  块%1：识别=%2 划线=%3 bbox=(%4,%5,%6x%7)")
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        const auto &it = candidates[i];
+        writeDiag(QString::fromUtf8("  候选%1：识别=%2 划线=%3 bbox=(%4,%5,%6x%7)")
                       .arg(static_cast<int>(i))
                       .arg(it.recognizedNumber)
                       .arg(it.isCrossed ? QStringLiteral("是") : QStringLiteral("否"))
@@ -748,6 +783,24 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
                       .arg(it.boundingBox.width).arg(it.boundingBox.height));
     }
 
+    // ============================================================
+    // 判断：候选里有没有匹配正确页码的？
+    // 如果没有，不涂白任何东西（保守策略）
+    // ============================================================
+    bool hasCorrectMatch = false;
+    for (const auto &it : candidates) {
+        if (fuzzyMatchPage(it.recognizedNumber, result.correctPage)) {
+            hasCorrectMatch = true;
+            break;
+        }
+    }
+
+    writeDiag(QString::fromUtf8("是否找到匹配正确页码的块：%1")
+                  .arg(hasCorrectMatch ? QStringLiteral("是") : QStringLiteral("否")));
+
+    // ============================================================
+    // 涂白
+    // ============================================================
     cv::Mat dst = src.clone();
     cv::Scalar white;
     if (dst.channels() == 4) {
@@ -756,34 +809,34 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         white = cv::Scalar(255, 255, 255);
     }
 
-    for (auto &item : allItems) {
-        const bool ocrFailed = (item.recognizedNumber < 0);
-        const bool matchesCorrect = isPageMatch(item.recognizedNumber,
-                                                 result.correctPage);
+    for (auto &item : candidates) {
+        const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber,
+                                                     result.correctPage);
 
-        // 识别结果是正确页码的一部分 -> 保留
-        bool isPartOfCorrect = false;
-        if (result.correctPage >= 0 && item.recognizedNumber >= 0) {
-            const QString recStr = QString::number(item.recognizedNumber);
-            const QString corrStr = QString::number(result.correctPage);
-            if (corrStr.contains(recStr) || recStr.contains(corrStr)) {
-                isPartOfCorrect = true;
-            }
-        }
-
-        if (matchesCorrect || isPartOfCorrect) {
+        if (matchesCorrect) {
+            writeDiag(QString::fromUtf8("  → 识别=%1 匹配正确页码，保留")
+                          .arg(item.recognizedNumber));
             continue;
         }
-        if (ocrFailed) {
+
+        if (item.recognizedNumber < 0) {
             ++result.pendingCount;
+            writeDiag(QString::fromUtf8("  → OCR 失败，加待确认"));
+            continue;
+        }
+
+        // 没有匹配正确页码的块 -> 不涂白
+        if (!hasCorrectMatch) {
+            ++result.pendingCount;
+            writeDiag(QString::fromUtf8("  → 未找到正确页码，不涂白（识别=%1）")
+                          .arg(item.recognizedNumber));
             continue;
         }
 
         if (item.isCrossed) {
-            // ★ 只有识别结果是 >= 2 位数字（>=10）才自动涂白
             if (item.recognizedNumber < 10) {
                 ++result.pendingCount;
-                writeDiag(QString::fromUtf8("  → 块识别=%1（<10），不涂白")
+                writeDiag(QString::fromUtf8("  → 识别=%1（<10），不涂白")
                               .arg(item.recognizedNumber));
                 continue;
             }
@@ -796,10 +849,12 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             r &= cv::Rect(0, 0, W, H);
             cv::rectangle(dst, r, white, cv::FILLED);
             ++result.crossedRemoved;
-            writeDiag(QString::fromUtf8("  → 块识别=%1，划线=是，涂白")
+            writeDiag(QString::fromUtf8("  → 识别=%1，划线=是，涂白")
                           .arg(item.recognizedNumber));
         } else {
             ++result.pendingCount;
+            writeDiag(QString::fromUtf8("  → 识别=%1，划线=否，加待确认")
+                          .arg(item.recognizedNumber));
         }
     }
 
@@ -811,14 +866,12 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     cv::Mat marked = src.clone();
     int idx = 0;
-    for (const auto &item : allItems) {
-        const bool ocrFailed = (item.recognizedNumber < 0);
-        const bool matchesCorrect = isPageMatch(item.recognizedNumber,
-                                                 result.correctPage);
+    for (const auto &item : candidates) {
+        const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber,
+                                                     result.correctPage);
 
         cv::Scalar color;
         if (matchesCorrect)      color = cv::Scalar(0, 255, 0);
-        else if (ocrFailed)      color = cv::Scalar(255, 0, 255);
         else if (item.isCrossed) color = cv::Scalar(0, 0, 255);
         else                     color = cv::Scalar(0, 165, 255);
 
@@ -840,10 +893,10 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     result.image = dst;
     result.markedImage = marked;
-    result.items = allItems;
+    result.items = candidates;
     result.ok = true;
 
-    if (allItems.empty()) {
+    if (candidates.empty()) {
         result.skipped = true;
     }
 
