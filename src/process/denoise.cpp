@@ -175,24 +175,11 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     int nLabels = cv::connectedComponentsWithStats(
         binary, labels, stats, centroids, 8, CV_32S);
 
-    // 普通区域的污点上限
+    // 普通区域的小污点上限（按强度）
     int maxSpotArea = 30;
     if (options.strengthLevel == 0) maxSpotArea = 15;
     else if (options.strengthLevel == 1) maxSpotArea = 30;
     else if (options.strengthLevel == 2) maxSpotArea = 60;
-
-    // 边缘区域：四条边各 6%
-    const int edgeX = static_cast<int>(W * 0.06);
-    const int edgeY = static_cast<int>(H * 0.06);
-
-    // 边缘区域允许的暗块上限
-    const int bindingMaxArea = 5000;
-
-    // 长条污渍判定：宽高比
-    const double longStripAspect = 8.0;
-
-    // 装订孔方向
-    const bool isPortrait = (H > W);
 
     cv::Mat spotMask = cv::Mat::zeros(H, W, CV_8UC1);
     cv::Mat bindingMask = cv::Mat::zeros(H, W, CV_8UC1);
@@ -200,6 +187,9 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     int spotCount = 0;
     int totalPixels = 0;
 
+    // ============================================================
+    // ★ 只看形状，不看位置
+    // ============================================================
     for (int i = 1; i < nLabels; ++i) {
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
         const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
@@ -209,52 +199,43 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
 
         if (area < 2) continue;
 
+        const double fillRatio = static_cast<double>(area)
+                                 / std::max(1, w * h);
         const double aspect = static_cast<double>(std::max(w, h))
                               / std::max(1, std::min(w, h));
-
-        // ★ 装订孔：竖版左边缘 / 横版上边缘（块状：宽高比 < 3）
-        bool isBinding = false;
-        if (isPortrait) {
-            isBinding = (x < edgeX) && (aspect < 3.0);
-        } else {
-            isBinding = (y < edgeY) && (aspect < 3.0);
-        }
-
-        // ★ 长条污渍：任意边缘 + 宽高比 > 8
-        const bool nearLeft   = (x < edgeX);
-        const bool nearRight  = ((x + w) > (W - edgeX));
-        const bool nearTop    = (y < edgeY);
-        const bool nearBottom = ((y + h) > (H - edgeY));
-        const bool isEdge = (nearLeft || nearRight || nearTop || nearBottom);
-
-        const bool isLongStrip = isEdge && (aspect >= longStripAspect);
-
-        // ★ 边缘区域只允许这两类去除
-        const bool allowRemove = isBinding || isLongStrip;
-
-        if (isEdge && !allowRemove) {
-            // 边缘的其它块（包括页码）保留
-            continue;
-        }
-
-        const int localMaxArea = allowRemove ? bindingMaxArea : maxSpotArea;
-        if (area > localMaxArea) continue;
-
-        if (!allowRemove && aspect > 5.0) continue;
+        const int thickness = std::min(w, h);
 
         cv::Rect r(x, y, w, h);
         r &= cv::Rect(0, 0, W, H);
 
-        if (allowRemove) {
+        // 分类 1：装订孔（实心大块）
+        const bool isSolidBlob = (fillRatio > 0.65)
+                                 && (area >= 300)
+                                 && (area <= 5000);
+
+        // 分类 2：长条污渍（宽高比大 + 有厚度，避免误伤表格线）
+        const bool isLongStrip = (aspect >= 6.0)
+                                 && (thickness >= 15)
+                                 && (area >= 500)
+                                 && (area <= 50000);
+
+        // 分类 3：普通小污点
+        const bool isSmallSpot = (area <= maxSpotArea);
+
+        if (isSolidBlob || isLongStrip) {
+            // 装订孔 / 长条污渍 → 去掉，不受 protectMask 限制
             cv::rectangle(bindingMask, r, cv::Scalar(255), cv::FILLED);
-        } else {
+            ++spotCount;
+            totalPixels += area;
+        } else if (isSmallSpot) {
+            // 小污点 → 检查 protectMask
             cv::Mat roi = protectMask(r);
             if (cv::countNonZero(roi) > 0) continue;
             cv::rectangle(spotMask, r, cv::Scalar(255), cv::FILLED);
+            ++spotCount;
+            totalPixels += area;
         }
-
-        ++spotCount;
-        totalPixels += area;
+        // 其它：保留（页码、正文、表格线等）
     }
 
     cv::Mat finalImage;
