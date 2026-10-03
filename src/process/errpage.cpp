@@ -87,6 +87,7 @@ double verticalOverlap(const cv::Rect &a, const cv::Rect &b)
     return static_cast<double>(bot - top) / minH;
 }
 
+// ★ 合并阈值从 0.8 改为 0.4，避免 0009 和 005 被粘连
 std::vector<cv::Rect> mergeAdjacentDigits(std::vector<cv::Rect> boxes)
 {
     if (boxes.size() < 2) return boxes;
@@ -105,7 +106,7 @@ std::vector<cv::Rect> mergeAdjacentDigits(std::vector<cv::Rect> boxes)
 
         const double vOverlap = verticalOverlap(current, next);
         const int gap = next.x - (current.x + current.width);
-        const bool closeGap = gap >= 0 && gap < current.height * 0.8;
+        const bool closeGap = gap >= 0 && gap < current.height * 0.4;
 
         if (vOverlap >= 0.6 && closeGap) {
             const int x1 = std::min(current.x, next.x);
@@ -141,6 +142,7 @@ QString locateTesseract(const QString &hint)
 
 // ============================================================
 // 模糊匹配：识别值是否可能是正确页码
+// ★ 严格要求长度接近，避免 "9" 被 "9005" 包含
 // ============================================================
 bool fuzzyMatchPage(int recognized, int correctPage)
 {
@@ -150,14 +152,15 @@ bool fuzzyMatchPage(int recognized, int correctPage)
     const QString recStr = QString::number(recognized);
     const QString corrStr = QString::number(correctPage);
 
+    // 长度差 > 1 -> 直接不匹配
+    if (std::abs(recStr.length() - corrStr.length()) > 1) return false;
+
     // 互相包含
     if (corrStr.contains(recStr) || recStr.contains(corrStr)) return true;
 
-    // 长度差 <= 1 且有字符重叠
-    if (std::abs(recStr.length() - corrStr.length()) <= 1) {
-        for (const QChar &c : recStr) {
-            if (corrStr.contains(c)) return true;
-        }
+    // 字符重叠
+    for (const QChar &c : recStr) {
+        if (corrStr.contains(c)) return true;
     }
     return false;
 }
@@ -728,11 +731,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         detectDigitsInRegion(gray, region, options, allItems);
     }
 
-    // ============================================================
-    // 过滤 1：角落位置（左/右上、右下，25% x 25%）
-    // 过滤 2：字号（高度 >= 图高 × 1.3%）
-    // 页码是打码机打的，字号远大于表格数字
-    // ============================================================
     const double CORNER_RATIO = 0.25;
     const double MIN_H_RATIO  = 0.013;
 
@@ -754,9 +752,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         const bool inBottomRight = (inRight && inBottom);
 
         const bool inCorner = (inTopLeft || inTopRight || inBottomRight);
-
         const bool bigEnough = (b.height >= H * MIN_H_RATIO);
-
         const bool keep = (inCorner && bigEnough);
 
         writeDiag(QString::fromUtf8("  [过滤] bbox=(%1,%2,%3x%4) 中心=(%5,%6) "
@@ -783,10 +779,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
                       .arg(it.boundingBox.width).arg(it.boundingBox.height));
     }
 
-    // ============================================================
-    // 判断：候选里有没有匹配正确页码的？
-    // 如果没有，不涂白任何东西（保守策略）
-    // ============================================================
     bool hasCorrectMatch = false;
     for (const auto &it : candidates) {
         if (fuzzyMatchPage(it.recognizedNumber, result.correctPage)) {
@@ -798,9 +790,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
     writeDiag(QString::fromUtf8("是否找到匹配正确页码的块：%1")
                   .arg(hasCorrectMatch ? QStringLiteral("是") : QStringLiteral("否")));
 
-    // ============================================================
-    // 涂白
-    // ============================================================
     cv::Mat dst = src.clone();
     cv::Scalar white;
     if (dst.channels() == 4) {
@@ -825,7 +814,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             continue;
         }
 
-        // 没有匹配正确页码的块 -> 不涂白
         if (!hasCorrectMatch) {
             ++result.pendingCount;
             writeDiag(QString::fromUtf8("  → 未找到正确页码，不涂白（识别=%1）")
@@ -834,13 +822,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         }
 
         if (item.isCrossed) {
-            if (item.recognizedNumber < 10) {
-                ++result.pendingCount;
-                writeDiag(QString::fromUtf8("  → 识别=%1（<10），不涂白")
-                              .arg(item.recognizedNumber));
-                continue;
-            }
-
+            // ★ 去掉了 < 10 判断，位置+字号已双重过滤
             cv::Rect r = item.boundingBox;
             r.x -= 8;
             r.y -= 8;
