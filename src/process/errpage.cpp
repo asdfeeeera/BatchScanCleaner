@@ -799,8 +799,18 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         const bool matchesCorrect = isPageMatch(item.recognizedNumber,
                                                  result.correctPage);
 
-        if (matchesCorrect) {
-            writeDiag(QString::fromUtf8("  → 块识别=%1 与正确页码匹配，保留")
+        // ★ 如果识别结果是正确页码的一部分（或反之），保留
+        bool isPartOfCorrect = false;
+        if (result.correctPage >= 0 && item.recognizedNumber >= 0) {
+            const QString recStr = QString::number(item.recognizedNumber);
+            const QString corrStr = QString::number(result.correctPage);
+            if (corrStr.contains(recStr) || recStr.contains(corrStr)) {
+                isPartOfCorrect = true;
+            }
+        }
+
+        if (matchesCorrect || isPartOfCorrect) {
+            writeDiag(QString::fromUtf8("  → 块识别=%1 与正确页码匹配/包含，保留")
                           .arg(item.recognizedNumber));
             continue;
         }
