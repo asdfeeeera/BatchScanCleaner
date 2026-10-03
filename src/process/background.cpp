@@ -66,7 +66,7 @@ BackgroundResult Background::whiten(const cv::Mat &src,
     result.paperGray = paperGray;
 
     // Paper already very white -> skip
-    if (paperGray >= 250.0) {
+    if (paperGray >= 254.5) {
         result.image = src.clone();
         result.skipped = true;
         result.ok = true;
