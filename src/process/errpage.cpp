@@ -336,9 +336,6 @@ bool recognizeSingleChar(const cv::Mat &charImage,
 
 // ============================================================
 // 按像素涂白 + 恢复保留区
-// 步骤：
-//   1. 涂白 box 内的黑像素（阈值 200 + 膨胀 5x5）
-//   2. 从原图恢复 keepMask 覆盖的区域（绝对安全）
 // ============================================================
 void eraseByPixels(cv::Mat &dst,
                    const cv::Mat &srcColor,
@@ -363,11 +360,10 @@ void eraseByPixels(cv::Mat &dst,
     cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
     cv::dilate(bin, bin, k);
 
-    // 涂白
     cv::Mat roiDst = dst(r);
     roiDst.setTo(white, bin);
 
-    // ★ 从原图恢复 keepMask 覆盖的区域
+    // 从原图恢复 keepMask 覆盖的区域
     if (!keepMask.empty() && !srcColor.empty()) {
         cv::Rect kr = r & cv::Rect(0, 0, keepMask.cols, keepMask.rows);
         if (kr.width > 0 && kr.height > 0) {
@@ -805,15 +801,15 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         if (keep) candidates.push_back(it);
     }
 
-    // 构建保留掩膜：匹配正确页码的区域（外扩 10 像素）
+    // ★ 保留掩膜：匹配正确页码的区域（外扩 40 像素，非常保险）
     cv::Mat keepMask = cv::Mat::zeros(H, W, CV_8UC1);
     for (const auto &it : candidates) {
         if (!fuzzyMatchPage(it.recognizedNumber, result.correctPage)) continue;
         cv::Rect r = it.boundingBox;
-        r.x -= 10;
-        r.y -= 10;
-        r.width += 20;
-        r.height += 20;
+        r.x -= 40;
+        r.y -= 40;
+        r.width += 80;
+        r.height += 80;
         r &= cv::Rect(0, 0, W, H);
         cv::rectangle(keepMask, r, cv::Scalar(255), cv::FILLED);
         writeDiag(QString::fromUtf8("  [保留掩膜] 保护 bbox=(%1,%2,%3x%4)")
