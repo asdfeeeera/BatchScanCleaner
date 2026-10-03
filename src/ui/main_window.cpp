@@ -544,7 +544,7 @@ void MainWindow::onBackground()
     process::BackgroundOptions options;
     options.paperSampleRatio = 0.6;
     options.paperPercentile  = 0.9;
-    options.contentRatio     = 0.85;
+    options.contentRatio     = 0.70;
     options.targetPaperGray  = 255;
     options.protectColor     = true;
     options.colorSatMin      = 40;
