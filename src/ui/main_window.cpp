@@ -37,6 +37,7 @@
 #include "enhance.h"
 #include "colorline.h"
 #include "errpage.h"
+#include "background.h"
 
 #include "../protect/stamp_protect.h"
 #include "../analyze/pending_center.h"
@@ -142,6 +143,9 @@ void MainWindow::setupToolBar()
 
     QAction *pendingAction = toolBar->addAction(QString::fromUtf8("待确认中心"));
     connect(pendingAction, &QAction::triggered, this, &MainWindow::onPendingCenter);
+
+    QAction *backgroundAction = toolBar->addAction(QString::fromUtf8("底色处理"));
+    connect(backgroundAction, &QAction::triggered, this, &MainWindow::onBackground);
 
     toolBar->addSeparator();
     toolBar->addAction(QString::fromUtf8("输出设置"));
@@ -524,6 +528,59 @@ void MainWindow::onEnhance()
                 .arg(result.paperGray, 0, 'f', 1)
                 .arg(result.darkGray, 0, 'f', 1)
                 .arg(result.enhancedPixels));
+    }
+}
+
+void MainWindow::onBackground()
+{
+    if (!m_hasImage || m_currentMat.empty()) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+                                 QString::fromUtf8("请先打开一张图片。"));
+        return;
+    }
+
+    statusBar()->showMessage(QString::fromUtf8("正在处理底色..."));
+
+    process::BackgroundOptions options;
+    options.paperSampleRatio = 0.6;
+    options.paperPercentile  = 0.9;
+    options.contentRatio     = 0.85;
+    options.targetPaperGray  = 255;
+    options.protectColor     = true;
+    options.colorSatMin      = 40;
+
+    // 同时启用印章签名保护（双保险）
+    {
+        protect::StampProtectOptions protectOpt;
+        const protect::StampProtectResult pr =
+            protect::StampProtect::detect(m_currentMat, protectOpt);
+        if (pr.ok) {
+            options.protectMask = pr.mask;
+        }
+    }
+
+    const process::BackgroundResult result =
+        process::Background::whiten(m_currentMat, options);
+
+    if (!result.ok) {
+        QMessageBox::warning(this, QString::fromUtf8("错误"),
+                             QString::fromUtf8("底色处理失败。"));
+        statusBar()->showMessage(QString::fromUtf8("底色处理失败"));
+        return;
+    }
+
+    m_currentMat = result.image;
+    showMatOnPreview(m_currentMat);
+
+    if (result.skipped) {
+        statusBar()->showMessage(
+            QString::fromUtf8("底色处理：纸张已经很白（灰度 %1），已跳过")
+                .arg(result.paperGray, 0, 'f', 1));
+    } else {
+        statusBar()->showMessage(
+            QString::fromUtf8("底色处理完成：纸张灰度 %1，白化 %2 像素")
+                .arg(result.paperGray, 0, 'f', 1)
+                .arg(result.whitenedPixels));
     }
 }
 

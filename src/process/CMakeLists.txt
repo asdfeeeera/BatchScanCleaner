@@ -11,6 +11,8 @@ add_library(process STATIC
     colorline.cpp
     errpage.h
     errpage.cpp
+    background.h
+    background.cpp
 )
 
 target_include_directories(process PUBLIC

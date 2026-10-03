@@ -35,7 +35,8 @@ private slots:
     void onClearColorLine();
     void onProcessErrPage();
     void onStampProtectTest();
-    void onPendingCenter();      // ★ 新增
+    void onPendingCenter();
+    void onBackground();          // ★ 新增：底色处理
 
 private:
     void setupMenuBar();
