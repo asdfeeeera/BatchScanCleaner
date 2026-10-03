@@ -19,6 +19,9 @@
 
 namespace process {
 
+// ============================================================
+// 从文件名解析正确页码
+// ============================================================
 int ErrPage::parseCorrectPage(const QString &sourcePath)
 {
     const QFileInfo info(sourcePath);
@@ -37,6 +40,9 @@ int ErrPage::parseCorrectPage(const QString &sourcePath)
     return -1;
 }
 
+// ============================================================
+// 匿名命名空间
+// ============================================================
 namespace {
 
 std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
@@ -324,6 +330,9 @@ bool recognizeSingleChar(const cv::Mat &charImage,
 
 } // namespace
 
+// ============================================================
+// Tesseract OCR 识别
+// ============================================================
 int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
                                      QString &outText,
@@ -524,6 +533,9 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     return -1;
 }
 
+// ============================================================
+// 在指定区域检测数字块
+// ============================================================
 void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
                                     const cv::Rect &region,
                                     const ErrPageOptions &options,
@@ -592,11 +604,7 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
 }
 
 // ============================================================
-// ★ 划线检测（改成"黑像素跨度"检测，对虚线有效）
-// 原理：逐行扫描，找第一个和最后一个黑像素，计算跨度。
-// 横线穿过数字时，跨度接近 100% 宽度；
-// 数字笔画本身跨度有限。
-// 附加条件：黑像素数 >= 跨度 25%，排除左右两端各一个孤立噪点。
+// 划线检测（黑像素跨度）
 // ============================================================
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
@@ -647,6 +655,9 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     return false;
 }
 
+// ============================================================
+// 主流程
+// ============================================================
 ErrPageResult ErrPage::process(const cv::Mat &src,
                                 const QString &sourcePath,
                                 const ErrPageOptions &options)
@@ -724,7 +735,47 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         detectDigitsInRegion(gray, region, options, allItems);
     }
 
-    writeDiag(QString::fromUtf8("共检测到 %1 个块").arg(allItems.size()));
+    const int detectedBefore = static_cast<int>(allItems.size());
+    writeDiag(QString::fromUtf8("共检测到 %1 个块（边缘过滤前）").arg(detectedBefore));
+
+    // ============================================================
+    // ★ 边缘过滤：数字块必须靠近页面某一边（10% 以内）
+    // 页码一定在页边角，不可能在页面中间
+    // ============================================================
+    const double EDGE_RATIO = 0.10;
+    const double marginX = W * EDGE_RATIO;
+    const double marginY = H * EDGE_RATIO;
+
+    std::vector<PageNumberItem> filtered;
+    filtered.reserve(allItems.size());
+
+    for (const auto &it : allItems) {
+        const cv::Rect &b = it.boundingBox;
+        const bool nearLeft   = (b.x < marginX);
+        const bool nearRight  = ((b.x + b.width) > (W - marginX));
+        const bool nearTop    = (b.y < marginY);
+        const bool nearBottom = ((b.y + b.height) > (H - marginY));
+
+        const bool keep = (nearLeft || nearRight || nearTop || nearBottom);
+
+        writeDiag(QString::fromUtf8("  [边缘过滤] bbox=(%1,%2,%3x%4) "
+                                     "左=%5 右=%6 上=%7 下=%8 → %9")
+                      .arg(b.x).arg(b.y).arg(b.width).arg(b.height)
+                      .arg(nearLeft ? QStringLiteral("是") : QStringLiteral("否"))
+                      .arg(nearRight ? QStringLiteral("是") : QStringLiteral("否"))
+                      .arg(nearTop ? QStringLiteral("是") : QStringLiteral("否"))
+                      .arg(nearBottom ? QStringLiteral("是") : QStringLiteral("否"))
+                      .arg(keep ? QStringLiteral("保留") : QStringLiteral("丢弃")));
+
+        if (keep) {
+            filtered.push_back(it);
+        }
+    }
+
+    allItems = filtered;
+    writeDiag(QString::fromUtf8("边缘过滤后剩余 %1 个块")
+                  .arg(static_cast<int>(allItems.size())));
+
     for (size_t i = 0; i < allItems.size(); ++i) {
         const auto &it = allItems[i];
         writeDiag(QString::fromUtf8("  块%1：识别=%2 划线=%3 bbox=(%4,%5,%6x%7)")
