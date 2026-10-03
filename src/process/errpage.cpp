@@ -612,9 +612,9 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
 {
     cv::Rect expanded = digitBox;
     expanded.x -= 3;
-    expanded.y -= 3;
+    // expanded.y -= 3;
     expanded.width += 6;
-    expanded.height += 6;
+    // expanded.height += 6;
     expanded &= cv::Rect(0, 0, gray.cols, gray.rows);
 
     if (expanded.width <= 0 || expanded.height <= 0) return false;
