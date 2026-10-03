@@ -87,7 +87,7 @@ double verticalOverlap(const cv::Rect &a, const cv::Rect &b)
     return static_cast<double>(bot - top) / minH;
 }
 
-// ★ 合并阈值从 0.8 改为 0.4，避免 0009 和 005 被粘连
+// 合并阈值 0.25，避免 0009 和 005 被粘连
 std::vector<cv::Rect> mergeAdjacentDigits(std::vector<cv::Rect> boxes)
 {
     if (boxes.size() < 2) return boxes;
@@ -106,7 +106,7 @@ std::vector<cv::Rect> mergeAdjacentDigits(std::vector<cv::Rect> boxes)
 
         const double vOverlap = verticalOverlap(current, next);
         const int gap = next.x - (current.x + current.width);
-        const bool closeGap = gap >= 0 && gap < current.height * 0.4;
+        const bool closeGap = gap >= 0 && gap < current.height * 0.25;
 
         if (vOverlap >= 0.6 && closeGap) {
             const int x1 = std::min(current.x, next.x);
@@ -140,10 +140,7 @@ QString locateTesseract(const QString &hint)
     return QString();
 }
 
-// ============================================================
 // 模糊匹配：识别值是否可能是正确页码
-// ★ 严格要求长度接近，避免 "9" 被 "9005" 包含
-// ============================================================
 bool fuzzyMatchPage(int recognized, int correctPage)
 {
     if (recognized < 0 || correctPage < 0) return false;
@@ -152,13 +149,11 @@ bool fuzzyMatchPage(int recognized, int correctPage)
     const QString recStr = QString::number(recognized);
     const QString corrStr = QString::number(correctPage);
 
-    // 长度差 > 1 -> 直接不匹配
+    // 长度差 > 1 -> 不匹配
     if (std::abs(recStr.length() - corrStr.length()) > 1) return false;
 
-    // 互相包含
     if (corrStr.contains(recStr) || recStr.contains(corrStr)) return true;
 
-    // 字符重叠
     for (const QChar &c : recStr) {
         if (corrStr.contains(c)) return true;
     }
@@ -611,6 +606,7 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
     }
 }
 
+// 划线检测：只往上扩 5 像素（横线在数字上方）
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
                                double crossLineRatio)
@@ -618,6 +614,8 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     cv::Rect expanded = digitBox;
     expanded.x -= 3;
     expanded.width += 6;
+    expanded.y -= 5;
+    expanded.height += 5;
     expanded &= cv::Rect(0, 0, gray.cols, gray.rows);
 
     if (expanded.width <= 0 || expanded.height <= 0) return false;
@@ -628,7 +626,7 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
     const int yStart = 3;
-    const int yEnd = binary.rows - 3;
+    const int yEnd = binary.rows - 2;
     if (yEnd <= yStart) return false;
 
     double ratio = 0.7;
@@ -779,17 +777,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
                       .arg(it.boundingBox.width).arg(it.boundingBox.height));
     }
 
-    bool hasCorrectMatch = false;
-    for (const auto &it : candidates) {
-        if (fuzzyMatchPage(it.recognizedNumber, result.correctPage)) {
-            hasCorrectMatch = true;
-            break;
-        }
-    }
-
-    writeDiag(QString::fromUtf8("是否找到匹配正确页码的块：%1")
-                  .arg(hasCorrectMatch ? QStringLiteral("是") : QStringLiteral("否")));
-
     cv::Mat dst = src.clone();
     cv::Scalar white;
     if (dst.channels() == 4) {
@@ -798,6 +785,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         white = cv::Scalar(255, 255, 255);
     }
 
+    // 只按 isCrossed 涂白，不再依赖 hasCorrectMatch
     for (auto &item : candidates) {
         const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber,
                                                      result.correctPage);
@@ -814,15 +802,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             continue;
         }
 
-        if (!hasCorrectMatch) {
-            ++result.pendingCount;
-            writeDiag(QString::fromUtf8("  → 未找到正确页码，不涂白（识别=%1）")
-                          .arg(item.recognizedNumber));
-            continue;
-        }
-
         if (item.isCrossed) {
-            // ★ 去掉了 < 10 判断，位置+字号已双重过滤
             cv::Rect r = item.boundingBox;
             r.x -= 8;
             r.y -= 8;
