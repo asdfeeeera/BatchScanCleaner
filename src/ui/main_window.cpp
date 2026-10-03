@@ -1140,8 +1140,37 @@ void MainWindow::onBatchProcess()
         return;
     }
 
+    // 已经打开了，就置顶
+    if (m_batchDialog) {
+        m_batchDialog->raise();
+        m_batchDialog->activateWindow();
+        return;
+    }
+
+    m_batchDialog = new batch::BatchDialog(m_currentFiles, m_currentFolder, this);
+    m_batchDialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    // 接收批处理的预览图
+    connect(m_batchDialog, &batch::BatchDialog::previewImageReady,
+            this, &MainWindow::onBatchPreview);
+
+    // 关闭时清空指针
+    connect(m_batchDialog, &QObject::destroyed, this, [this]() {
+        m_batchDialog = nullptr;
+    });
+
+    m_batchDialog->show();
+    m_batchDialog->moveToTopRight();
+}
+
     batch::BatchDialog dlg(m_currentFiles, m_currentFolder, this);
     dlg.exec();
+}
+void MainWindow::onBatchPreview(const cv::Mat &mat, bool before)
+{
+    Q_UNUSED(before);
+    if (mat.empty()) return;
+    showMatOnPreview(mat);
 }
 
 void MainWindow::onPendingCenter()

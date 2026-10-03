@@ -18,6 +18,8 @@
 #include <QDir>
 #include <QDateTime>
 #include <QCloseEvent>
+#include <QScreen>
+#include <QGuiApplication>
 
 namespace batch {
 
@@ -44,6 +46,9 @@ BatchDialog::BatchDialog(const QStringList &inputFiles,
             this, &BatchDialog::onFileStarted);
     connect(m_processor, &BatchProcessor::fileFinished,
             this, &BatchDialog::onFileFinished);
+    connect(m_processor, &BatchProcessor::previewImageReady,
+            this, &BatchDialog::previewImageReady);
+
     connect(m_processor, &BatchProcessor::finished,
             this, &BatchDialog::onFinished);
 
@@ -516,6 +521,25 @@ void BatchDialog::appendLog(const QString &line)
         QStringLiteral("HH:mm:ss"));
     m_logEdit->appendPlainText(
         QString::fromUtf8("[%1] %2").arg(ts).arg(line));
+}
+// ============================================================
+// 移到屏幕右上角
+// ============================================================
+void BatchDialog::moveToTopRight()
+{
+    QScreen *screen = QGuiApplication::primaryScreen();
+    if (!screen) return;
+
+    const QRect avail = screen->availableGeometry();
+    const int margin = 20;
+
+    const int w = width();
+    const int h = height();
+
+    const int x = avail.right() - w - margin;
+    const int y = avail.top() + margin;
+
+    move(x, y);
 }
 
 } // namespace batch

@@ -16,6 +16,8 @@ class QSlider;
 class QSpinBox;
 class QTimer;
 
+namespace batch { class BatchDialog; }
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -43,11 +45,11 @@ private slots:
     void onStampProtectTest();
     void onPendingCenter();
     void onBackground();
-
-    // ★ 批量处理
     void onBatchProcess();
 
-    // 文字加深参数
+    // ★ 接收批处理预览图
+    void onBatchPreview(const cv::Mat &mat, bool before);
+
     void onEnhanceParamChanged();
     void onEnhanceDebounceTimeout();
 
@@ -72,13 +74,12 @@ private:
     bool m_hasImage = false;
     QStringList m_currentFiles;
     QString m_currentImagePath;
-    QString m_currentFolder;      // ★ 最近一次扫描的文件夹
+    QString m_currentFolder;
     cv::Mat m_currentMat;
     cv::Mat m_originalMat;
 
     cv::Mat m_colorLineSource;
 
-    // 文字加深参数控件
     QSlider *m_enhanceStrengthSlider = nullptr;
     QSpinBox *m_enhanceStrengthSpin = nullptr;
 
@@ -93,4 +94,7 @@ private:
 
     QTimer *m_enhanceDebounceTimer = nullptr;
     cv::Mat m_enhancePreviewBase;
+
+    // ★ 批处理对话框
+    batch::BatchDialog *m_batchDialog = nullptr;
 };

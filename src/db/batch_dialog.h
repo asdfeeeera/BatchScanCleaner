@@ -5,6 +5,7 @@
 
 #include <QDialog>
 #include <QStringList>
+#include <opencv2/core.hpp>
 
 class QLabel;
 class QLineEdit;
@@ -31,6 +32,13 @@ public:
                          QWidget *parent = nullptr);
     ~BatchDialog() override;
 
+    // 父窗口调用：把对话框移到屏幕右上角
+    void moveToTopRight();
+
+signals:
+    // ★ 转发处理器的预览信号给 MainWindow
+    void previewImageReady(const cv::Mat &mat, bool before);
+
 private slots:
     void onSelectOutputDir();
     void onToggleRecurse();
@@ -42,7 +50,6 @@ private slots:
     void onResume();
     void onCancel();
 
-    // 引擎信号
     void onProgress(const BatchProgress &progress);
     void onFileStarted(const QString &path);
     void onFileFinished(const QString &path, bool success);
@@ -56,11 +63,9 @@ private:
 
     BatchOptions buildOptions() const;
 
-    // 输入
     QStringList m_inputFiles;
     QString m_sourceDir;
 
-    // UI 控件
     QLabel *m_inputLabel = nullptr;
     QLineEdit *m_outputEdit = nullptr;
     QPushButton *m_outputBtn = nullptr;
@@ -83,10 +88,8 @@ private:
     QPushButton *m_cancelBtn = nullptr;
     QPushButton *m_closeBtn = nullptr;
 
-    // 步骤列表（与 UI 同步）
     QList<StepItem> m_steps;
 
-    // 引擎
     BatchProcessor *m_processor = nullptr;
 };
 

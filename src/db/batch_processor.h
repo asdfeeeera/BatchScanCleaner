@@ -28,11 +28,10 @@ namespace batch {
 // ============================================================
 struct BatchOptions
 {
-    QStringList inputFiles;    // 待处理的图片列表
-    QString outputDir;         // 输出目录
-    QList<StepItem> steps;     // 勾选的步骤（已排序）
+    QStringList inputFiles;
+    QString outputDir;
+    QList<StepItem> steps;
 
-    // 各步骤参数
     process::BlackEdgeOptions   blackEdgeOpt;
     process::DenoiseOptions     denoiseOpt;
     process::EnhanceOptions     enhanceOpt;
@@ -41,28 +40,21 @@ struct BatchOptions
     process::ColorLineOptions   colorLineOpt;
     protect::StampProtectOptions stampOpt;
 
-    // 输出
-    QString outputSuffix = QString();   // 空 = 保持原名
-    image::JpegSaveOptions jpegOpt;     // Jpeg 保存参数
+    QString outputSuffix = QString();
+    image::JpegSaveOptions jpegOpt;
 };
 
-// ============================================================
-// 批处理进度
-// ============================================================
 struct BatchProgress
 {
-    int current = 0;           // 当前第几张（从 1 开始）
-    int total = 0;             // 总数
-    QString currentFile;       // 当前文件名
-    int succeeded = 0;         // 成功数
-    int failed = 0;            // 失败数
-    double elapsedSeconds = 0; // 已用时间
-    double remainingSeconds = 0; // 预估剩余时间
+    int current = 0;
+    int total = 0;
+    QString currentFile;
+    int succeeded = 0;
+    int failed = 0;
+    double elapsedSeconds = 0;
+    double remainingSeconds = 0;
 };
 
-// ============================================================
-// 批处理最终结果
-// ============================================================
 struct BatchResult
 {
     bool ok = false;
@@ -76,7 +68,6 @@ struct BatchResult
 
 // ============================================================
 // 批处理引擎
-//   在主线程运行，每处理一张图让出控制权（避免 UI 卡顿）
 // ============================================================
 class BatchProcessor : public QObject
 {
@@ -86,37 +77,30 @@ public:
     explicit BatchProcessor(QObject *parent = nullptr);
     ~BatchProcessor() override;
 
-    // 开始处理（异步；通过信号反馈进度和结果）
     void start(const BatchOptions &options);
-
-    // 控制
     void pause();
     void resume();
     void cancel();
 
-    // 状态查询
     bool isRunning() const { return m_running; }
     bool isPaused() const { return m_paused; }
     bool isCancelled() const { return m_cancelled; }
 
 signals:
-    // 进度变化
     void progressChanged(const BatchProgress &progress);
-    // 单张开始
     void fileStarted(const QString &filePath);
-    // 单张完成（success = 是否成功）
     void fileFinished(const QString &filePath, bool success);
-    // 全部完成
     void finished(const BatchResult &result);
+
+    // ★ 预览图就绪：before=true 表示处理前，false 表示处理后
+    void previewImageReady(const cv::Mat &mat, bool before);
 
 private slots:
     void processNext();
 
 private:
-    // 处理单张图（返回 true 表示成功）
     bool processOneFile(const QString &inputPath, QString &outError);
 
-    // 执行单个步骤
     bool runDeskew(cv::Mat &img);
     bool runBlackEdge(cv::Mat &img);
     bool runDenoise(cv::Mat &img);
@@ -125,8 +109,10 @@ private:
     bool runBackground(cv::Mat &img);
     bool runColorLine(cv::Mat &img);
 
-    // 生成输出路径
     QString makeOutputPath(const QString &inputPath) const;
+
+    // ★ 缩放为预览用（最长边 <= maxSize）
+    cv::Mat makePreview(const cv::Mat &img, int maxSize = 1000) const;
 
     BatchOptions m_options;
     bool m_running = false;
@@ -139,7 +125,7 @@ private:
     QStringList m_failedFiles;
 
     qint64 m_startMs = 0;
-    QList<qint64> m_fileDurations;   // 每张图耗时（毫秒）
+    QList<qint64> m_fileDurations;
 };
 
 } // namespace batch

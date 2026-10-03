@@ -37,10 +37,8 @@ void BatchProcessor::start(const BatchOptions &options)
 
     m_startMs = QDateTime::currentMSecsSinceEpoch();
 
-    // 创建输出目录
     QDir().mkpath(m_options.outputDir);
 
-    // 立即开始（通过事件循环，避免阻塞调用者）
     QTimer::singleShot(0, this, &BatchProcessor::processNext);
 }
 
@@ -90,14 +88,12 @@ void BatchProcessor::processNext()
     }
 
     if (m_paused) {
-        // 暂停：100ms 后再检查
         QTimer::singleShot(100, this, &BatchProcessor::processNext);
         return;
     }
 
     const int total = m_options.inputFiles.size();
     if (m_index >= total) {
-        // 全部完成
         m_running = false;
         BatchResult result;
         result.ok = true;
@@ -112,14 +108,20 @@ void BatchProcessor::processNext()
         return;
     }
 
-    // 当前文件
     const QString inputPath = m_options.inputFiles[m_index];
     const QFileInfo fi(inputPath);
 
-    // 发开始信号
     emit fileStarted(inputPath);
 
-    // 处理
+    // ★ 读取图片后立刻发"原图预览"
+    {
+        cv::Mat img;
+        image::ImageMeta meta;
+        if (image::ImageIO::read(inputPath, img, meta)) {
+            emit previewImageReady(makePreview(img), true);
+        }
+    }
+
     const qint64 t0 = QDateTime::currentMSecsSinceEpoch();
     QString errMsg;
     const bool ok = processOneFile(inputPath, errMsg);
@@ -137,9 +139,26 @@ void BatchProcessor::processNext()
 
     emit fileFinished(inputPath, ok);
 
+    // ★ 处理完：如果成功，读输出图发"结果预览"；失败则再发原图
+    {
+        cv::Mat preview;
+        if (ok) {
+            const QString outPath = makeOutputPath(inputPath);
+            image::ImageMeta m2;
+            if (image::ImageIO::read(outPath, preview, m2)) {
+                emit previewImageReady(makePreview(preview), false);
+            }
+        } else {
+            cv::Mat img2;
+            image::ImageMeta m3;
+            if (image::ImageIO::read(inputPath, img2, m3)) {
+                emit previewImageReady(makePreview(img2), false);
+            }
+        }
+    }
+
     ++m_index;
 
-    // 进度
     BatchProgress prog;
     prog.current = m_index;
     prog.total = total;
@@ -149,7 +168,6 @@ void BatchProcessor::processNext()
     prog.elapsedSeconds =
         (QDateTime::currentMSecsSinceEpoch() - m_startMs) / 1000.0;
 
-    // 剩余时间预估：用已完成的平均耗时 × 剩余张数
     if (!m_fileDurations.isEmpty()) {
         double sum = 0.0;
         for (qint64 d : m_fileDurations) sum += d;
@@ -160,7 +178,6 @@ void BatchProcessor::processNext()
 
     emit progressChanged(prog);
 
-    // 让出控制权，处理下一张
     QTimer::singleShot(0, this, &BatchProcessor::processNext);
 }
 
@@ -176,48 +193,26 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
         return false;
     }
 
-    const QFileInfo fi(inputPath);
-
-    // 按顺序执行每一步
     for (const StepItem &step : m_options.steps) {
         if (!step.enabled) continue;
 
         bool stepOk = true;
 
         switch (step.type) {
-        case StepType::Deskew:
-            stepOk = runDeskew(img);
-            break;
-        case StepType::BlackEdge:
-            stepOk = runBlackEdge(img);
-            break;
-        case StepType::Denoise:
-            stepOk = runDenoise(img);
-            break;
-        case StepType::Enhance:
-            stepOk = runEnhance(img);
-            break;
-        case StepType::ErrPage:
-            stepOk = runErrPage(img, inputPath);
-            break;
-        case StepType::Background:
-            stepOk = runBackground(img);
-            break;
-        case StepType::ColorLine:
-            stepOk = runColorLine(img);
-            break;
+        case StepType::Deskew:      stepOk = runDeskew(img); break;
+        case StepType::BlackEdge:   stepOk = runBlackEdge(img); break;
+        case StepType::Denoise:     stepOk = runDenoise(img); break;
+        case StepType::Enhance:     stepOk = runEnhance(img); break;
+        case StepType::ErrPage:     stepOk = runErrPage(img, inputPath); break;
+        case StepType::Background:  stepOk = runBackground(img); break;
+        case StepType::ColorLine:   stepOk = runColorLine(img); break;
         }
 
-        if (!stepOk) {
-            // 步骤失败一般不中断整张图（除读取失败）
-            // 这里忽略，继续下一步
-        }
+        Q_UNUSED(stepOk);
     }
 
-    // 生成输出路径
     const QString outputPath = makeOutputPath(inputPath);
 
-    // 保存
     if (!image::JpegWriter::write(outputPath, img, m_options.jpegOpt)) {
         outError = QString::fromUtf8("保存失败：%1").arg(outputPath);
         return false;
@@ -231,12 +226,8 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
 // ============================================================
 bool BatchProcessor::runDeskew(cv::Mat &img)
 {
-    const process::DeskewResult r =
-        process::Deskew::autoDeskew(img);
-    if (r.ok && !r.image.empty()) {
-        img = r.image;
-        return true;
-    }
+    const process::DeskewResult r = process::Deskew::autoDeskew(img);
+    if (r.ok && !r.image.empty()) { img = r.image; return true; }
     return false;
 }
 
@@ -244,16 +235,12 @@ bool BatchProcessor::runBlackEdge(cv::Mat &img)
 {
     const process::BlackEdgeResult r =
         process::BlackEdge::removeBlackEdge(img, m_options.blackEdgeOpt);
-    if (r.ok && !r.image.empty()) {
-        img = r.image;
-        return true;
-    }
+    if (r.ok && !r.image.empty()) { img = r.image; return true; }
     return false;
 }
 
 bool BatchProcessor::runDenoise(cv::Mat &img)
 {
-    // 先检测印章签名保护掩膜
     protect::StampProtectOptions stampOpt = m_options.stampOpt;
     const protect::StampProtectResult pr =
         protect::StampProtect::detect(img, stampOpt);
@@ -263,10 +250,7 @@ bool BatchProcessor::runDenoise(cv::Mat &img)
 
     const process::DenoiseResult r =
         process::Denoise::removeSpots(img, m_options.denoiseOpt);
-    if (r.ok && !r.image.empty()) {
-        img = r.image;
-        return true;
-    }
+    if (r.ok && !r.image.empty()) { img = r.image; return true; }
     return false;
 }
 
@@ -274,10 +258,7 @@ bool BatchProcessor::runEnhance(cv::Mat &img)
 {
     const process::EnhanceResult r =
         process::Enhance::enhanceText(img, m_options.enhanceOpt);
-    if (r.ok && !r.image.empty()) {
-        img = r.image;
-        return true;
-    }
+    if (r.ok && !r.image.empty()) { img = r.image; return true; }
     return false;
 }
 
@@ -285,16 +266,12 @@ bool BatchProcessor::runErrPage(cv::Mat &img, const QString &sourcePath)
 {
     const process::ErrPageResult r =
         process::ErrPage::process(img, sourcePath, m_options.errPageOpt);
-    if (r.ok && !r.image.empty()) {
-        img = r.image;
-        return true;
-    }
+    if (r.ok && !r.image.empty()) { img = r.image; return true; }
     return false;
 }
 
 bool BatchProcessor::runBackground(cv::Mat &img)
 {
-    // 印章保护
     protect::StampProtectOptions stampOpt = m_options.stampOpt;
     const protect::StampProtectResult pr =
         protect::StampProtect::detect(img, stampOpt);
@@ -305,10 +282,7 @@ bool BatchProcessor::runBackground(cv::Mat &img)
 
     const process::BackgroundResult r =
         process::Background::whiten(img, bgOpt);
-    if (r.ok && !r.image.empty()) {
-        img = r.image;
-        return true;
-    }
+    if (r.ok && !r.image.empty()) { img = r.image; return true; }
     return false;
 }
 
@@ -316,15 +290,12 @@ bool BatchProcessor::runColorLine(cv::Mat &img)
 {
     const process::ColorLineResult r =
         process::ColorLine::clear(img, m_options.colorLineOpt);
-    if (r.ok && !r.image.empty()) {
-        img = r.image;
-        return true;
-    }
+    if (r.ok && !r.image.empty()) { img = r.image; return true; }
     return false;
 }
 
 // ============================================================
-// 生成输出路径
+// 输出路径
 // ============================================================
 QString BatchProcessor::makeOutputPath(const QString &inputPath) const
 {
@@ -337,6 +308,25 @@ QString BatchProcessor::makeOutputPath(const QString &inputPath) const
 
     const QString outName = baseName + QStringLiteral(".jpg");
     return QDir(m_options.outputDir).filePath(outName);
+}
+
+// ============================================================
+// 缩放为预览图
+// ============================================================
+cv::Mat BatchProcessor::makePreview(const cv::Mat &img, int maxSize) const
+{
+    if (img.empty()) return img;
+
+    const int w = img.cols;
+    const int h = img.rows;
+    const int longest = std::max(w, h);
+
+    if (longest <= maxSize) return img.clone();
+
+    const double scale = static_cast<double>(maxSize) / longest;
+    cv::Mat out;
+    cv::resize(img, out, cv::Size(), scale, scale, cv::INTER_AREA);
+    return out;
 }
 
 } // namespace batch
