@@ -19,9 +19,6 @@
 
 namespace process {
 
-// ============================================================
-// 从文件名解析正确页码
-// ============================================================
 int ErrPage::parseCorrectPage(const QString &sourcePath)
 {
     const QFileInfo info(sourcePath);
@@ -40,9 +37,6 @@ int ErrPage::parseCorrectPage(const QString &sourcePath)
     return -1;
 }
 
-// ============================================================
-// 匿名命名空间
-// ============================================================
 namespace {
 
 std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
@@ -330,9 +324,6 @@ bool recognizeSingleChar(const cv::Mat &charImage,
 
 } // namespace
 
-// ============================================================
-// Tesseract OCR 识别
-// ============================================================
 int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
                                      QString &outText,
@@ -533,9 +524,6 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     return -1;
 }
 
-// ============================================================
-// 在指定区域检测数字块
-// ============================================================
 void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
                                     const cv::Rect &region,
                                     const ErrPageOptions &options,
@@ -603,18 +591,13 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
     }
 }
 
-// ============================================================
-// 划线检测（黑像素跨度）
-// ============================================================
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
                                double crossLineRatio)
 {
     cv::Rect expanded = digitBox;
     expanded.x -= 3;
-    // expanded.y -= 3;
     expanded.width += 6;
-    // expanded.height += 6;
     expanded &= cv::Rect(0, 0, gray.cols, gray.rows);
 
     if (expanded.width <= 0 || expanded.height <= 0) return false;
@@ -655,9 +638,6 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     return false;
 }
 
-// ============================================================
-// 主流程
-// ============================================================
 ErrPageResult ErrPage::process(const cv::Mat &src,
                                 const QString &sourcePath,
                                 const ErrPageOptions &options)
@@ -706,8 +686,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         int h = static_cast<int>(H * options.topLeftHeightRatio);
         if (h < minRegionH) h = std::min(minRegionH, H);
         cv::Rect region(0, 0, w, h);
-        writeDiag(QString::fromUtf8("左上区域：(%1,%2,%3x%4)")
-                      .arg(region.x).arg(region.y).arg(region.width).arg(region.height));
         detectDigitsInRegion(gray, region, options, allItems);
     }
 
@@ -716,8 +694,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         int h = static_cast<int>(H * options.topRightHeightRatio);
         if (h < minRegionH) h = std::min(minRegionH, H);
         cv::Rect region(W - w, 0, w, h);
-        writeDiag(QString::fromUtf8("右上区域：(%1,%2,%3x%4)")
-                      .arg(region.x).arg(region.y).arg(region.width).arg(region.height));
         detectDigitsInRegion(gray, region, options, allItems);
     }
 
@@ -735,13 +711,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         detectDigitsInRegion(gray, region, options, allItems);
     }
 
-    const int detectedBefore = static_cast<int>(allItems.size());
-    writeDiag(QString::fromUtf8("共检测到 %1 个块（边缘过滤前）").arg(detectedBefore));
-
-    // ============================================================
-    // ★ 边缘过滤：数字块必须靠近页面某一边（10% 以内）
-    // 页码一定在页边角，不可能在页面中间
-    // ============================================================
+    // Edge filter: digit boxes must be near page edge (within 10%)
     const double EDGE_RATIO = 0.10;
     const double marginX = W * EDGE_RATIO;
     const double marginY = H * EDGE_RATIO;
@@ -758,21 +728,13 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
         const bool keep = (nearLeft || nearRight || nearTop || nearBottom);
 
-        writeDiag(QString::fromUtf8("  [边缘过滤] bbox=(%1,%2,%3x%4) "
-                                     "左=%5 右=%6 上=%7 下=%8 → %9")
-                      .arg(b.x).arg(b.y).arg(b.width).arg(b.height)
-                      .arg(nearLeft ? QStringLiteral("是") : QStringLiteral("否"))
-                      .arg(nearRight ? QStringLiteral("是") : QStringLiteral("否"))
-                      .arg(nearTop ? QStringLiteral("是") : QStringLiteral("否"))
-                      .arg(nearBottom ? QStringLiteral("是") : QStringLiteral("否"))
-                      .arg(keep ? QStringLiteral("保留") : QStringLiteral("丢弃")));
-
         if (keep) {
             filtered.push_back(it);
         }
     }
 
     allItems = filtered;
+
     writeDiag(QString::fromUtf8("边缘过滤后剩余 %1 个块")
                   .arg(static_cast<int>(allItems.size())));
 
@@ -799,7 +761,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         const bool matchesCorrect = isPageMatch(item.recognizedNumber,
                                                  result.correctPage);
 
-        // ★ 如果识别结果是正确页码的一部分（或反之），保留
+        // 识别结果是正确页码的一部分 -> 保留
         bool isPartOfCorrect = false;
         if (result.correctPage >= 0 && item.recognizedNumber >= 0) {
             const QString recStr = QString::number(item.recognizedNumber);
@@ -810,17 +772,22 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         }
 
         if (matchesCorrect || isPartOfCorrect) {
-            writeDiag(QString::fromUtf8("  → 块识别=%1 与正确页码匹配/包含，保留")
-                          .arg(item.recognizedNumber));
             continue;
         }
         if (ocrFailed) {
             ++result.pendingCount;
-            writeDiag(QString::fromUtf8("  → 块OCR失败，跳过"));
             continue;
         }
 
         if (item.isCrossed) {
+            // ★ 只有识别结果是 >= 2 位数字（>=10）才自动涂白
+            if (item.recognizedNumber < 10) {
+                ++result.pendingCount;
+                writeDiag(QString::fromUtf8("  → 块识别=%1（<10），不涂白")
+                              .arg(item.recognizedNumber));
+                continue;
+            }
+
             cv::Rect r = item.boundingBox;
             r.x -= 8;
             r.y -= 8;
@@ -829,13 +796,10 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             r &= cv::Rect(0, 0, W, H);
             cv::rectangle(dst, r, white, cv::FILLED);
             ++result.crossedRemoved;
-            writeDiag(QString::fromUtf8("  → 块识别=%1，划线=是，涂白 矩形=(%2,%3,%4x%5)")
-                          .arg(item.recognizedNumber)
-                          .arg(r.x).arg(r.y).arg(r.width).arg(r.height));
+            writeDiag(QString::fromUtf8("  → 块识别=%1，划线=是，涂白")
+                          .arg(item.recognizedNumber));
         } else {
             ++result.pendingCount;
-            writeDiag(QString::fromUtf8("  → 块识别=%1，划线=否，跳过")
-                          .arg(item.recognizedNumber));
         }
     }
 
