@@ -224,8 +224,11 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         cv::Rect r(x, y, w, h);
         r &= cv::Rect(0, 0, W, H);
 
-        cv::Mat roi = protectMask(r);
-        if (cv::countNonZero(roi) > 0) continue;
+        // ★ 装订孔区域：即使被 protectMask 保护，也允许去除
+        if (!isBinding) {
+            cv::Mat roi = protectMask(r);
+            if (cv::countNonZero(roi) > 0) continue;
+        }
 
         cv::rectangle(spotMask, r, cv::Scalar(255), cv::FILLED);
         ++spotCount;
