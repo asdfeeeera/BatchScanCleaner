@@ -68,10 +68,6 @@ void Denoise::buildProtectMask(const cv::Mat &gray,
     }
 }
 
-// ============================================================
-// ★ 检测黄色污渍（HSV 色相 15~45，饱和度 > 50，明度 > 60）
-//   不自动删除，返回给上层加到"待确认中心"
-// ============================================================
 void Denoise::detectYellowBlobs(const cv::Mat &src,
                                  std::vector<cv::Rect> &outBlobs)
 {
@@ -99,7 +95,6 @@ void Denoise::detectYellowBlobs(const cv::Mat &src,
     cv::bitwise_and(hMask, sMask, mask);
     cv::bitwise_and(mask, vMask, mask);
 
-    // 形态学闭运算，把碎片连起来
     cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
     cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, k);
 
@@ -180,7 +175,6 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     const int W = src.cols;
     const int H = src.rows;
 
-    // 转灰度
     cv::Mat gray;
     if (src.channels() == 3) {
         cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
@@ -190,7 +184,6 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         gray = src.clone();
     }
 
-    // 1. 建保护掩膜
     cv::Mat protectMask;
     buildProtectMask(gray, protectMask, options.protectRadius);
 
@@ -209,10 +202,8 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         cv::bitwise_or(protectMask, ext, protectMask);
     }
 
-    // 2. 填底色
     cv::Mat whitened = whitenBackground(src, protectMask);
 
-    // 3. 二值化
     cv::Mat whitenedGray;
     if (whitened.channels() == 3) {
         cv::cvtColor(whitened, whitenedGray, cv::COLOR_BGR2GRAY);
@@ -232,7 +223,6 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     int nLabels = cv::connectedComponentsWithStats(
         binary, labels, stats, centroids, 8, CV_32S);
 
-    // 小污点面积上限
     int maxSpotArea = 30;
     if (options.strengthLevel == 0) maxSpotArea = 15;
     else if (options.strengthLevel == 1) maxSpotArea = 30;
@@ -244,17 +234,14 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
     int spotCount = 0;
     int totalPixels = 0;
 
-    // 装订孔方向：竖版看左边，横版看顶部
     const bool isPortrait = (H > W);
     const int edgeThreshold = isPortrait
         ? static_cast<int>(W * 0.06)
         : static_cast<int>(H * 0.06);
 
-    // 装订孔面积范围
-    const int bindingMinArea = 200;
-    const int bindingMaxArea = 3000;
-    // 装订孔要求深黑
-    const double bindingMaxGray = 100.0;
+    // ★ 放宽装订孔面积范围
+    const int bindingMinArea = 80;     // 80~10000
+    const int bindingMaxArea = 10000;
 
     for (int i = 1; i < nLabels; ++i) {
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
@@ -269,7 +256,7 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         r &= cv::Rect(0, 0, W, H);
         if (r.width <= 0 || r.height <= 0) continue;
 
-        // ---- 装订孔判断：位置 + 深黑 + 面积 ----
+        // ★ 装订孔：位置在边缘 + 面积符合 + 不含太多"白"像素
         bool isBinding = false;
         if (isPortrait) {
             isBinding = (x < edgeThreshold);
@@ -283,7 +270,8 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
             // 该区域在原始灰度图上的平均灰度
             cv::Mat roiGray = gray(r);
             const double meanVal = cv::mean(roiGray)[0];
-            if (meanVal < bindingMaxGray) {
+            // ★ 从 100 放宽到 130
+            if (meanVal < 130.0) {
                 cv::rectangle(bindingMask, r, cv::Scalar(255), cv::FILLED);
                 ++spotCount;
                 totalPixels += area;
@@ -291,9 +279,8 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
             }
         }
 
-        // ---- 普通小污点 ----
+        // 普通小污点
         if (area <= maxSpotArea) {
-            // 检查 protectMask
             cv::Mat roiP = protectMask(r);
             if (cv::countNonZero(roiP) > 0) continue;
             cv::rectangle(spotMask, r, cv::Scalar(255), cv::FILLED);
@@ -326,7 +313,6 @@ DenoiseResult Denoise::removeSpots(const cv::Mat &src,
         finalImage = dst;
     }
 
-    // ★ 检测黄色污渍（不删除，返回给上层）
     detectYellowBlobs(src, result.yellowBlobs);
 
     result.image = finalImage;
