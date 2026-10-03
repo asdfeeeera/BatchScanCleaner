@@ -335,56 +335,52 @@ bool recognizeSingleChar(const cv::Mat &charImage,
 }
 
 // ============================================================
-// 按像素涂白：阈值 200 + 膨胀 5x5 + 质心过滤
+// 按像素涂白 + 保留掩膜保护
 // ============================================================
 void eraseByPixels(cv::Mat &dst,
                    const cv::Mat &srcGray,
                    const cv::Rect &box,
-                   const cv::Scalar &white)
+                   const cv::Scalar &white,
+                   const cv::Mat &keepMask)
 {
-    cv::Rect r = box;
-    r.x -= 3;
-    r.y -= 3;
-    r.width += 6;
-    r.height += 6;
-    r &= cv::Rect(0, 0, dst.cols, dst.rows);
+    // 使用精确 box（不扩张）
+    cv::Rect r = box & cv::Rect(0, 0, dst.cols, dst.rows);
     if (r.width <= 0 || r.height <= 0) return;
 
     cv::Mat roiGray = srcGray(r);
 
-    // 固定阈值 200：抓住所有浅灰以上像素
+    // 阈值 200 抓淡灰
     cv::Mat bin;
     cv::threshold(roiGray, bin, 200, 255, cv::THRESH_BINARY_INV);
 
-    cv::Mat labels, stats, centroids;
-    const int n = cv::connectedComponentsWithStats(bin, labels, stats,
-                                                     centroids, 8, CV_32S);
-
-    const double ox1 = 3.0;
-    const double oy1 = 3.0;
-    const double ox2 = ox1 + box.width;
-    const double oy2 = oy1 + box.height;
-
-    cv::Mat keep = cv::Mat::zeros(bin.size(), CV_8UC1);
-    for (int i = 1; i < n; ++i) {
-        const int area = stats.at<int>(i, cv::CC_STAT_AREA);
-        if (area < 10) continue;
-
-        const double cx = centroids.at<double>(i, 0);
-        const double cy = centroids.at<double>(i, 1);
-
-        if (cx < ox1 || cx > ox2) continue;
-        if (cy < oy1 || cy > oy2) continue;
-
-        keep.setTo(255, labels == i);
+    // ★ 从 bin 中排除 keepMask 覆盖的像素
+    if (!keepMask.empty()) {
+        cv::Rect kr = r & cv::Rect(0, 0, keepMask.cols, keepMask.rows);
+        if (kr.width > 0 && kr.height > 0) {
+            cv::Mat keepRoi = keepMask(kr);
+            cv::Mat binRoi = bin(cv::Rect(kr.x - r.x, kr.y - r.y,
+                                           kr.width, kr.height));
+            cv::bitwise_and(binRoi, ~keepRoi, binRoi);
+        }
     }
 
-    // 膨胀 5x5 覆盖淡灰轮廓
+    // 膨胀 5x5 覆盖描边
     cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
-    cv::dilate(keep, keep, k);
+    cv::dilate(bin, bin, k);
+
+    // 再排除一次 keepMask（膨胀后可能又侵入）
+    if (!keepMask.empty()) {
+        cv::Rect kr = r & cv::Rect(0, 0, keepMask.cols, keepMask.rows);
+        if (kr.width > 0 && kr.height > 0) {
+            cv::Mat keepRoi = keepMask(kr);
+            cv::Mat binRoi = bin(cv::Rect(kr.x - r.x, kr.y - r.y,
+                                           kr.width, kr.height));
+            cv::bitwise_and(binRoi, ~keepRoi, binRoi);
+        }
+    }
 
     cv::Mat roiDst = dst(r);
-    roiDst.setTo(white, keep);
+    roiDst.setTo(white, bin);
 }
 
 } // namespace
@@ -813,8 +809,20 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         if (keep) candidates.push_back(it);
     }
 
-    writeDiag(QString::fromUtf8("过滤后剩余 %1 个候选块")
-                  .arg(static_cast<int>(candidates.size())));
+    // ★ 构建保留掩膜：匹配正确页码的区域
+    cv::Mat keepMask = cv::Mat::zeros(H, W, CV_8UC1);
+    for (const auto &it : candidates) {
+        if (!fuzzyMatchPage(it.recognizedNumber, result.correctPage)) continue;
+        cv::Rect r = it.boundingBox;
+        r.x -= 5;
+        r.y -= 5;
+        r.width += 10;
+        r.height += 10;
+        r &= cv::Rect(0, 0, W, H);
+        cv::rectangle(keepMask, r, cv::Scalar(255), cv::FILLED);
+        writeDiag(QString::fromUtf8("  [保留掩膜] 保护 bbox=(%1,%2,%3x%4)")
+                      .arg(r.x).arg(r.y).arg(r.width).arg(r.height));
+    }
 
     cv::Mat dst = src.clone();
     cv::Scalar white;
@@ -836,7 +844,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         }
 
         if (item.isCrossed) {
-            eraseByPixels(dst, gray, item.boundingBox, white);
+            eraseByPixels(dst, gray, item.boundingBox, white, keepMask);
             ++result.crossedRemoved;
             writeDiag(QString::fromUtf8("  → 识别=%1，划线=是，按像素涂白")
                           .arg(item.recognizedNumber));
