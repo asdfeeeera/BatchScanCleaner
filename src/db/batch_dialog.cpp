@@ -38,6 +38,47 @@ static QString settingsFilePath()
 }
 
 // ============================================================
+// ★ 3.2 从 settings.ini 读取批处理相关默认值
+//   （与 ui::SettingsDialog 里 AppSettings 使用同样的键名）
+// ============================================================
+struct BatchDefaults
+{
+    QString outputDir;
+    QString outputSuffix;
+    int     jpegQuality = 98;
+    double  dpi         = 300.0;
+    QStringList extraDirs;
+    int     shardIndex  = 0;
+    int     totalShards = 1;
+    QString reportDir;
+};
+
+static BatchDefaults loadBatchDefaults()
+{
+    BatchDefaults d;
+    const QString path = QCoreApplication::applicationDirPath()
+                         + QStringLiteral("/settings.ini");
+    QSettings ini(path, QSettings::IniFormat);
+    ini.setIniCodec("UTF-8");
+
+    ini.beginGroup(QStringLiteral("General"));
+    d.outputDir    = ini.value(QStringLiteral("defaultOutputDir")).toString();
+    d.outputSuffix = ini.value(QStringLiteral("defaultOutputSuffix")).toString();
+    d.jpegQuality  = ini.value(QStringLiteral("defaultJpegQuality"), 98).toInt();
+    d.dpi          = ini.value(QStringLiteral("defaultDpi"), 300.0).toDouble();
+    ini.endGroup();
+
+    ini.beginGroup(QStringLiteral("Batch"));
+    d.extraDirs   = ini.value(QStringLiteral("extraDirs")).toStringList();
+    d.shardIndex  = ini.value(QStringLiteral("shardIndex"), 0).toInt();
+    d.totalShards = ini.value(QStringLiteral("totalShards"), 1).toInt();
+    d.reportDir   = ini.value(QStringLiteral("reportDir")).toString();
+    ini.endGroup();
+
+    return d;
+}
+
+// ============================================================
 // 构造
 // ============================================================
 BatchDialog::BatchDialog(const QStringList &inputFiles,
@@ -69,19 +110,28 @@ BatchDialog::BatchDialog(const QStringList &inputFiles,
     setupUi();
     rebuildStepList();
 
-    // ---- 从 ini 恢复上次的设置 ----
+    // ---- 从 ini 恢复上次的设置（优先），其次从 settings.ini 取默认值 ----
     {
+        const BatchDefaults bd = loadBatchDefaults();
+
         QSettings s(settingsFilePath(), QSettings::IniFormat);
         s.setIniCodec("UTF-8");
         s.beginGroup(QStringLiteral("BatchDialog"));
 
+        // 输出目录：batch_dialog.ini 优先 → settings.ini 默认 → 保持 setupUi 里设的
         const QString outDir = s.value(QStringLiteral("outputDir")).toString();
         if (!outDir.trimmed().isEmpty()) {
             m_outputEdit->setText(outDir);
+        } else if (!bd.outputDir.trimmed().isEmpty()) {
+            m_outputEdit->setText(bd.outputDir);
         }
 
-        const QStringList extraDirs =
+        // 副本目录：batch_dialog.ini 优先 → settings.ini 默认
+        QStringList extraDirs =
             s.value(QStringLiteral("extraDirs")).toStringList();
+        if (extraDirs.isEmpty()) {
+            extraDirs = bd.extraDirs;
+        }
         for (const QString &d : extraDirs) {
             const QString dd = d.trimmed();
             if (dd.isEmpty()) continue;
@@ -95,10 +145,12 @@ BatchDialog::BatchDialog(const QStringList &inputFiles,
             if (!dup) m_extraDirsList->addItem(dd);
         }
 
-        const int shardIdx =
-            s.value(QStringLiteral("shardIndex"), 0).toInt();
-        const int totalShards =
-            s.value(QStringLiteral("totalShards"), 1).toInt();
+        // 分片：用 -1 当哨兵值判断 ini 里有没有记录
+        int shardIdx = s.value(QStringLiteral("shardIndex"), -1).toInt();
+        if (shardIdx < 0) shardIdx = bd.shardIndex;
+        int totalShards = s.value(QStringLiteral("totalShards"), -1).toInt();
+        if (totalShards < 1) totalShards = bd.totalShards;
+
         m_shardIndexSpin->setValue(qBound(0, shardIdx, 63));
         m_totalShardsSpin->setValue(qBound(1, totalShards, 64));
 
@@ -245,7 +297,6 @@ void BatchDialog::setupUi()
     m_resumeBtn = new QPushButton(QString::fromUtf8("继续"), this);
     m_cancelBtn = new QPushButton(QString::fromUtf8("取消"), this);
 
-    // ★ 3.1 打开最近一次报告（默认禁用，跑完有报告才启用）
     m_openReportBtn = new QPushButton(QString::fromUtf8("打开报告"), this);
     m_openReportBtn->setEnabled(false);
     connect(m_openReportBtn, &QPushButton::clicked,
@@ -329,7 +380,7 @@ void BatchDialog::onSelectOutputDir()
 // ============================================================
 void BatchDialog::onToggleRecurse()
 {
-    // 暂时只做提示，不实际改变输入列表
+    // 暂时只做提示
 }
 
 // ============================================================
@@ -409,7 +460,7 @@ void BatchDialog::onRemoveExtraDir()
 }
 
 // ============================================================
-// ★ 3.1 槽：打开最近一次报告
+// 槽：打开最近一次报告
 // ============================================================
 void BatchDialog::onOpenReport()
 {
@@ -477,7 +528,6 @@ void BatchDialog::onStart()
         s.endGroup();
     }
 
-    // ★ 3.1 新一轮开始，清空上次报告路径并禁用按钮
     m_lastReportPath.clear();
     m_openReportBtn->setEnabled(false);
 
@@ -597,7 +647,6 @@ void BatchDialog::onFinished(const BatchResult &result)
         }
     }
 
-    // ★ 3.1 报告路径记录 + 启用“打开报告”按钮
     if (!result.reportPath.isEmpty()) {
         m_lastReportPath = result.reportPath;
         m_openReportBtn->setEnabled(true);
@@ -615,6 +664,8 @@ void BatchDialog::onFinished(const BatchResult &result)
 // ============================================================
 BatchOptions BatchDialog::buildOptions() const
 {
+    const BatchDefaults bd = loadBatchDefaults();
+
     BatchOptions opt;
 
     opt.inputFiles = m_inputFiles;
@@ -631,6 +682,9 @@ BatchOptions BatchDialog::buildOptions() const
 
     opt.shardIndex = m_shardIndexSpin->value();
     opt.totalShards = m_totalShardsSpin->value();
+
+    // ★ 3.2 报告目录从 settings.ini 读取（空则 batch_processor 自动用 outputDir）
+    opt.reportDir = bd.reportDir;
 
     opt.steps = m_steps;
 
@@ -716,10 +770,11 @@ BatchOptions BatchDialog::buildOptions() const
 
     opt.stampOpt = protect::StampProtectOptions();
 
-    opt.outputSuffix = QString();
-    opt.jpegOpt.quality = 98;
-    opt.jpegOpt.dpiX = 300.0;
-    opt.jpegOpt.dpiY = 300.0;
+    // ★ 输出参数从 settings.ini 读取
+    opt.outputSuffix = bd.outputSuffix;
+    opt.jpegOpt.quality = qBound(1, bd.jpegQuality, 100);
+    opt.jpegOpt.dpiX = bd.dpi;
+    opt.jpegOpt.dpiY = bd.dpi;
     opt.jpegOpt.use444Sampling = true;
 
     return opt;
@@ -750,7 +805,6 @@ void BatchDialog::updateButtonsState()
     m_shardIndexSpin->setEnabled(!running);
     m_totalShardsSpin->setEnabled(!running);
 
-    // ★ 3.1 运行中禁用“打开报告”，避免中途打开半截报告
     if (running) {
         m_openReportBtn->setEnabled(false);
     }
