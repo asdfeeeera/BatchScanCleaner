@@ -16,6 +16,7 @@ class QProgressBar;
 class QCheckBox;
 class QPlainTextEdit;
 class QGroupBox;
+class QSpinBox;
 
 namespace batch {
 
@@ -50,6 +51,10 @@ private slots:
     void onResume();
     void onCancel();
 
+    // ★ 新增：多存储目录的添加/删除
+    void onAddExtraDir();
+    void onRemoveExtraDir();
+
     void onProgress(const BatchProgress &progress);
     void onFileStarted(const QString &path);
     void onFileFinished(const QString &path, bool success);
@@ -70,6 +75,17 @@ private:
     QLineEdit *m_outputEdit = nullptr;
     QPushButton *m_outputBtn = nullptr;
     QCheckBox *m_recurseCheck = nullptr;
+
+    // ★ 新增：多存储目录（副本目录，可添加多个）
+    QGroupBox    *m_extraDirsGroup = nullptr;
+    QListWidget  *m_extraDirsList  = nullptr;
+    QPushButton  *m_addExtraDirBtn = nullptr;
+    QPushButton  *m_removeExtraDirBtn = nullptr;
+
+    // ★ 新增：多机分片设置
+    QGroupBox *m_shardGroup = nullptr;
+    QSpinBox  *m_shardIndexSpin = nullptr;   // 本机编号（0 开始）
+    QSpinBox  *m_totalShardsSpin = nullptr;  // 总机器数（>=1）
 
     QGroupBox *m_stepGroup = nullptr;
     QListWidget *m_stepList = nullptr;
