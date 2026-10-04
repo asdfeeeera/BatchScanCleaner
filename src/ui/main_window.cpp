@@ -52,7 +52,6 @@
 #include "../protect/stamp_protect.h"
 #include "../analyze/pending_center.h"
 #include "../analyze/pending_dialog.h"
-#include "../analyze/pending_item.h"
 #include "../db/batch_dialog.h"
 
 MainWindow::MainWindow(QWidget *parent)
@@ -665,12 +664,14 @@ void MainWindow::onRemoveBlackEdge()
 }
 
 void MainWindow::onDenoise()
-{    const cv::Mat srcBackup = m_currentMat.clone();
+{
     if (!m_hasImage || m_currentMat.empty()) {
         QMessageBox::information(this, QString::fromUtf8("提示"),
                                  QString::fromUtf8("请先打开一张图片。"));
         return;
     }
+
+    const cv::Mat srcBackup = m_currentMat.clone();
 
     statusBar()->showMessage(QString::fromUtf8("正在去除污点..."));
 
@@ -755,6 +756,7 @@ void MainWindow::onDenoise()
         }
     }
 }
+
 void MainWindow::onEnhance()
 {
     if (!m_hasImage || m_currentMat.empty()) {
@@ -940,7 +942,6 @@ void MainWindow::onOneClickProcess()
         opt.strengthLevel = 1;
         opt.useInpaint    = true;
 
-        // 印章保护
         protect::StampProtectOptions protectOpt;
         const protect::StampProtectResult pr =
             protect::StampProtect::detect(m_currentMat, protectOpt);
@@ -1033,109 +1034,6 @@ void MainWindow::onOneClickProcess()
 
     statusBar()->showMessage(msg);
 }
-    if (!m_hasImage || m_currentMat.empty()) {
-        QMessageBox::information(this, QString::fromUtf8("提示"),
-                                 QString::fromUtf8("请先打开一张图片。"));
-        return;
-    }
-
-    statusBar()->showMessage(QString::fromUtf8("一键处理中，请稍候..."));
-
-    statusBar()->showMessage(QString::fromUtf8("一键处理：正在自动扶正..."));
-    double deskewAngle = 0.0;
-    {
-        const process::DeskewResult r = process::Deskew::autoDeskew(m_currentMat);
-        if (r.ok) {
-            m_currentMat = r.image;
-            deskewAngle = r.angle;
-        }
-    }
-
-    statusBar()->showMessage(QString::fromUtf8("一键处理：正在去除黑边..."));
-    int blackEdgeTotal = 0;
-    {
-        process::BlackEdgeOptions opt;
-        opt.paperSampleRatio = 0.6;
-        opt.paperPercentile  = 0.9;
-        opt.darkRatio        = 0.75;
-        opt.maxScanRatio     = 0.30;
-        opt.darkPixelRatio   = 0.50;
-        opt.gapTolerance     = 3;
-        opt.smoothKernelSize = 5;
-        opt.expandPixels     = 5;
-        opt.fillWhite        = true;
-
-        const process::BlackEdgeResult r =
-            process::BlackEdge::removeBlackEdge(m_currentMat, opt);
-        if (r.ok) {
-            m_currentMat = r.image;
-            blackEdgeTotal = r.topPixels + r.bottomPixels
-                             + r.leftPixels + r.rightPixels;
-        }
-    }
-
-    statusBar()->showMessage(QString::fromUtf8("一键处理：正在检测签名印章保护区..."));
-    cv::Mat protectMask;
-    {
-        protect::StampProtectOptions protectOpt;
-        const protect::StampProtectResult pr =
-            protect::StampProtect::detect(m_currentMat, protectOpt);
-        if (pr.ok) {
-            protectMask = pr.mask;
-        }
-    }
-
-    statusBar()->showMessage(QString::fromUtf8("一键处理：正在去除污点..."));
-    int spotCount = 0;
-    {
-        process::DenoiseOptions opt;
-        opt.maxSpotArea   = 200;
-        opt.maxSpotWidth  = 30;
-        opt.maxSpotHeight = 30;
-        opt.darkRatio     = 0.60;
-        opt.protectRadius = 2;
-        opt.strengthLevel = 1;
-        opt.useInpaint    = true;
-        opt.protectMask   = protectMask;
-
-        const process::DenoiseResult r =
-            process::Denoise::removeSpots(m_currentMat, opt);
-        if (r.ok) {
-            m_currentMat = r.image;
-            spotCount = r.spotCount;
-        }
-    }
-
-    statusBar()->showMessage(QString::fromUtf8("一键处理：正在加深文字..."));
-    {
-        process::EnhanceOptions opt = currentEnhanceOptions();
-
-        const process::EnhanceResult r =
-            process::Enhance::enhanceText(m_currentMat, opt);
-        if (r.ok) {
-            m_currentMat = r.image;
-        }
-    }
-
-    showMatOnPreview(m_currentMat);
-
-    const int pendingCount = analyze::PendingCenter::instance().pendingCount();
-
-    QString msg = QString::fromUtf8(
-        "一键处理完成：扶正 %1 度，黑边 %2 像素，污点 %3 处。")
-        .arg(deskewAngle, 0, 'f', 2)
-        .arg(blackEdgeTotal)
-        .arg(spotCount);
-
-    if (pendingCount > 0) {
-        msg += QString::fromUtf8(" 待确认 %1 项，请打开待确认中心处理。")
-                   .arg(pendingCount);
-    } else {
-        msg += QString::fromUtf8(" 请点另存为保存。");
-    }
-
-    statusBar()->showMessage(msg);
-}
 
 void MainWindow::onDetectColorLine()
 {
@@ -1211,6 +1109,7 @@ void MainWindow::onClearColorLine()
             .arg(static_cast<int>(result.items.size()))
             .arg(result.clearedPixels));
 }
+
 void MainWindow::onProcessErrPage()
 {
     if (!m_hasImage || m_currentMat.empty()) {
@@ -1401,9 +1300,6 @@ void MainWindow::onStampProtectTest()
             .arg(hwRatio, 0, 'f', 2));
 }
 
-// ============================================================
-// 批量处理
-// ============================================================
 void MainWindow::onBatchProcess()
 {
     if (m_currentFiles.isEmpty()) {
@@ -1412,7 +1308,6 @@ void MainWindow::onBatchProcess()
         return;
     }
 
-    // 已打开，置顶
     if (m_batchDialog) {
         m_batchDialog->raise();
         m_batchDialog->activateWindow();
@@ -1422,11 +1317,9 @@ void MainWindow::onBatchProcess()
     m_batchDialog = new batch::BatchDialog(m_currentFiles, m_currentFolder, this);
     m_batchDialog->setAttribute(Qt::WA_DeleteOnClose);
 
-    // 接收批处理的预览图
     connect(m_batchDialog, &batch::BatchDialog::previewImageReady,
             this, &MainWindow::onBatchPreview);
 
-    // 关闭时清空指针
     connect(m_batchDialog, &QObject::destroyed, this, [this]() {
         m_batchDialog = nullptr;
     });
@@ -1447,12 +1340,9 @@ void MainWindow::onPendingCenter()
     analyze::PendingDialog dlg(this);
     dlg.exec();
 
-    // ★ 对话框关闭后，应用所有"已接受"的黄色污渍
     applyAcceptedYellowBlobs();
 }
-// ============================================================
-// 应用"待确认中心"里已接受的黄色污渍
-// ============================================================
+
 void MainWindow::applyAcceptedYellowBlobs()
 {
     if (m_currentMat.empty()) return;
