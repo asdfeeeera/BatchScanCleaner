@@ -664,11 +664,6 @@ void MainWindow::onDenoise()
                 .arg(result.spotCount)
                 .arg(result.cleanedPixels));
     }
-    // ★ 暂时禁用黄色污渍检测（检测不准，会乱加项）
-    //   等以后有更好的方案再启用
-    {
-        result.yellowBlobs.clear();
-    }
 
     // ★ 先清掉本文件旧的黄色污渍项（避免重复）
     {
@@ -688,8 +683,8 @@ void MainWindow::onDenoise()
         }
     }
 
-    // ★ 把黄色污渍加入待确认中心
-    if (!result.yellowBlobs.empty()) {
+    // ★ 暂时禁用黄色污渍检测（检测不准，会乱加项）
+    if (false && !result.yellowBlobs.empty()) {
         const QFileInfo fi(m_currentImagePath);
         for (const cv::Rect &r : result.yellowBlobs) {
             analyze::PendingItem p;
