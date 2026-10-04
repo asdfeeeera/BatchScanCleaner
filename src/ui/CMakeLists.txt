@@ -1,6 +1,8 @@
 ﻿add_library(ui STATIC
     main_window.h
     main_window.cpp
+    settings_dialog.h
+    settings_dialog.cpp
 )
 
 target_include_directories(ui PUBLIC
