@@ -61,7 +61,6 @@ void BatchProcessor::startBatch(const BatchOptions &options)
 
     // ---- 规范化备份目录 ----
     if (m_options.backupEnabled && m_options.backupDir.trimmed().isEmpty()) {
-        // 启用备份但没填目录：自动关掉，避免误操作
         m_options.backupEnabled = false;
     }
 
@@ -86,7 +85,6 @@ void BatchProcessor::startBatch(const BatchOptions &options)
     }
     QDir().mkpath(m_options.reportDir);
 
-    // 备份目录也提前创建（按日期子目录在处理时再建）
     if (m_options.backupEnabled) {
         QDir().mkpath(m_options.backupDir);
     }
@@ -192,7 +190,7 @@ void BatchProcessor::run()
             }
         }
 
-        // ★ 3.3 备份：处理前先复制原图
+        // 备份：处理前先复制原图
         if (m_options.backupEnabled) {
             QString backupErr;
             if (backupOneFile(inputPath, backupErr)) {
@@ -302,17 +300,31 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
 
     const QString outputPath = makeOutputPath(inputPath);
 
+    // ★ 确保输出文件所在目录存在（保留子目录结构时可能还没建）
+    const QString outDirPath = QFileInfo(outputPath).absolutePath();
+    if (!QDir().mkpath(outDirPath)) {
+        outError = QString::fromUtf8("无法创建输出目录：%1").arg(outDirPath);
+        return false;
+    }
+
     if (!image::JpegWriter::write(outputPath, img, m_options.jpegOpt)) {
         outError = QString::fromUtf8("保存失败：%1").arg(outputPath);
         return false;
     }
 
+    // ---- 多存储：复制主输出到其他目录（同样保留子目录结构） ----
     if (m_options.outputDirs.size() > 1) {
+        const QString subDir = relativeSubDir(inputPath);
         const QString fileName = QFileInfo(outputPath).fileName();
 
         for (int i = 1; i < m_options.outputDirs.size(); ++i) {
-            const QString dstDir = m_options.outputDirs[i];
+            QString dstDir = m_options.outputDirs[i];
             if (dstDir.isEmpty()) continue;
+
+            // ★ 副本目录也拼上子目录
+            if (!subDir.isEmpty()) {
+                dstDir = QDir(dstDir).filePath(subDir);
+            }
 
             if (!QDir().mkpath(dstDir)) {
                 qWarning() << "[BatchProcessor] mkpath failed:" << dstDir;
@@ -336,8 +348,67 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
 }
 
 // ============================================================
-// ★ 3.3 备份单张（处理前调用）
-//   目标：<backupDir>/YYYY-MM-DD/原文件名
+// 计算输入文件相对 inputRootDir 的子目录
+// ============================================================
+QString BatchProcessor::relativeSubDir(const QString &inputPath) const
+{
+    if (m_options.inputRootDir.trimmed().isEmpty()) {
+        return QString();
+    }
+
+    QDir rootDir(m_options.inputRootDir);
+    QString rel = rootDir.relativeFilePath(inputPath);
+
+    // 相对路径为 ".." 开头（不在根目录下）或为空 → 不保留子目录
+    if (rel.isEmpty()) return QString();
+    if (rel.startsWith(QStringLiteral(".."))) return QString();
+    if (QDir::isAbsolutePath(rel)) return QString();
+
+    // 去掉文件名部分（保留子目录）
+    const int slash     = rel.lastIndexOf(QLatin1Char('/'));
+    const int backslash = rel.lastIndexOf(QLatin1Char('\\'));
+    const int idx = qMax(slash, backslash);
+
+    if (idx < 0) return QString();  // 文件就在根目录下，没有子目录
+
+    QString subDir = rel.left(idx);
+
+    // 规范化分隔符（统一用 /）
+    subDir.replace(QLatin1Char('\\'), QLatin1Char('/'));
+
+    // 去掉首尾的 /
+    while (subDir.startsWith(QLatin1Char('/'))) subDir.remove(0, 1);
+    while (subDir.endsWith(QLatin1Char('/')))   subDir.chop(1);
+
+    return subDir;
+}
+
+// ============================================================
+// 输出路径（保留子目录结构）
+// ============================================================
+QString BatchProcessor::makeOutputPath(const QString &inputPath) const
+{
+    const QFileInfo fi(inputPath);
+    QString baseName = fi.completeBaseName();
+
+    if (!m_options.outputSuffix.isEmpty()) {
+        baseName += m_options.outputSuffix;
+    }
+
+    const QString outName = baseName + QStringLiteral(".jpg");
+
+    const QString subDir = relativeSubDir(inputPath);
+    if (subDir.isEmpty()) {
+        return QDir(m_options.outputDir).filePath(outName);
+    }
+
+    return QDir(m_options.outputDir)
+        .filePath(subDir + QLatin1Char('/') + outName);
+}
+
+// ============================================================
+// 备份单张（处理前调用）
+//   目标：<backupDir>/YYYY-MM-DD/<子目录>/原文件名
 // ============================================================
 bool BatchProcessor::backupOneFile(const QString &inputPath,
                                    QString &outError) const
@@ -353,9 +424,15 @@ bool BatchProcessor::backupOneFile(const QString &inputPath,
         return false;
     }
 
-    const QString dateDir =
+    QString dateDir =
         m_options.backupDir + QStringLiteral("/")
         + QDate::currentDate().toString(QStringLiteral("yyyy-MM-dd"));
+
+    // ★ 备份也保留子目录结构
+    const QString subDir = relativeSubDir(inputPath);
+    if (!subDir.isEmpty()) {
+        dateDir = QDir(dateDir).filePath(subDir);
+    }
 
     if (!QDir().mkpath(dateDir)) {
         outError = QString::fromUtf8("无法创建备份子目录：%1").arg(dateDir);
@@ -364,7 +441,6 @@ bool BatchProcessor::backupOneFile(const QString &inputPath,
 
     const QString dstPath = QDir(dateDir).filePath(fi.fileName());
 
-    // 同名（同一天同一文件名）已存在：先删再复制
     if (QFile::exists(dstPath)) {
         QFile::remove(dstPath);
     }
@@ -449,22 +525,6 @@ bool BatchProcessor::runColorLine(cv::Mat &img)
         process::ColorLine::clear(img, m_options.colorLineOpt);
     if (r.ok && !r.image.empty()) { img = r.image; return true; }
     return false;
-}
-
-// ============================================================
-// 输出路径
-// ============================================================
-QString BatchProcessor::makeOutputPath(const QString &inputPath) const
-{
-    const QFileInfo fi(inputPath);
-    QString baseName = fi.completeBaseName();
-
-    if (!m_options.outputSuffix.isEmpty()) {
-        baseName += m_options.outputSuffix;
-    }
-
-    const QString outName = baseName + QStringLiteral(".jpg");
-    return QDir(m_options.outputDir).filePath(outName);
 }
 
 // ============================================================
@@ -557,7 +617,6 @@ QString BatchProcessor::writeReport(bool cancelled) const
     }
     out << QString::fromUtf8("\n");
 
-    // ★ 3.3 备份段
     if (m_options.backupEnabled) {
         out << QString::fromUtf8("【备份】\n");
         out << QString::fromUtf8("  备份目录：%1\n").arg(m_options.backupDir);
