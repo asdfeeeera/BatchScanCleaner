@@ -1,4 +1,5 @@
 ﻿#include "main_window.h"
+#include <QApplication>
 
 #include <QMenuBar>
 #include <QToolBar>
