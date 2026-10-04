@@ -32,7 +32,6 @@ void BatchProcessor::startBatch(const BatchOptions &options)
     m_options = options;
 
     // ---- 规范化输出目录列表 ----
-    // outputDirs[0] 始终等于 outputDir（主输出目录），后续为副本目录
     {
         QStringList dirs;
         dirs.append(m_options.outputDir);
@@ -74,14 +73,11 @@ void BatchProcessor::startBatch(const BatchOptions &options)
 
     m_startMs = QDateTime::currentMSecsSinceEpoch();
 
-    // 提前创建所有输出目录
     for (const QString &d : m_options.outputDirs) {
         QDir().mkpath(d);
     }
-    // 创建报告目录
     QDir().mkpath(m_options.reportDir);
 
-    // 启动线程（会调用 run()）
     QThread::start();
 }
 
@@ -114,7 +110,6 @@ void BatchProcessor::run()
     const int totalAll = m_options.inputFiles.size();
     m_globalTotal = totalAll;
 
-    // ---- 多机分片：筛选出本机负责处理的文件索引 ----
     QList<int> myIndices;
     myIndices.reserve(totalAll);
     for (int i = 0; i < totalAll; ++i) {
@@ -131,7 +126,6 @@ void BatchProcessor::run()
 
     for (m_index = 0; m_index < total; ++m_index) {
 
-        // 取消
         if (m_cancelled) {
             m_running = false;
             BatchResult result;
@@ -148,7 +142,6 @@ void BatchProcessor::run()
             return;
         }
 
-        // 暂停：循环等待
         while (m_paused && !m_cancelled) {
             QThread::msleep(100);
         }
@@ -174,7 +167,6 @@ void BatchProcessor::run()
 
         emit fileStarted(inputPath);
 
-        // 读取原图，发预览
         {
             cv::Mat img;
             image::ImageMeta meta;
@@ -200,7 +192,6 @@ void BatchProcessor::run()
 
         emit fileFinished(inputPath, ok);
 
-        // 结果预览
         {
             cv::Mat preview;
             if (ok) {
@@ -218,7 +209,6 @@ void BatchProcessor::run()
             }
         }
 
-        // 进度
         BatchProgress prog;
         prog.current = m_index + 1;
         prog.total = total;
@@ -239,7 +229,6 @@ void BatchProcessor::run()
         emit progressChanged(prog);
     }
 
-    // 全部完成
     m_running = false;
     BatchResult result;
     result.ok = true;
@@ -287,7 +276,6 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
         return false;
     }
 
-    // ---- 多存储：复制主输出到其他目录 ----
     if (m_options.outputDirs.size() > 1) {
         const QString fileName = QFileInfo(outputPath).fileName();
 
@@ -425,9 +413,11 @@ cv::Mat BatchProcessor::makePreview(const cv::Mat &img, int maxSize) const
 }
 
 // ============================================================
-// ★ 3.1 写日志报告
+// ★ 3.1 写日志报告（已修复中文乱码）
 //   文件：<reportDir>/batch_report_YYYY-MM-DD_HH-mm-ss.txt
 //   编码：UTF-8 with BOM（Win7 记事本打开不乱码）
+//   注意：所有中文字面量必须走 QString::fromUtf8 + arg()，
+//         禁止 << "中文"，否则 Qt5 QTextStream 会按 Latin-1 输出乱码。
 // ============================================================
 QString BatchProcessor::writeReport(bool cancelled) const
 {
@@ -435,7 +425,6 @@ QString BatchProcessor::writeReport(bool cancelled) const
         return QString();
     }
 
-    // 确保报告目录存在
     QDir().mkpath(m_options.reportDir);
 
     const QDateTime now = QDateTime::currentDateTime();
@@ -457,10 +446,8 @@ QString BatchProcessor::writeReport(bool cancelled) const
     out.setCodec("UTF-8");
 #endif
 
-    const QDateTime startTime =
-        QDateTime::fromMSecsSinceEpoch(m_startMs);
+    const QDateTime startTime = QDateTime::fromMSecsSinceEpoch(m_startMs);
 
-    // 平均耗时
     double avgMs = 0.0;
     if (!m_fileDurations.isEmpty()) {
         double sum = 0.0;
@@ -468,49 +455,58 @@ QString BatchProcessor::writeReport(bool cancelled) const
         avgMs = sum / m_fileDurations.size();
     }
 
+    const double elapsedSec =
+        (QDateTime::currentMSecsSinceEpoch() - m_startMs) / 1000.0;
+
+    const QString stateStr = cancelled
+        ? QString::fromUtf8("已取消")
+        : QString::fromUtf8("全部完成");
+
+    // ---- 表头 ----
     out << QString::fromUtf8("批量扫描图片净化增强软件 — 批处理报告\n");
     out << QString::fromUtf8("========================================\n");
-    out << QString::fromUtf8("开始时间：") << startTime.toString("yyyy-MM-dd HH:mm:ss") << "\n";
-    out << QString::fromUtf8("结束时间：") << now.toString("yyyy-MM-dd HH:mm:ss") << "\n";
-    out << QString::fromUtf8("结束状态：")
-        << (cancelled ? QString::fromUtf8("已取消") : QString::fromUtf8("全部完成"))
-        << "\n";
-    out << "\n";
+    out << QString::fromUtf8("开始时间：%1\n")
+           .arg(startTime.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+    out << QString::fromUtf8("结束时间：%1\n")
+           .arg(now.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+    out << QString::fromUtf8("结束状态：%1\n").arg(stateStr);
+    out << QString::fromUtf8("\n");
 
+    // ---- 输入 ----
     out << QString::fromUtf8("【输入】\n");
-    out << QString::fromUtf8("  输入文件总数（分片前）：") << m_globalTotal << "\n";
-    out << QString::fromUtf8("  本机编号 / 总机器数：")
-        << m_options.shardIndex << " / " << m_options.totalShards << "\n";
-    out << QString::fromUtf8("  本机实际处理数：") << m_processedTotal << "\n";
-    out << "\n";
+    out << QString::fromUtf8("  输入文件总数（分片前）：%1\n").arg(m_globalTotal);
+    out << QString::fromUtf8("  本机编号 / 总机器数：%1 / %2\n")
+           .arg(m_options.shardIndex)
+           .arg(m_options.totalShards);
+    out << QString::fromUtf8("  本机实际处理数：%1\n").arg(m_processedTotal);
+    out << QString::fromUtf8("\n");
 
+    // ---- 输出 ----
     out << QString::fromUtf8("【输出】\n");
-    out << QString::fromUtf8("  主输出目录：") << m_options.outputDir << "\n";
+    out << QString::fromUtf8("  主输出目录：%1\n").arg(m_options.outputDir);
     for (int i = 1; i < m_options.outputDirs.size(); ++i) {
-        out << QString::fromUtf8("  副本目录 ") << i << "："
-            << m_options.outputDirs[i] << "\n";
+        out << QString::fromUtf8("  副本目录 %1：%2\n")
+               .arg(i)
+               .arg(m_options.outputDirs[i]);
     }
-    out << "\n";
+    out << QString::fromUtf8("\n");
 
+    // ---- 结果 ----
     out << QString::fromUtf8("【结果】\n");
-    out << QString::fromUtf8("  成功：") << m_succeeded << "\n";
-    out << QString::fromUtf8("  失败：") << m_failed << "\n";
-    out << QString::fromUtf8("  总耗时：")
-        << QString::number(
-               (QDateTime::currentMSecsSinceEpoch() - m_startMs) / 1000.0,
-               'f', 2)
-        << QString::fromUtf8(" 秒\n");
-    out << QString::fromUtf8("  平均每张：")
-        << QString::number(avgMs, 'f', 1)
-        << QString::fromUtf8(" 毫秒\n");
-    out << "\n";
+    out << QString::fromUtf8("  成功：%1\n").arg(m_succeeded);
+    out << QString::fromUtf8("  失败：%1\n").arg(m_failed);
+    out << QString::fromUtf8("  总耗时：%1 秒\n")
+           .arg(QString::number(elapsedSec, 'f', 2));
+    out << QString::fromUtf8("  平均每张：%1 毫秒\n")
+           .arg(QString::number(avgMs, 'f', 1));
+    out << QString::fromUtf8("\n");
 
     if (m_failed > 0) {
         out << QString::fromUtf8("【失败文件】\n");
         for (const QString &ff : m_failedFiles) {
-            out << "  " << ff << "\n";
+            out << QString::fromUtf8("  %1\n").arg(ff);
         }
-        out << "\n";
+        out << QString::fromUtf8("\n");
     }
 
     out.flush();
