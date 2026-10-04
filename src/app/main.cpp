@@ -1,8 +1,12 @@
 ﻿#include <QApplication>
 #include <QIcon>
 #include <QMetaType>
+#include <QSettings>
+#include <QCoreApplication>
+#include <QString>
 #include "main_window.h"
 #include "../db/batch_processor.h"
+#include "../ui/wizard_dialog.h"
 
 int main(int argc, char *argv[])
 {
@@ -13,10 +17,8 @@ int main(int argc, char *argv[])
 
     QApplication app(argc, argv);
 
-    // ★ 关键：注册跨线程信号用的类型
-    //   注意：必须同时注册“短名”和“全名”，因为 Qt 的 moc 生成的
-    //   连接签名里用的是短名（BatchProgress），而 Q_DECLARE_METATYPE
-    //   注册的是全名（batch::BatchProgress）。两个名字都注册才保险。
+    // ★ 关键：注册跨线程信号用的自定义类型
+    //   短名和全名都要注册，因为 moc 生成的签名用短名。
     qRegisterMetaType<batch::BatchProgress>("BatchProgress");
     qRegisterMetaType<batch::BatchProgress>("batch::BatchProgress");
     qRegisterMetaType<batch::BatchResult>("BatchResult");
@@ -34,6 +36,25 @@ int main(int argc, char *argv[])
 
     MainWindow window;
     window.show();
+
+    // ★ 3.4 首次启动向导
+    //   检查 settings.ini 里的 [FirstRun] completed 标记；
+    //   没有标记 → 弹出向导；点“完成”或“跳过”都会写标记，以后不再弹。
+    {
+        const QString iniPath = QCoreApplication::applicationDirPath()
+                                + QStringLiteral("/settings.ini");
+        QSettings ini(iniPath, QSettings::IniFormat);
+        ini.setIniCodec("UTF-8");
+        ini.beginGroup(QStringLiteral("FirstRun"));
+        const bool completed =
+            ini.value(QStringLiteral("completed"), 0).toInt() != 0;
+        ini.endGroup();
+
+        if (!completed) {
+            ui::WizardDialog wizard(&window);
+            wizard.exec();
+        }
+    }
 
     return app.exec();
 }
