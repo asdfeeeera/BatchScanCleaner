@@ -284,23 +284,45 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
         return false;
     }
 
+    // ★ 性能优化：印章检测只做一次，供 denoise / background 复用
+    cv::Mat protectMask;
+    {
+        bool needMask = false;
+        for (const StepItem &step : m_options.steps) {
+            if (!step.enabled) continue;
+            if (step.type == StepType::Denoise ||
+                step.type == StepType::Background) {
+                needMask = true;
+                break;
+            }
+        }
+        if (needMask) {
+            protect::StampProtectOptions stampOpt = m_options.stampOpt;
+            const protect::StampProtectResult pr =
+                protect::StampProtect::detect(img, stampOpt);
+            if (pr.ok) {
+                protectMask = pr.mask;
+            }
+        }
+    }
+
     for (const StepItem &step : m_options.steps) {
         if (!step.enabled) continue;
 
         switch (step.type) {
         case StepType::Deskew:      runDeskew(img); break;
         case StepType::BlackEdge:   runBlackEdge(img); break;
-        case StepType::Denoise:     runDenoise(img); break;
+        case StepType::Denoise:     runDenoise(img, protectMask); break;
         case StepType::Enhance:     runEnhance(img); break;
         case StepType::ErrPage:     runErrPage(img, inputPath); break;
-        case StepType::Background:  runBackground(img); break;
+        case StepType::Background:  runBackground(img, protectMask); break;
         case StepType::ColorLine:   runColorLine(img); break;
         }
     }
 
     const QString outputPath = makeOutputPath(inputPath);
 
-    // ★ 确保输出文件所在目录存在（保留子目录结构时可能还没建）
+    // 确保输出文件所在目录存在（保留子目录结构时可能还没建）
     const QString outDirPath = QFileInfo(outputPath).absolutePath();
     if (!QDir().mkpath(outDirPath)) {
         outError = QString::fromUtf8("无法创建输出目录：%1").arg(outDirPath);
@@ -321,7 +343,6 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
             QString dstDir = m_options.outputDirs[i];
             if (dstDir.isEmpty()) continue;
 
-            // ★ 副本目录也拼上子目录
             if (!subDir.isEmpty()) {
                 dstDir = QDir(dstDir).filePath(subDir);
             }
@@ -359,24 +380,19 @@ QString BatchProcessor::relativeSubDir(const QString &inputPath) const
     QDir rootDir(m_options.inputRootDir);
     QString rel = rootDir.relativeFilePath(inputPath);
 
-    // 相对路径为 ".." 开头（不在根目录下）或为空 → 不保留子目录
     if (rel.isEmpty()) return QString();
     if (rel.startsWith(QStringLiteral(".."))) return QString();
     if (QDir::isAbsolutePath(rel)) return QString();
 
-    // 去掉文件名部分（保留子目录）
     const int slash     = rel.lastIndexOf(QLatin1Char('/'));
     const int backslash = rel.lastIndexOf(QLatin1Char('\\'));
     const int idx = qMax(slash, backslash);
 
-    if (idx < 0) return QString();  // 文件就在根目录下，没有子目录
+    if (idx < 0) return QString();
 
     QString subDir = rel.left(idx);
-
-    // 规范化分隔符（统一用 /）
     subDir.replace(QLatin1Char('\\'), QLatin1Char('/'));
 
-    // 去掉首尾的 /
     while (subDir.startsWith(QLatin1Char('/'))) subDir.remove(0, 1);
     while (subDir.endsWith(QLatin1Char('/')))   subDir.chop(1);
 
@@ -408,7 +424,6 @@ QString BatchProcessor::makeOutputPath(const QString &inputPath) const
 
 // ============================================================
 // 备份单张（处理前调用）
-//   目标：<backupDir>/YYYY-MM-DD/<子目录>/原文件名
 // ============================================================
 bool BatchProcessor::backupOneFile(const QString &inputPath,
                                    QString &outError) const
@@ -428,7 +443,6 @@ bool BatchProcessor::backupOneFile(const QString &inputPath,
         m_options.backupDir + QStringLiteral("/")
         + QDate::currentDate().toString(QStringLiteral("yyyy-MM-dd"));
 
-    // ★ 备份也保留子目录结构
     const QString subDir = relativeSubDir(inputPath);
     if (!subDir.isEmpty()) {
         dateDir = QDir(dateDir).filePath(subDir);
@@ -472,17 +486,16 @@ bool BatchProcessor::runBlackEdge(cv::Mat &img)
     return false;
 }
 
-bool BatchProcessor::runDenoise(cv::Mat &img)
+// ★ 已改为接收外部传入的 protectMask，不再重复做印章检测
+bool BatchProcessor::runDenoise(cv::Mat &img, const cv::Mat &protectMask)
 {
-    protect::StampProtectOptions stampOpt = m_options.stampOpt;
-    const protect::StampProtectResult pr =
-        protect::StampProtect::detect(img, stampOpt);
-    if (pr.ok) {
-        m_options.denoiseOpt.protectMask = pr.mask;
+    process::DenoiseOptions opt = m_options.denoiseOpt;
+    if (!protectMask.empty()) {
+        opt.protectMask = protectMask;
     }
 
     const process::DenoiseResult r =
-        process::Denoise::removeSpots(img, m_options.denoiseOpt);
+        process::Denoise::removeSpots(img, opt);
     if (r.ok && !r.image.empty()) { img = r.image; return true; }
     return false;
 }
@@ -503,14 +516,12 @@ bool BatchProcessor::runErrPage(cv::Mat &img, const QString &sourcePath)
     return false;
 }
 
-bool BatchProcessor::runBackground(cv::Mat &img)
+// ★ 已改为接收外部传入的 protectMask，不再重复做印章检测
+bool BatchProcessor::runBackground(cv::Mat &img, const cv::Mat &protectMask)
 {
-    protect::StampProtectOptions stampOpt = m_options.stampOpt;
-    const protect::StampProtectResult pr =
-        protect::StampProtect::detect(img, stampOpt);
     process::BackgroundOptions bgOpt = m_options.backgroundOpt;
-    if (pr.ok) {
-        bgOpt.protectMask = pr.mask;
+    if (!protectMask.empty()) {
+        bgOpt.protectMask = protectMask;
     }
 
     const process::BackgroundResult r =
