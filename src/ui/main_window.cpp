@@ -33,6 +33,7 @@
 #include <QMenu>
 #include <QWidgetAction>
 #include <QCheckBox>
+#include <QPushButton>
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
