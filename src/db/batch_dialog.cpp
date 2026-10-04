@@ -23,6 +23,8 @@
 #include <QGuiApplication>
 #include <QSettings>
 #include <QCoreApplication>
+#include <QDesktopServices>
+#include <QUrl>
 
 namespace batch {
 
@@ -242,6 +244,13 @@ void BatchDialog::setupUi()
     m_pauseBtn = new QPushButton(QString::fromUtf8("暂停"), this);
     m_resumeBtn = new QPushButton(QString::fromUtf8("继续"), this);
     m_cancelBtn = new QPushButton(QString::fromUtf8("取消"), this);
+
+    // ★ 3.1 打开最近一次报告（默认禁用，跑完有报告才启用）
+    m_openReportBtn = new QPushButton(QString::fromUtf8("打开报告"), this);
+    m_openReportBtn->setEnabled(false);
+    connect(m_openReportBtn, &QPushButton::clicked,
+            this, &BatchDialog::onOpenReport);
+
     m_closeBtn = new QPushButton(QString::fromUtf8("关闭"), this);
 
     connect(m_startBtn, &QPushButton::clicked, this, &BatchDialog::onStart);
@@ -256,6 +265,7 @@ void BatchDialog::setupUi()
     btnLayout->addWidget(m_resumeBtn);
     btnLayout->addWidget(m_cancelBtn);
     btnLayout->addStretch();
+    btnLayout->addWidget(m_openReportBtn);
     btnLayout->addWidget(m_closeBtn);
 
     // ---------- 主布局 ----------
@@ -279,7 +289,6 @@ void BatchDialog::setupUi()
 // ============================================================
 void BatchDialog::rebuildStepList()
 {
-    // 先断开信号，避免重填时触发 itemChanged
     disconnect(m_stepList, &QListWidget::itemChanged,
                this, &BatchDialog::onStepItemChanged);
 
@@ -321,7 +330,6 @@ void BatchDialog::onSelectOutputDir()
 void BatchDialog::onToggleRecurse()
 {
     // 暂时只做提示，不实际改变输入列表
-    // 如果用户需要重新扫描，可以再点"添加文件夹"
 }
 
 // ============================================================
@@ -375,7 +383,6 @@ void BatchDialog::onAddExtraDir()
 
     if (dir.isEmpty()) return;
 
-    // 与主输出目录相同 / 与已存在项重复，则忽略
     const QString mainDir = m_outputEdit->text().trimmed();
     if (!mainDir.isEmpty() && QDir(mainDir) == QDir(dir)) {
         QMessageBox::information(this, QString::fromUtf8("提示"),
@@ -402,6 +409,27 @@ void BatchDialog::onRemoveExtraDir()
 }
 
 // ============================================================
+// ★ 3.1 槽：打开最近一次报告
+// ============================================================
+void BatchDialog::onOpenReport()
+{
+    if (m_lastReportPath.isEmpty()) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+            QString::fromUtf8("还没有生成报告。请先运行一次批处理。"));
+        return;
+    }
+
+    if (!QFileInfo::exists(m_lastReportPath)) {
+        QMessageBox::warning(this, QString::fromUtf8("提示"),
+            QString::fromUtf8("报告文件不存在，可能已被删除或移动：\n%1")
+                .arg(m_lastReportPath));
+        return;
+    }
+
+    QDesktopServices::openUrl(QUrl::fromLocalFile(m_lastReportPath));
+}
+
+// ============================================================
 // 槽：开始
 // ============================================================
 void BatchDialog::onStart()
@@ -418,7 +446,6 @@ void BatchDialog::onStart()
         return;
     }
 
-    // 至少勾选一个步骤
     bool anyEnabled = false;
     for (const StepItem &s : m_steps) {
         if (s.enabled) { anyEnabled = true; break; }
@@ -449,6 +476,10 @@ void BatchDialog::onStart()
 
         s.endGroup();
     }
+
+    // ★ 3.1 新一轮开始，清空上次报告路径并禁用按钮
+    m_lastReportPath.clear();
+    m_openReportBtn->setEnabled(false);
 
     BatchOptions opt = buildOptions();
     m_logEdit->clear();
@@ -566,6 +597,16 @@ void BatchDialog::onFinished(const BatchResult &result)
         }
     }
 
+    // ★ 3.1 报告路径记录 + 启用“打开报告”按钮
+    if (!result.reportPath.isEmpty()) {
+        m_lastReportPath = result.reportPath;
+        m_openReportBtn->setEnabled(true);
+        appendLog(QString::fromUtf8("报告已生成：%1").arg(m_lastReportPath));
+    } else {
+        m_lastReportPath.clear();
+        m_openReportBtn->setEnabled(false);
+    }
+
     updateButtonsState();
 }
 
@@ -579,7 +620,6 @@ BatchOptions BatchDialog::buildOptions() const
     opt.inputFiles = m_inputFiles;
     opt.outputDir = m_outputEdit->text().trimmed();
 
-    // 多存储：额外副本目录
     opt.outputDirs.clear();
     for (int i = 0; i < m_extraDirsList->count(); ++i) {
         const QString d = m_extraDirsList->item(i)->text().trimmed();
@@ -589,11 +629,9 @@ BatchOptions BatchDialog::buildOptions() const
         opt.outputDirs.append(d);
     }
 
-    // 多机分片
     opt.shardIndex = m_shardIndexSpin->value();
     opt.totalShards = m_totalShardsSpin->value();
 
-    // 步骤排序：按 order 排（其实已经是列表顺序）
     opt.steps = m_steps;
 
     {
@@ -678,8 +716,7 @@ BatchOptions BatchDialog::buildOptions() const
 
     opt.stampOpt = protect::StampProtectOptions();
 
-    // 输出
-    opt.outputSuffix = QString();   // 保持原名
+    opt.outputSuffix = QString();
     opt.jpegOpt.quality = 98;
     opt.jpegOpt.dpiX = 300.0;
     opt.jpegOpt.dpiY = 300.0;
@@ -707,12 +744,16 @@ void BatchDialog::updateButtonsState()
     m_upBtn->setEnabled(!running);
     m_downBtn->setEnabled(!running);
 
-    // 新增控件，运行中禁止修改
     m_extraDirsList->setEnabled(!running);
     m_addExtraDirBtn->setEnabled(!running);
     m_removeExtraDirBtn->setEnabled(!running);
     m_shardIndexSpin->setEnabled(!running);
     m_totalShardsSpin->setEnabled(!running);
+
+    // ★ 3.1 运行中禁用“打开报告”，避免中途打开半截报告
+    if (running) {
+        m_openReportBtn->setEnabled(false);
+    }
 }
 
 // ============================================================
