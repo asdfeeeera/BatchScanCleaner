@@ -51,9 +51,12 @@ private slots:
     void onResume();
     void onCancel();
 
-    // ★ 新增：多存储目录的添加/删除
+    // ★ 多存储目录的添加/删除
     void onAddExtraDir();
     void onRemoveExtraDir();
+
+    // ★ 3.1 打开最近一次批处理报告
+    void onOpenReport();
 
     void onProgress(const BatchProgress &progress);
     void onFileStarted(const QString &path);
@@ -76,13 +79,13 @@ private:
     QPushButton *m_outputBtn = nullptr;
     QCheckBox *m_recurseCheck = nullptr;
 
-    // ★ 新增：多存储目录（副本目录，可添加多个）
+    // 多存储目录（副本目录，可添加多个）
     QGroupBox    *m_extraDirsGroup = nullptr;
     QListWidget  *m_extraDirsList  = nullptr;
     QPushButton  *m_addExtraDirBtn = nullptr;
     QPushButton  *m_removeExtraDirBtn = nullptr;
 
-    // ★ 新增：多机分片设置
+    // 多机分片设置
     QGroupBox *m_shardGroup = nullptr;
     QSpinBox  *m_shardIndexSpin = nullptr;   // 本机编号（0 开始）
     QSpinBox  *m_totalShardsSpin = nullptr;  // 总机器数（>=1）
@@ -102,6 +105,11 @@ private:
     QPushButton *m_pauseBtn = nullptr;
     QPushButton *m_resumeBtn = nullptr;
     QPushButton *m_cancelBtn = nullptr;
+
+    // ★ 3.1 打开最近一次报告
+    QPushButton *m_openReportBtn = nullptr;
+    QString      m_lastReportPath;
+
     QPushButton *m_closeBtn = nullptr;
 
     QList<StepItem> m_steps;
