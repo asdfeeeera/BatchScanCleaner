@@ -23,6 +23,10 @@
 
 #include "../protect/stamp_protect.h"
 
+// ★ cv::Mat 跨线程信号需要 Q_DECLARE_METATYPE
+//   必须放在全局命名空间、cv::Mat 已定义之后
+Q_DECLARE_METATYPE(cv::Mat)
+
 namespace batch {
 
 // ============================================================
@@ -31,17 +35,10 @@ namespace batch {
 struct BatchOptions
 {
     QStringList inputFiles;
-
-    // 主输出目录（兼容旧代码，等于 outputDirs[0]）
     QString outputDir;
-
-    // 多存储：输出目录列表（第一个是主目录，其余是副本目录）
     QStringList outputDirs;
-
-    // ★ 3.1 日志报告：报告文件输出目录
     QString reportDir;
 
-    // 多机分片：把文件按 totalShards 台机器分片
     int shardIndex = 0;
     int totalShards = 1;
 
@@ -79,14 +76,9 @@ struct BatchResult
     int failed = 0;
     QStringList failedFiles;
     double totalSeconds = 0;
-
-    // ★ 3.1 日志报告：本次运行生成的报告文件路径（可能为空）
     QString reportPath;
 };
 
-// ============================================================
-// 批处理引擎（独立线程）
-// ============================================================
 class BatchProcessor : public QThread
 {
     Q_OBJECT
@@ -96,7 +88,6 @@ public:
     ~BatchProcessor() override;
 
     void startBatch(const BatchOptions &options);
-
     void pause();
     void resume();
     void cancel();
@@ -128,7 +119,6 @@ private:
 
     QString makeOutputPath(const QString &inputPath) const;
     cv::Mat makePreview(const cv::Mat &img, int maxSize = 1000) const;
-
     QString writeReport(bool cancelled) const;
 
     BatchOptions m_options;
@@ -150,9 +140,6 @@ private:
 
 } // namespace batch
 
-// ============================================================
-// ★ 关键：让 BatchProgress / BatchResult 能用于跨线程队列信号
-//   （Q_DECLARE_METATYPE 必须写在 namespace batch 之外，参数带完整命名空间）
-// ============================================================
+// ★ 让 BatchProgress / BatchResult 能用于跨线程队列信号
 Q_DECLARE_METATYPE(batch::BatchProgress)
 Q_DECLARE_METATYPE(batch::BatchResult)
