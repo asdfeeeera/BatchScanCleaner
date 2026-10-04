@@ -23,7 +23,7 @@
 
 #include "../protect/stamp_protect.h"
 
-// ★ cv::Mat 跨线程信号需要 Q_DECLARE_METATYPE
+// cv::Mat 跨线程信号需要 Q_DECLARE_METATYPE
 Q_DECLARE_METATYPE(cv::Mat)
 
 namespace batch {
@@ -34,11 +34,17 @@ namespace batch {
 struct BatchOptions
 {
     QStringList inputFiles;
+
+    // ★ 输入根目录：用于保留子目录结构
+    //   输出路径 = outputDir / (inputPath 相对于 inputRootDir 的路径)
+    //   若为空，则退化为“平铺到 outputDir”（旧行为）
+    QString inputRootDir;
+
     QString outputDir;
     QStringList outputDirs;
     QString reportDir;
 
-    // ★ 3.3 备份：处理前把原图复制到 backupDir/YYYY-MM-DD/ 下
+    // 备份：处理前把原图复制到 backupDir/YYYY-MM-DD/ 下
     QString backupDir;
     bool    backupEnabled = false;
 
@@ -81,7 +87,6 @@ struct BatchResult
     double totalSeconds = 0;
     QString reportPath;
 
-    // ★ 3.3 备份统计
     int backedUp     = 0;
     int backupFailed = 0;
 };
@@ -124,11 +129,19 @@ private:
     bool runBackground(cv::Mat &img);
     bool runColorLine(cv::Mat &img);
 
+    // 根据输入路径 + 输出根目录，生成输出文件路径
+    // 会保留输入相对于 inputRootDir 的子目录结构
     QString makeOutputPath(const QString &inputPath) const;
+
+    // 计算输入文件相对 inputRootDir 的子目录（不含文件名）
+    // 例如输入 E:/root/sub/001.jpg，inputRootDir=E:/root → 返回 "sub"
+    //     若输入与根目录同级或无根目录 → 返回空字符串
+    QString relativeSubDir(const QString &inputPath) const;
+
     cv::Mat makePreview(const cv::Mat &img, int maxSize = 1000) const;
     QString writeReport(bool cancelled) const;
 
-    // ★ 3.3 备份单张（处理前调用）
+    // 备份单张（处理前调用）
     bool backupOneFile(const QString &inputPath, QString &outError) const;
 
     BatchOptions m_options;
@@ -147,13 +160,11 @@ private:
     int m_processedTotal = 0;
     int m_globalTotal = 0;
 
-    // ★ 3.3 备份统计
     int m_backedUp     = 0;
     int m_backupFailed = 0;
 };
 
 } // namespace batch
 
-// ★ 让 BatchProgress / BatchResult 能用于跨线程队列信号
 Q_DECLARE_METATYPE(batch::BatchProgress)
 Q_DECLARE_METATYPE(batch::BatchResult)
