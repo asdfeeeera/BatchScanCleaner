@@ -24,7 +24,7 @@ struct AppSettings
     QString defaultOutputDir;
     QString defaultOutputSuffix;
     int     defaultJpegQuality = 98;
-    double  defaultDpi         = 300.0;   // ★ 新增：默认 DPI
+    double  defaultDpi         = 300.0;
 
     // ② Tesseract（错误页码处理）
     QString tesseractPath;
@@ -39,6 +39,10 @@ struct AppSettings
     int     defaultShardIndex = 0;
     int     defaultTotalShards = 1;
     QString reportDir;
+
+    // ★ ④ 备份（新增）
+    QString backupDir;
+    bool    backupEnabled = false;
 
     // 读写（ini 文件固定为 <程序目录>/settings.ini）
     static QString filePath();
@@ -63,6 +67,8 @@ private slots:
     void onBrowseReportDir();
     void onAddExtraDir();
     void onRemoveExtraDir();
+    // ★ 新增：备份目录选择
+    void onBrowseBackupDir();
     void onResetDefaults();
     void onOk();
     void onApply();
@@ -78,7 +84,7 @@ private:
     QPushButton *m_outputDirBtn  = nullptr;
     QLineEdit   *m_suffixEdit    = nullptr;
     QSpinBox    *m_jpegQualitySpin = nullptr;
-    QDoubleSpinBox *m_dpiSpin    = nullptr;   // ★ 新增
+    QDoubleSpinBox *m_dpiSpin    = nullptr;
 
     // Tesseract
     QLineEdit   *m_tesseractEdit = nullptr;
@@ -97,6 +103,11 @@ private:
     QSpinBox    *m_totalShardsSpin   = nullptr;
     QLineEdit   *m_reportDirEdit     = nullptr;
     QPushButton *m_reportDirBtn      = nullptr;
+
+    // ★ 备份（新增）
+    QCheckBox   *m_backupEnabledCheck = nullptr;
+    QLineEdit   *m_backupDirEdit      = nullptr;
+    QPushButton *m_backupDirBtn       = nullptr;
 
     // 底部按钮
     QPushButton *m_resetBtn  = nullptr;
