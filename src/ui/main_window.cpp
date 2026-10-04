@@ -309,6 +309,9 @@ void MainWindow::setupCentralWidget()
     mainSplitter->setStretchFactor(1, 3);
     mainSplitter->setStretchFactor(2, 1);
 
+
+    // ★ 初始分隔位置：左 440 / 中 600 / 右 240（可手动拖动）
+    mainSplitter->setSizes({440, 600, 240});
     setCentralWidget(mainSplitter);
 }
 void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
