@@ -38,8 +38,7 @@ static QString settingsFilePath()
 }
 
 // ============================================================
-// ★ 3.2 从 settings.ini 读取批处理相关默认值
-//   （与 ui::SettingsDialog 里 AppSettings 使用同样的键名）
+// 从 settings.ini 读取批处理相关默认值
 // ============================================================
 struct BatchDefaults
 {
@@ -51,6 +50,9 @@ struct BatchDefaults
     int     shardIndex  = 0;
     int     totalShards = 1;
     QString reportDir;
+    // ★ 3.3 备份默认值
+    QString backupDir;
+    bool    backupEnabled = false;
 };
 
 static BatchDefaults loadBatchDefaults()
@@ -75,6 +77,11 @@ static BatchDefaults loadBatchDefaults()
     d.reportDir   = ini.value(QStringLiteral("reportDir")).toString();
     ini.endGroup();
 
+    ini.beginGroup(QStringLiteral("Backup"));
+    d.backupDir     = ini.value(QStringLiteral("backupDir")).toString();
+    d.backupEnabled = ini.value(QStringLiteral("backupEnabled"), false).toBool();
+    ini.endGroup();
+
     return d;
 }
 
@@ -89,7 +96,7 @@ BatchDialog::BatchDialog(const QStringList &inputFiles,
     , m_sourceDir(sourceDir)
 {
     setWindowTitle(QString::fromUtf8("批量处理"));
-    resize(860, 760);
+    resize(880, 820);
 
     m_steps = defaultSteps();
 
@@ -110,7 +117,7 @@ BatchDialog::BatchDialog(const QStringList &inputFiles,
     setupUi();
     rebuildStepList();
 
-    // ---- 从 ini 恢复上次的设置（优先），其次从 settings.ini 取默认值 ----
+    // ---- 从 ini 恢复上次的设置 ----
     {
         const BatchDefaults bd = loadBatchDefaults();
 
@@ -118,7 +125,6 @@ BatchDialog::BatchDialog(const QStringList &inputFiles,
         s.setIniCodec("UTF-8");
         s.beginGroup(QStringLiteral("BatchDialog"));
 
-        // 输出目录：batch_dialog.ini 优先 → settings.ini 默认 → 保持 setupUi 里设的
         const QString outDir = s.value(QStringLiteral("outputDir")).toString();
         if (!outDir.trimmed().isEmpty()) {
             m_outputEdit->setText(outDir);
@@ -126,7 +132,6 @@ BatchDialog::BatchDialog(const QStringList &inputFiles,
             m_outputEdit->setText(bd.outputDir);
         }
 
-        // 副本目录：batch_dialog.ini 优先 → settings.ini 默认
         QStringList extraDirs =
             s.value(QStringLiteral("extraDirs")).toStringList();
         if (extraDirs.isEmpty()) {
@@ -145,7 +150,6 @@ BatchDialog::BatchDialog(const QStringList &inputFiles,
             if (!dup) m_extraDirsList->addItem(dd);
         }
 
-        // 分片：用 -1 当哨兵值判断 ini 里有没有记录
         int shardIdx = s.value(QStringLiteral("shardIndex"), -1).toInt();
         if (shardIdx < 0) shardIdx = bd.shardIndex;
         int totalShards = s.value(QStringLiteral("totalShards"), -1).toInt();
@@ -153,6 +157,17 @@ BatchDialog::BatchDialog(const QStringList &inputFiles,
 
         m_shardIndexSpin->setValue(qBound(0, shardIdx, 63));
         m_totalShardsSpin->setValue(qBound(1, totalShards, 64));
+
+        // ★ 3.3 备份设置恢复
+        QString backupDir = s.value(QStringLiteral("backupDir")).toString();
+        int backupEnabled = s.value(QStringLiteral("backupEnabled"), -1).toInt();
+        if (backupEnabled < 0) {
+            backupDir = bd.backupDir;
+            m_backupCheck->setChecked(bd.backupEnabled);
+        } else {
+            m_backupCheck->setChecked(backupEnabled != 0);
+        }
+        m_backupDirEdit->setText(backupDir);
 
         s.endGroup();
     }
@@ -205,7 +220,7 @@ void BatchDialog::setupUi()
 
     m_extraDirsList = new QListWidget(m_extraDirsGroup);
     m_extraDirsList->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_extraDirsList->setMinimumHeight(80);
+    m_extraDirsList->setMinimumHeight(60);
 
     m_addExtraDirBtn = new QPushButton(
         QString::fromUtf8("添加目录..."), m_extraDirsGroup);
@@ -229,6 +244,38 @@ void BatchDialog::setupUi()
     QVBoxLayout *extraLayout = new QVBoxLayout(m_extraDirsGroup);
     extraLayout->addWidget(extraHint);
     extraLayout->addLayout(extraListLayout);
+
+    // ---------- ★ 3.3 备份原图 ----------
+    m_backupGroup = new QGroupBox(
+        QString::fromUtf8("备份原图（处理前先把原图复制到备份目录）"), this);
+
+    m_backupCheck = new QCheckBox(
+        QString::fromUtf8("启用备份（处理前复制原图）"), m_backupGroup);
+    m_backupCheck->setChecked(false);
+
+    QLabel *backupHint = new QLabel(
+        QString::fromUtf8("备份会放到：<备份目录>/YYYY-MM-DD/原文件名，同名会覆盖。"),
+        m_backupGroup);
+    backupHint->setWordWrap(true);
+
+    m_backupDirEdit = new QLineEdit(m_backupGroup);
+    m_backupDirEdit->setReadOnly(true);
+    m_backupDirEdit->setPlaceholderText(
+        QString::fromUtf8("例如 D:/backup 或 //nas/share/backup"));
+
+    m_backupDirBtn = new QPushButton(
+        QString::fromUtf8("选择..."), m_backupGroup);
+    connect(m_backupDirBtn, &QPushButton::clicked,
+            this, &BatchDialog::onSelectBackupDir);
+
+    QHBoxLayout *backupDirLayout = new QHBoxLayout();
+    backupDirLayout->addWidget(m_backupDirEdit, 1);
+    backupDirLayout->addWidget(m_backupDirBtn);
+
+    QVBoxLayout *backupLayout = new QVBoxLayout(m_backupGroup);
+    backupLayout->addWidget(m_backupCheck);
+    backupLayout->addWidget(backupHint);
+    backupLayout->addLayout(backupDirLayout);
 
     // ---------- 多机分片 ----------
     m_shardGroup = new QGroupBox(
@@ -325,6 +372,7 @@ void BatchDialog::setupUi()
     mainLayout->addLayout(outLayout);
     mainLayout->addWidget(m_recurseCheck);
     mainLayout->addWidget(m_extraDirsGroup);
+    mainLayout->addWidget(m_backupGroup);
     mainLayout->addWidget(m_shardGroup);
     mainLayout->addWidget(m_stepGroup, 1);
     mainLayout->addWidget(m_progressBar);
@@ -460,6 +508,22 @@ void BatchDialog::onRemoveExtraDir()
 }
 
 // ============================================================
+// ★ 3.3 槽：选择备份目录
+// ============================================================
+void BatchDialog::onSelectBackupDir()
+{
+    const QString dir = QFileDialog::getExistingDirectory(
+        this,
+        QString::fromUtf8("选择备份目录"),
+        m_backupDirEdit->text(),
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+
+    if (!dir.isEmpty()) {
+        m_backupDirEdit->setText(dir);
+    }
+}
+
+// ============================================================
 // 槽：打开最近一次报告
 // ============================================================
 void BatchDialog::onOpenReport()
@@ -507,6 +571,15 @@ void BatchDialog::onStart()
         return;
     }
 
+    // ★ 3.3 备份开启但没选目录，拦下来
+    if (m_backupCheck->isChecked() &&
+        m_backupDirEdit->text().trimmed().isEmpty()) {
+        QMessageBox::warning(this, QString::fromUtf8("提示"),
+            QString::fromUtf8("已启用备份，但备份目录为空。\n"
+                              "请选择备份目录，或取消勾选“启用备份”。"));
+        return;
+    }
+
     // ---- 保存当前设置到 ini ----
     {
         QSettings s(settingsFilePath(), QSettings::IniFormat);
@@ -525,6 +598,11 @@ void BatchDialog::onStart()
         s.setValue(QStringLiteral("shardIndex"), m_shardIndexSpin->value());
         s.setValue(QStringLiteral("totalShards"), m_totalShardsSpin->value());
 
+        // ★ 3.3 备份设置保存
+        s.setValue(QStringLiteral("backupEnabled"),
+                   m_backupCheck->isChecked() ? 1 : 0);
+        s.setValue(QStringLiteral("backupDir"), m_backupDirEdit->text());
+
         s.endGroup();
     }
 
@@ -542,6 +620,12 @@ void BatchDialog::onStart()
     appendLog(QString::fromUtf8("分片：本机 %1 / 共 %2 台")
                   .arg(opt.shardIndex)
                   .arg(opt.totalShards));
+    if (opt.backupEnabled) {
+        appendLog(QString::fromUtf8("备份：已启用，目录 %1")
+                      .arg(opt.backupDir));
+    } else {
+        appendLog(QString::fromUtf8("备份：未启用"));
+    }
 
     m_processor->startBatch(opt);
     updateButtonsState();
@@ -640,6 +724,13 @@ void BatchDialog::onFinished(const BatchResult &result)
     appendLog(msg);
     m_statusLabel->setText(msg);
 
+    // ★ 3.3 备份统计
+    if (result.backedUp > 0 || result.backupFailed > 0) {
+        appendLog(QString::fromUtf8("备份：成功 %1，失败 %2")
+                      .arg(result.backedUp)
+                      .arg(result.backupFailed));
+    }
+
     if (result.failed > 0) {
         appendLog(QString::fromUtf8("失败文件："));
         for (const QString &f : result.failedFiles) {
@@ -683,8 +774,11 @@ BatchOptions BatchDialog::buildOptions() const
     opt.shardIndex = m_shardIndexSpin->value();
     opt.totalShards = m_totalShardsSpin->value();
 
-    // ★ 3.2 报告目录从 settings.ini 读取（空则 batch_processor 自动用 outputDir）
     opt.reportDir = bd.reportDir;
+
+    // ★ 3.3 备份
+    opt.backupEnabled = m_backupCheck->isChecked();
+    opt.backupDir     = m_backupDirEdit->text().trimmed();
 
     opt.steps = m_steps;
 
@@ -770,7 +864,6 @@ BatchOptions BatchDialog::buildOptions() const
 
     opt.stampOpt = protect::StampProtectOptions();
 
-    // ★ 输出参数从 settings.ini 读取
     opt.outputSuffix = bd.outputSuffix;
     opt.jpegOpt.quality = qBound(1, bd.jpegQuality, 100);
     opt.jpegOpt.dpiX = bd.dpi;
@@ -804,6 +897,11 @@ void BatchDialog::updateButtonsState()
     m_removeExtraDirBtn->setEnabled(!running);
     m_shardIndexSpin->setEnabled(!running);
     m_totalShardsSpin->setEnabled(!running);
+
+    // ★ 3.3 备份控件
+    m_backupCheck->setEnabled(!running);
+    m_backupDirEdit->setEnabled(!running);
+    m_backupDirBtn->setEnabled(!running);
 
     if (running) {
         m_openReportBtn->setEnabled(false);
