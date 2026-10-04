@@ -59,6 +59,12 @@ void BatchProcessor::startBatch(const BatchOptions &options)
         }
     }
 
+    // ---- 规范化备份目录 ----
+    if (m_options.backupEnabled && m_options.backupDir.trimmed().isEmpty()) {
+        // 启用备份但没填目录：自动关掉，避免误操作
+        m_options.backupEnabled = false;
+    }
+
     m_running = true;
     m_paused = false;
     m_cancelled = false;
@@ -70,6 +76,8 @@ void BatchProcessor::startBatch(const BatchOptions &options)
     m_fileDurations.clear();
     m_processedTotal = 0;
     m_globalTotal = 0;
+    m_backedUp = 0;
+    m_backupFailed = 0;
 
     m_startMs = QDateTime::currentMSecsSinceEpoch();
 
@@ -77,6 +85,11 @@ void BatchProcessor::startBatch(const BatchOptions &options)
         QDir().mkpath(d);
     }
     QDir().mkpath(m_options.reportDir);
+
+    // 备份目录也提前创建（按日期子目录在处理时再建）
+    if (m_options.backupEnabled) {
+        QDir().mkpath(m_options.backupDir);
+    }
 
     QThread::start();
 }
@@ -138,6 +151,8 @@ void BatchProcessor::run()
             result.totalSeconds =
                 (QDateTime::currentMSecsSinceEpoch() - m_startMs) / 1000.0;
             result.reportPath = writeReport(true);
+            result.backedUp     = m_backedUp;
+            result.backupFailed = m_backupFailed;
             emit finished(result);
             return;
         }
@@ -157,6 +172,8 @@ void BatchProcessor::run()
             result.totalSeconds =
                 (QDateTime::currentMSecsSinceEpoch() - m_startMs) / 1000.0;
             result.reportPath = writeReport(true);
+            result.backedUp     = m_backedUp;
+            result.backupFailed = m_backupFailed;
             emit finished(result);
             return;
         }
@@ -172,6 +189,18 @@ void BatchProcessor::run()
             image::ImageMeta meta;
             if (image::ImageIO::read(inputPath, img, meta)) {
                 emit previewImageReady(makePreview(img), true);
+            }
+        }
+
+        // ★ 3.3 备份：处理前先复制原图
+        if (m_options.backupEnabled) {
+            QString backupErr;
+            if (backupOneFile(inputPath, backupErr)) {
+                ++m_backedUp;
+            } else {
+                ++m_backupFailed;
+                qWarning() << "[BatchProcessor] backup failed:"
+                           << inputPath << "err:" << backupErr;
             }
         }
 
@@ -240,6 +269,8 @@ void BatchProcessor::run()
     result.totalSeconds =
         (QDateTime::currentMSecsSinceEpoch() - m_startMs) / 1000.0;
     result.reportPath = writeReport(false);
+    result.backedUp     = m_backedUp;
+    result.backupFailed = m_backupFailed;
     emit finished(result);
 }
 
@@ -299,6 +330,49 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
                            << outputPath << "->" << dstPath;
             }
         }
+    }
+
+    return true;
+}
+
+// ============================================================
+// ★ 3.3 备份单张（处理前调用）
+//   目标：<backupDir>/YYYY-MM-DD/原文件名
+// ============================================================
+bool BatchProcessor::backupOneFile(const QString &inputPath,
+                                   QString &outError) const
+{
+    if (m_options.backupDir.trimmed().isEmpty()) {
+        outError = QString::fromUtf8("备份目录为空");
+        return false;
+    }
+
+    const QFileInfo fi(inputPath);
+    if (!fi.exists()) {
+        outError = QString::fromUtf8("源文件不存在");
+        return false;
+    }
+
+    const QString dateDir =
+        m_options.backupDir + QStringLiteral("/")
+        + QDate::currentDate().toString(QStringLiteral("yyyy-MM-dd"));
+
+    if (!QDir().mkpath(dateDir)) {
+        outError = QString::fromUtf8("无法创建备份子目录：%1").arg(dateDir);
+        return false;
+    }
+
+    const QString dstPath = QDir(dateDir).filePath(fi.fileName());
+
+    // 同名（同一天同一文件名）已存在：先删再复制
+    if (QFile::exists(dstPath)) {
+        QFile::remove(dstPath);
+    }
+
+    if (!QFile::copy(inputPath, dstPath)) {
+        outError = QString::fromUtf8("复制失败：%1 -> %2")
+                       .arg(inputPath, dstPath);
+        return false;
     }
 
     return true;
@@ -413,11 +487,7 @@ cv::Mat BatchProcessor::makePreview(const cv::Mat &img, int maxSize) const
 }
 
 // ============================================================
-// ★ 3.1 写日志报告（已修复中文乱码）
-//   文件：<reportDir>/batch_report_YYYY-MM-DD_HH-mm-ss.txt
-//   编码：UTF-8 with BOM（Win7 记事本打开不乱码）
-//   注意：所有中文字面量必须走 QString::fromUtf8 + arg()，
-//         禁止 << "中文"，否则 Qt5 QTextStream 会按 Latin-1 输出乱码。
+// 写日志报告
 // ============================================================
 QString BatchProcessor::writeReport(bool cancelled) const
 {
@@ -438,7 +508,6 @@ QString BatchProcessor::writeReport(bool cancelled) const
         return QString();
     }
 
-    // UTF-8 BOM（Win7 记事本不会乱码）
     f.write("\xEF\xBB\xBF");
 
     QTextStream out(&f);
@@ -462,7 +531,6 @@ QString BatchProcessor::writeReport(bool cancelled) const
         ? QString::fromUtf8("已取消")
         : QString::fromUtf8("全部完成");
 
-    // ---- 表头 ----
     out << QString::fromUtf8("批量扫描图片净化增强软件 — 批处理报告\n");
     out << QString::fromUtf8("========================================\n");
     out << QString::fromUtf8("开始时间：%1\n")
@@ -472,7 +540,6 @@ QString BatchProcessor::writeReport(bool cancelled) const
     out << QString::fromUtf8("结束状态：%1\n").arg(stateStr);
     out << QString::fromUtf8("\n");
 
-    // ---- 输入 ----
     out << QString::fromUtf8("【输入】\n");
     out << QString::fromUtf8("  输入文件总数（分片前）：%1\n").arg(m_globalTotal);
     out << QString::fromUtf8("  本机编号 / 总机器数：%1 / %2\n")
@@ -481,7 +548,6 @@ QString BatchProcessor::writeReport(bool cancelled) const
     out << QString::fromUtf8("  本机实际处理数：%1\n").arg(m_processedTotal);
     out << QString::fromUtf8("\n");
 
-    // ---- 输出 ----
     out << QString::fromUtf8("【输出】\n");
     out << QString::fromUtf8("  主输出目录：%1\n").arg(m_options.outputDir);
     for (int i = 1; i < m_options.outputDirs.size(); ++i) {
@@ -491,7 +557,15 @@ QString BatchProcessor::writeReport(bool cancelled) const
     }
     out << QString::fromUtf8("\n");
 
-    // ---- 结果 ----
+    // ★ 3.3 备份段
+    if (m_options.backupEnabled) {
+        out << QString::fromUtf8("【备份】\n");
+        out << QString::fromUtf8("  备份目录：%1\n").arg(m_options.backupDir);
+        out << QString::fromUtf8("  成功：%1\n").arg(m_backedUp);
+        out << QString::fromUtf8("  失败：%1\n").arg(m_backupFailed);
+        out << QString::fromUtf8("\n");
+    }
+
     out << QString::fromUtf8("【结果】\n");
     out << QString::fromUtf8("  成功：%1\n").arg(m_succeeded);
     out << QString::fromUtf8("  失败：%1\n").arg(m_failed);
