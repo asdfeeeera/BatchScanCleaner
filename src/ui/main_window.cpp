@@ -54,6 +54,9 @@
 #include "../analyze/pending_dialog.h"
 #include "../db/batch_dialog.h"
 
+// ★ 3.2 设置窗口
+#include "settings_dialog.h"
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
@@ -109,7 +112,10 @@ void MainWindow::setupMenuBar()
     toolMenu->addAction(QString::fromUtf8("任务队列"));
     toolMenu->addAction(QString::fromUtf8("日志与报告"));
     toolMenu->addAction(QString::fromUtf8("备份管理"));
-    toolMenu->addAction(QString::fromUtf8("设置"));
+
+    // ★ 3.2 设置菜单项（已接上槽）
+    QAction *settingsAct = toolMenu->addAction(QString::fromUtf8("设置"));
+    connect(settingsAct, &QAction::triggered, this, &MainWindow::onOpenSettings);
 
     QMenu *helpMenu = menuBar()->addMenu(QString::fromUtf8("帮助"));
     helpMenu->addAction(QString::fromUtf8("使用手册"));
@@ -217,7 +223,14 @@ void MainWindow::setupToolBar()
 
     toolBar->addSeparator();
     toolBar->addAction(QString::fromUtf8("输出设置"));
-    toolBar->addAction(QString::fromUtf8("预设"));
+
+    QAction *presetAction = toolBar->addAction(QString::fromUtf8("预设"));
+    Q_UNUSED(presetAction);
+
+    // ★ 3.2 设置按钮
+    QAction *settingsAction = toolBar->addAction(QString::fromUtf8("设置"));
+    connect(settingsAction, &QAction::triggered, this, &MainWindow::onOpenSettings);
+
     toolBar->addSeparator();
     toolBar->addAction(QString::fromUtf8("开始"));
     toolBar->addAction(QString::fromUtf8("暂停"));
@@ -290,7 +303,6 @@ void MainWindow::setupCentralWidget()
 
     setCentralWidget(mainSplitter);
 }
-
 void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
 {
     QToolButton *toggleBtn = new QToolButton(this);
@@ -1326,6 +1338,25 @@ void MainWindow::onBatchProcess()
 
     m_batchDialog->show();
     m_batchDialog->moveToTopRight();
+}
+
+// ★ 3.2 打开设置窗口
+void MainWindow::onOpenSettings()
+{
+    if (m_settingsDialog) {
+        m_settingsDialog->raise();
+        m_settingsDialog->activateWindow();
+        return;
+    }
+
+    m_settingsDialog = new ui::SettingsDialog(this);
+    m_settingsDialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    connect(m_settingsDialog, &QObject::destroyed, this, [this]() {
+        m_settingsDialog = nullptr;
+    });
+
+    m_settingsDialog->show();
 }
 
 void MainWindow::onBatchPreview(const cv::Mat &mat, bool before)
