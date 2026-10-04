@@ -139,11 +139,7 @@ QString locateTesseract(const QString &hint)
     return QString();
 }
 
-// ============================================================
-// ★ 修改①：fuzzyMatchPage 严格化
-//   原逻辑：任一字符相同就算匹配（导致 12 被误判为匹配 24）
-//   新逻辑：只允许前缀/后缀包含（24 vs 124 才算匹配）
-// ============================================================
+// ★ 修改①：只允许前缀/后缀包含，避免 12 被误判为匹配 24
 bool fuzzyMatchPage(int recognized, int correctPage)
 {
     if (recognized < 0 || correctPage < 0) return false;
@@ -384,6 +380,7 @@ void eraseBlock(cv::Mat &dst,
 }
 
 } // namespace
+
 int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
                                      QString &outText,
@@ -817,10 +814,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         white = cv::Scalar(255, 255, 255);
     }
 
-    // ============================================================
     // ★ 修改②：划线涂白阈值从 10 降到 1
-    //   原因：001、002 这类短页码也需要涂白
-    // ============================================================
     for (auto &item : candidates) {
         const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber,
                                                      result.correctPage);

@@ -1142,7 +1142,11 @@ void MainWindow::onProcessErrPage()
         return;
     }
 
-    statusBar()->showMessage(QString::fromUtf8("正在处理错误页码..."));
+    // ★ 处理前：显示沙漏光标 + 状态栏提示，让用户知道程序在忙
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    statusBar()->showMessage(
+        QString::fromUtf8("正在处理错误页码，请稍候（一张图可能要几秒）..."));
+    QApplication::processEvents();
 
     process::ErrPageOptions options;
     options.detectTopLeft          = true;
@@ -1167,6 +1171,9 @@ void MainWindow::onProcessErrPage()
 
     const process::ErrPageResult result =
         process::ErrPage::process(m_currentMat, m_currentImagePath, options);
+
+    // ★ 处理完：先恢复光标，再判断结果
+    QApplication::restoreOverrideCursor();
 
     if (!result.ok) {
         QMessageBox::warning(this, QString::fromUtf8("错误"),
