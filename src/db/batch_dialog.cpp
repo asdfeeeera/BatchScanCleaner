@@ -9,6 +9,7 @@
 #include <QCheckBox>
 #include <QPlainTextEdit>
 #include <QGroupBox>
+#include <QSpinBox>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -34,7 +35,7 @@ BatchDialog::BatchDialog(const QStringList &inputFiles,
     , m_sourceDir(sourceDir)
 {
     setWindowTitle(QString::fromUtf8("批量处理"));
-    resize(820, 680);
+    resize(860, 760);
 
     m_steps = defaultSteps();
 
@@ -90,6 +91,69 @@ void BatchDialog::setupUi()
     m_recurseCheck->setChecked(true);
     connect(m_recurseCheck, &QCheckBox::toggled,
             this, &BatchDialog::onToggleRecurse);
+
+    // ---------- 多存储目录 ----------
+    m_extraDirsGroup = new QGroupBox(
+        QString::fromUtf8("多存储目录（副本，可添加移动硬盘/网络共享盘）"), this);
+
+    QLabel *extraHint = new QLabel(
+        QString::fromUtf8("主输出目录之外的副本目录。每处理完一张，会自动复制到下列每个目录。"),
+        m_extraDirsGroup);
+    extraHint->setWordWrap(true);
+
+    m_extraDirsList = new QListWidget(m_extraDirsGroup);
+    m_extraDirsList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_extraDirsList->setMinimumHeight(80);
+
+    m_addExtraDirBtn = new QPushButton(
+        QString::fromUtf8("添加目录..."), m_extraDirsGroup);
+    m_removeExtraDirBtn = new QPushButton(
+        QString::fromUtf8("删除选中"), m_extraDirsGroup);
+
+    connect(m_addExtraDirBtn, &QPushButton::clicked,
+            this, &BatchDialog::onAddExtraDir);
+    connect(m_removeExtraDirBtn, &QPushButton::clicked,
+            this, &BatchDialog::onRemoveExtraDir);
+
+    QVBoxLayout *extraBtnLayout = new QVBoxLayout();
+    extraBtnLayout->addWidget(m_addExtraDirBtn);
+    extraBtnLayout->addWidget(m_removeExtraDirBtn);
+    extraBtnLayout->addStretch();
+
+    QHBoxLayout *extraListLayout = new QHBoxLayout();
+    extraListLayout->addWidget(m_extraDirsList, 1);
+    extraListLayout->addLayout(extraBtnLayout);
+
+    QVBoxLayout *extraLayout = new QVBoxLayout(m_extraDirsGroup);
+    extraLayout->addWidget(extraHint);
+    extraLayout->addLayout(extraListLayout);
+
+    // ---------- 多机分片 ----------
+    m_shardGroup = new QGroupBox(
+        QString::fromUtf8("多机分片（多台电脑分担同一批文件）"), this);
+
+    QLabel *shardHint = new QLabel(
+        QString::fromUtf8("将文件按索引取模分给多台机器。单机跑时保持“总机器数 = 1”。"),
+        m_shardGroup);
+    shardHint->setWordWrap(true);
+
+    QLabel *shardIdxLabel = new QLabel(QString::fromUtf8("本机编号："), m_shardGroup);
+    m_shardIndexSpin = new QSpinBox(m_shardGroup);
+    m_shardIndexSpin->setRange(0, 63);
+    m_shardIndexSpin->setValue(0);
+
+    QLabel *totalShardsLabel = new QLabel(QString::fromUtf8("总机器数："), m_shardGroup);
+    m_totalShardsSpin = new QSpinBox(m_shardGroup);
+    m_totalShardsSpin->setRange(1, 64);
+    m_totalShardsSpin->setValue(1);
+
+    QGridLayout *shardLayout = new QGridLayout(m_shardGroup);
+    shardLayout->addWidget(shardHint, 0, 0, 1, 4);
+    shardLayout->addWidget(shardIdxLabel, 1, 0);
+    shardLayout->addWidget(m_shardIndexSpin, 1, 1);
+    shardLayout->addWidget(totalShardsLabel, 1, 2);
+    shardLayout->addWidget(m_totalShardsSpin, 1, 3);
+    shardLayout->setColumnStretch(4, 1);
 
     // ---------- 步骤列表 ----------
     m_stepGroup = new QGroupBox(QString::fromUtf8("处理步骤（勾选并排序）"), this);
@@ -151,6 +215,8 @@ void BatchDialog::setupUi()
     mainLayout->addWidget(m_inputLabel);
     mainLayout->addLayout(outLayout);
     mainLayout->addWidget(m_recurseCheck);
+    mainLayout->addWidget(m_extraDirsGroup);
+    mainLayout->addWidget(m_shardGroup);
     mainLayout->addWidget(m_stepGroup, 1);
     mainLayout->addWidget(m_progressBar);
     mainLayout->addWidget(m_statusLabel);
@@ -249,6 +315,45 @@ void BatchDialog::onMoveStepDown()
 }
 
 // ============================================================
+// 槽：多存储目录 - 添加
+// ============================================================
+void BatchDialog::onAddExtraDir()
+{
+    const QString dir = QFileDialog::getExistingDirectory(
+        this,
+        QString::fromUtf8("选择副本目录"),
+        QString(),
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+
+    if (dir.isEmpty()) return;
+
+    // 与主输出目录相同 / 与已存在项重复，则忽略
+    const QString mainDir = m_outputEdit->text().trimmed();
+    if (!mainDir.isEmpty() && QDir(mainDir) == QDir(dir)) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+            QString::fromUtf8("该目录已经是主输出目录，无需添加。"));
+        return;
+    }
+    for (int i = 0; i < m_extraDirsList->count(); ++i) {
+        if (QDir(m_extraDirsList->item(i)->text()) == QDir(dir)) {
+            return;
+        }
+    }
+
+    m_extraDirsList->addItem(dir);
+}
+
+// ============================================================
+// 槽：多存储目录 - 删除
+// ============================================================
+void BatchDialog::onRemoveExtraDir()
+{
+    const int row = m_extraDirsList->currentRow();
+    if (row < 0) return;
+    delete m_extraDirsList->takeItem(row);
+}
+
+// ============================================================
 // 槽：开始
 // ============================================================
 void BatchDialog::onStart()
@@ -278,7 +383,15 @@ void BatchDialog::onStart()
 
     BatchOptions opt = buildOptions();
     m_logEdit->clear();
+
     appendLog(QString::fromUtf8("开始批处理，共 %1 张").arg(m_inputFiles.size()));
+    appendLog(QString::fromUtf8("主输出目录：%1").arg(opt.outputDir));
+    for (const QString &d : opt.outputDirs) {
+        appendLog(QString::fromUtf8("副本目录：%1").arg(d));
+    }
+    appendLog(QString::fromUtf8("分片：本机 %1 / 共 %2 台")
+                  .arg(opt.shardIndex)
+                  .arg(opt.totalShards));
 
     m_processor->startBatch(opt);
     updateButtonsState();
@@ -397,6 +510,20 @@ BatchOptions BatchDialog::buildOptions() const
     opt.inputFiles = m_inputFiles;
     opt.outputDir = m_outputEdit->text().trimmed();
 
+    // 多存储：额外副本目录
+    opt.outputDirs.clear();
+    for (int i = 0; i < m_extraDirsList->count(); ++i) {
+        const QString d = m_extraDirsList->item(i)->text().trimmed();
+        if (d.isEmpty()) continue;
+        if (d == opt.outputDir) continue;
+        if (opt.outputDirs.contains(d)) continue;
+        opt.outputDirs.append(d);
+    }
+
+    // 多机分片
+    opt.shardIndex = m_shardIndexSpin->value();
+    opt.totalShards = m_totalShardsSpin->value();
+
     // 步骤排序：按 order 排（其实已经是列表顺序）
     opt.steps = m_steps;
 
@@ -510,6 +637,13 @@ void BatchDialog::updateButtonsState()
     m_stepList->setEnabled(!running);
     m_upBtn->setEnabled(!running);
     m_downBtn->setEnabled(!running);
+
+    // 新增控件，运行中禁止修改
+    m_extraDirsList->setEnabled(!running);
+    m_addExtraDirBtn->setEnabled(!running);
+    m_removeExtraDirBtn->setEnabled(!running);
+    m_shardIndexSpin->setEnabled(!running);
+    m_totalShardsSpin->setEnabled(!running);
 }
 
 // ============================================================
@@ -522,6 +656,7 @@ void BatchDialog::appendLog(const QString &line)
     m_logEdit->appendPlainText(
         QString::fromUtf8("[%1] %2").arg(ts).arg(line));
 }
+
 // ============================================================
 // 移到屏幕右上角
 // ============================================================
