@@ -3,6 +3,8 @@
     main_window.cpp
     settings_dialog.h
     settings_dialog.cpp
+    wizard_dialog.h
+    wizard_dialog.cpp
     ${CMAKE_SOURCE_DIR}/src/backup/backup_dialog.h
     ${CMAKE_SOURCE_DIR}/src/backup/backup_dialog.cpp
 )
