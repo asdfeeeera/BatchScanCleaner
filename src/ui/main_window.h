@@ -18,6 +18,7 @@ class QTimer;
 class QCheckBox;
 
 namespace batch { class BatchDialog; }
+namespace ui    { class SettingsDialog; }
 
 class MainWindow : public QMainWindow
 {
@@ -47,6 +48,9 @@ private slots:
     void onPendingCenter();
     void onBackground();
     void onBatchProcess();
+
+    // ★ 打开设置窗口
+    void onOpenSettings();
 
     void onBatchPreview(const cv::Mat &mat, bool before);
 
@@ -98,6 +102,9 @@ private:
     cv::Mat m_enhancePreviewBase;
 
     batch::BatchDialog *m_batchDialog = nullptr;
+
+    // ★ 设置窗口（非模态，延迟创建）
+    ui::SettingsDialog *m_settingsDialog = nullptr;
 
     // ★ 一键处理下拉菜单的勾选框
     QCheckBox *m_oneClickDeskewCheck = nullptr;
