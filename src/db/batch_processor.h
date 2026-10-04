@@ -24,7 +24,6 @@
 #include "../protect/stamp_protect.h"
 
 // ★ cv::Mat 跨线程信号需要 Q_DECLARE_METATYPE
-//   必须放在全局命名空间、cv::Mat 已定义之后
 Q_DECLARE_METATYPE(cv::Mat)
 
 namespace batch {
@@ -38,6 +37,10 @@ struct BatchOptions
     QString outputDir;
     QStringList outputDirs;
     QString reportDir;
+
+    // ★ 3.3 备份：处理前把原图复制到 backupDir/YYYY-MM-DD/ 下
+    QString backupDir;
+    bool    backupEnabled = false;
 
     int shardIndex = 0;
     int totalShards = 1;
@@ -77,6 +80,10 @@ struct BatchResult
     QStringList failedFiles;
     double totalSeconds = 0;
     QString reportPath;
+
+    // ★ 3.3 备份统计
+    int backedUp     = 0;
+    int backupFailed = 0;
 };
 
 class BatchProcessor : public QThread
@@ -121,6 +128,9 @@ private:
     cv::Mat makePreview(const cv::Mat &img, int maxSize = 1000) const;
     QString writeReport(bool cancelled) const;
 
+    // ★ 3.3 备份单张（处理前调用）
+    bool backupOneFile(const QString &inputPath, QString &outError) const;
+
     BatchOptions m_options;
     volatile bool m_running = false;
     volatile bool m_paused = false;
@@ -136,6 +146,10 @@ private:
 
     int m_processedTotal = 0;
     int m_globalTotal = 0;
+
+    // ★ 3.3 备份统计
+    int m_backedUp     = 0;
+    int m_backupFailed = 0;
 };
 
 } // namespace batch
