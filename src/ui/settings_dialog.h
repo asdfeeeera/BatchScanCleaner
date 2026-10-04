@@ -8,6 +8,7 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSpinBox;
+class QDoubleSpinBox;
 class QCheckBox;
 class QListWidget;
 class QGroupBox;
@@ -23,6 +24,7 @@ struct AppSettings
     QString defaultOutputDir;
     QString defaultOutputSuffix;
     int     defaultJpegQuality = 98;
+    double  defaultDpi         = 300.0;   // ★ 新增：默认 DPI
 
     // ② Tesseract（错误页码处理）
     QString tesseractPath;
@@ -76,6 +78,7 @@ private:
     QPushButton *m_outputDirBtn  = nullptr;
     QLineEdit   *m_suffixEdit    = nullptr;
     QSpinBox    *m_jpegQualitySpin = nullptr;
+    QDoubleSpinBox *m_dpiSpin    = nullptr;   // ★ 新增
 
     // Tesseract
     QLineEdit   *m_tesseractEdit = nullptr;
