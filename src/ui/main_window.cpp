@@ -54,8 +54,11 @@
 #include "../analyze/pending_dialog.h"
 #include "../db/batch_dialog.h"
 
-// ★ 3.2 设置窗口
+// 3.2 设置窗口
 #include "settings_dialog.h"
+
+// ★ 3.3 备份管理窗口
+#include "../backup/backup_dialog.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -111,9 +114,13 @@ void MainWindow::setupMenuBar()
 
     toolMenu->addAction(QString::fromUtf8("任务队列"));
     toolMenu->addAction(QString::fromUtf8("日志与报告"));
-    toolMenu->addAction(QString::fromUtf8("备份管理"));
 
-    // ★ 3.2 设置菜单项（已接上槽）
+    // ★ 3.3 备份管理（接上槽）
+    QAction *backupAct = toolMenu->addAction(QString::fromUtf8("备份管理"));
+    connect(backupAct, &QAction::triggered,
+            this, &MainWindow::onOpenBackupManager);
+
+    // 3.2 设置（接上槽）
     QAction *settingsAct = toolMenu->addAction(QString::fromUtf8("设置"));
     connect(settingsAct, &QAction::triggered, this, &MainWindow::onOpenSettings);
 
@@ -139,7 +146,7 @@ void MainWindow::setupToolBar()
 
     toolBar->addSeparator();
 
-    // ★ 一键处理：下拉菜单 + 勾选框
+    // 一键处理：下拉菜单 + 勾选框
     {
         QToolButton *oneClickBtn = new QToolButton(toolBar);
         oneClickBtn->setText(QString::fromUtf8("一键处理"));
@@ -227,7 +234,7 @@ void MainWindow::setupToolBar()
     QAction *presetAction = toolBar->addAction(QString::fromUtf8("预设"));
     Q_UNUSED(presetAction);
 
-    // ★ 3.2 设置按钮
+    // 3.2 设置按钮
     QAction *settingsAction = toolBar->addAction(QString::fromUtf8("设置"));
     connect(settingsAction, &QAction::triggered, this, &MainWindow::onOpenSettings);
 
@@ -728,7 +735,6 @@ void MainWindow::onDenoise()
                 .arg(result.cleanedPixels));
     }
 
-    // ★ 先清掉本文件旧的黄色污渍项（避免重复）
     {
         const QList<analyze::PendingItem> allOld =
             analyze::PendingCenter::instance().allItems();
@@ -746,7 +752,7 @@ void MainWindow::onDenoise()
         }
     }
 
-    // ★ 暂时禁用黄色污渍检测（检测不准，会乱加项）
+    // 暂时禁用黄色污渍检测（检测不准，会乱加项）
     if (false && !result.yellowBlobs.empty()) {
         const QFileInfo fi(m_currentImagePath);
         for (const cv::Rect &r : result.yellowBlobs) {
@@ -1340,7 +1346,7 @@ void MainWindow::onBatchProcess()
     m_batchDialog->moveToTopRight();
 }
 
-// ★ 3.2 打开设置窗口
+// 3.2 打开设置窗口
 void MainWindow::onOpenSettings()
 {
     if (m_settingsDialog) {
@@ -1357,6 +1363,25 @@ void MainWindow::onOpenSettings()
     });
 
     m_settingsDialog->show();
+}
+
+// ★ 3.3 打开备份管理窗口
+void MainWindow::onOpenBackupManager()
+{
+    if (m_backupDialog) {
+        m_backupDialog->raise();
+        m_backupDialog->activateWindow();
+        return;
+    }
+
+    m_backupDialog = new backup::BackupDialog(this);
+    m_backupDialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    connect(m_backupDialog, &QObject::destroyed, this, [this]() {
+        m_backupDialog = nullptr;
+    });
+
+    m_backupDialog->show();
 }
 
 void MainWindow::onBatchPreview(const cv::Mat &mat, bool before)
