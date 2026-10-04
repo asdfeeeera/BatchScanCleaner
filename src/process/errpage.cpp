@@ -139,6 +139,11 @@ QString locateTesseract(const QString &hint)
     return QString();
 }
 
+// ============================================================
+// ★ 修改①：fuzzyMatchPage 严格化
+//   原逻辑：任一字符相同就算匹配（导致 12 被误判为匹配 24）
+//   新逻辑：只允许前缀/后缀包含（24 vs 124 才算匹配）
+// ============================================================
 bool fuzzyMatchPage(int recognized, int correctPage)
 {
     if (recognized < 0 || correctPage < 0) return false;
@@ -149,11 +154,9 @@ bool fuzzyMatchPage(int recognized, int correctPage)
 
     if (std::abs(recStr.length() - corrStr.length()) > 1) return false;
 
-    if (corrStr.contains(recStr) || recStr.contains(corrStr)) return true;
+    if (corrStr.endsWith(recStr) || recStr.endsWith(corrStr)) return true;
+    if (corrStr.startsWith(recStr) || recStr.startsWith(corrStr)) return true;
 
-    for (const QChar &c : recStr) {
-        if (corrStr.contains(c)) return true;
-    }
     return false;
 }
 
@@ -334,12 +337,6 @@ bool recognizeSingleChar(const cv::Mat &charImage,
     return false;
 }
 
-// ============================================================
-// 涂白 block：
-//   - 只涂"整个连通域完全在 box 内"的黑色像素
-//   - 判断：连通域 bbox 的 left >= box.x 且 right <= box.x+width
-//   - 这样可以避免涂掉相邻的 0009
-// ============================================================
 void eraseBlock(cv::Mat &dst,
                 const cv::Mat &srcGray,
                 const cv::Rect &box,
@@ -361,7 +358,6 @@ void eraseBlock(cv::Mat &dst,
     const int n = cv::connectedComponentsWithStats(bin, labels, stats,
                                                      centroids, 8, CV_32S);
 
-    // box 在 ROI 内的坐标
     const int boxLeft = 3;
     const int boxRight = boxLeft + box.width;
 
@@ -374,8 +370,6 @@ void eraseBlock(cv::Mat &dst,
         const int cWidth = stats.at<int>(i, cv::CC_STAT_WIDTH);
         const int cRight = cLeft + cWidth;
 
-        // ★ 整个连通域必须完全在 box 内
-        //   （允许左右各 2 像素的容差）
         if (cLeft < boxLeft - 2) continue;
         if (cRight > boxRight + 2) continue;
 
@@ -390,7 +384,6 @@ void eraseBlock(cv::Mat &dst,
 }
 
 } // namespace
-
 int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
                                      QString &outText,
@@ -824,6 +817,10 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         white = cv::Scalar(255, 255, 255);
     }
 
+    // ============================================================
+    // ★ 修改②：划线涂白阈值从 10 降到 1
+    //   原因：001、002 这类短页码也需要涂白
+    // ============================================================
     for (auto &item : candidates) {
         const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber,
                                                      result.correctPage);
@@ -837,7 +834,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             continue;
         }
 
-        if (item.isCrossed && item.recognizedNumber >= 10) {
+        if (item.isCrossed && item.recognizedNumber >= 1) {
             eraseBlock(dst, gray, item.boundingBox, white);
             ++result.crossedRemoved;
             writeDiag(QString::fromUtf8("  → 识别=%1，划线=是，涂白")
