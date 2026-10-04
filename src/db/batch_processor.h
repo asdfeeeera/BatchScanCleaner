@@ -30,7 +30,21 @@ namespace batch {
 struct BatchOptions
 {
     QStringList inputFiles;
+
+    // 主输出目录（兼容旧代码，等于 outputDirs[0]）
     QString outputDir;
+
+    // 多存储：输出目录列表（第一个是主目录，其余是副本目录）
+    // 例如：本地目录、移动硬盘目录、网络共享盘目录
+    // 若为空，则使用 outputDir 作为唯一输出目录
+    QStringList outputDirs;
+
+    // 多机分片：把文件按 totalShards 台机器分片，本机只处理
+    // 索引 % totalShards == shardIndex 的文件
+    // totalShards = 1 表示不分片（单机跑全部）
+    int shardIndex = 0;    // 本机编号（0 开始）
+    int totalShards = 1;   // 总机器数
+
     QList<StepItem> steps;
 
     process::BlackEdgeOptions   blackEdgeOpt;
@@ -112,6 +126,7 @@ private:
     bool runBackground(cv::Mat &img);
     bool runColorLine(cv::Mat &img);
 
+    // 根据输入路径 + 输出目录，生成输出文件路径
     QString makeOutputPath(const QString &inputPath) const;
     cv::Mat makePreview(const cv::Mat &img, int maxSize = 1000) const;
 
