@@ -1,4 +1,4 @@
-add_executable(BatchScanCleaner
+﻿add_executable(BatchScanCleaner WIN32
     main.cpp
 )
 
