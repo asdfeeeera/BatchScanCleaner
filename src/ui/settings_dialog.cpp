@@ -4,6 +4,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QDoubleSpinBox>
 #include <QCheckBox>
 #include <QListWidget>
 #include <QListWidgetItem>
@@ -38,6 +39,7 @@ AppSettings AppSettings::load()
     s.defaultOutputDir    = ini.value(QStringLiteral("defaultOutputDir")).toString();
     s.defaultOutputSuffix = ini.value(QStringLiteral("defaultOutputSuffix")).toString();
     s.defaultJpegQuality  = ini.value(QStringLiteral("defaultJpegQuality"), 98).toInt();
+    s.defaultDpi          = ini.value(QStringLiteral("defaultDpi"), 300.0).toDouble();
     ini.endGroup();
 
     ini.beginGroup(QStringLiteral("Tesseract"));
@@ -68,6 +70,7 @@ void AppSettings::save() const
     ini.setValue(QStringLiteral("defaultOutputDir"),    defaultOutputDir);
     ini.setValue(QStringLiteral("defaultOutputSuffix"), defaultOutputSuffix);
     ini.setValue(QStringLiteral("defaultJpegQuality"),  defaultJpegQuality);
+    ini.setValue(QStringLiteral("defaultDpi"),          defaultDpi);
     ini.endGroup();
 
     ini.beginGroup(QStringLiteral("Tesseract"));
@@ -94,7 +97,7 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     : QDialog(parent)
 {
     setWindowTitle(QString::fromUtf8("设置"));
-    resize(660, 740);
+    resize(660, 780);
     setupUi();
     loadToUi();
 }
@@ -125,10 +128,19 @@ void SettingsDialog::setupUi()
     m_jpegQualitySpin->setRange(1, 100);
     m_jpegQualitySpin->setValue(98);
 
+    // ★ 新增：默认 DPI
+    m_dpiSpin = new QDoubleSpinBox(generalGroup);
+    m_dpiSpin->setRange(50.0, 1200.0);
+    m_dpiSpin->setDecimals(0);
+    m_dpiSpin->setSingleStep(50.0);
+    m_dpiSpin->setValue(300.0);
+    m_dpiSpin->setSuffix(QString::fromUtf8(" DPI"));
+
     QFormLayout *generalForm = new QFormLayout(generalGroup);
     generalForm->addRow(QString::fromUtf8("默认输出目录："), outputDirLayout);
     generalForm->addRow(QString::fromUtf8("默认输出后缀："), m_suffixEdit);
     generalForm->addRow(QString::fromUtf8("默认 JPEG 质量："), m_jpegQualitySpin);
+    generalForm->addRow(QString::fromUtf8("默认 DPI："), m_dpiSpin);
 
     // ---------- ② Tesseract ----------
     QGroupBox *tessGroup = new QGroupBox(
@@ -269,6 +281,12 @@ void SettingsDialog::loadToUi()
     m_suffixEdit->setText(s.defaultOutputSuffix);
     m_jpegQualitySpin->setValue(qBound(1, s.defaultJpegQuality, 100));
 
+    // ★ 新增：DPI
+    double dpi = s.defaultDpi;
+    if (dpi < 50.0)   dpi = 50.0;
+    if (dpi > 1200.0) dpi = 1200.0;
+    m_dpiSpin->setValue(dpi);
+
     m_tesseractEdit->setText(s.tesseractPath);
     m_topLeftCheck->setChecked(s.errPageTopLeft);
     m_topRightCheck->setChecked(s.errPageTopRight);
@@ -293,6 +311,9 @@ void SettingsDialog::uiToSettings(AppSettings &s) const
     s.defaultOutputSuffix = m_suffixEdit->text().trimmed();
     s.defaultJpegQuality  = m_jpegQualitySpin->value();
 
+    // ★ 新增：DPI
+    s.defaultDpi          = m_dpiSpin->value();
+
     s.tesseractPath         = m_tesseractEdit->text().trimmed();
     s.errPageTopLeft        = m_topLeftCheck->isChecked();
     s.errPageTopRight       = m_topRightCheck->isChecked();
@@ -312,7 +333,7 @@ void SettingsDialog::uiToSettings(AppSettings &s) const
 
 void SettingsDialog::applySettings()
 {
-    AppSettings s = AppSettings::load(); // 保留未在 UI 展示的字段
+    AppSettings s = AppSettings::load();
     uiToSettings(s);
     s.save();
 }
@@ -381,6 +402,7 @@ void SettingsDialog::onResetDefaults()
     m_outputDirEdit->clear();
     m_suffixEdit->clear();
     m_jpegQualitySpin->setValue(98);
+    m_dpiSpin->setValue(300.0);
 
     m_tesseractEdit->clear();
     m_topLeftCheck->setChecked(true);
