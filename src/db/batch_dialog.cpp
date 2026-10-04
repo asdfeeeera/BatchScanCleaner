@@ -775,6 +775,7 @@ BatchOptions BatchDialog::buildOptions() const
     opt.totalShards = m_totalShardsSpin->value();
 
     opt.reportDir = bd.reportDir;
+    opt.inputRootDir = m_sourceDir;
 
     // ★ 3.3 备份
     opt.backupEnabled = m_backupCheck->isChecked();
