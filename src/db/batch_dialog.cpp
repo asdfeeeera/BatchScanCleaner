@@ -21,8 +21,19 @@
 #include <QCloseEvent>
 #include <QScreen>
 #include <QGuiApplication>
+#include <QSettings>
+#include <QCoreApplication>
 
 namespace batch {
+
+// ============================================================
+// 设置文件路径（放在程序目录下，影子系统 C 盘还原也不影响）
+// ============================================================
+static QString settingsFilePath()
+{
+    return QCoreApplication::applicationDirPath()
+           + QStringLiteral("/batch_dialog.ini");
+}
 
 // ============================================================
 // 构造
@@ -55,6 +66,43 @@ BatchDialog::BatchDialog(const QStringList &inputFiles,
 
     setupUi();
     rebuildStepList();
+
+    // ---- 从 ini 恢复上次的设置 ----
+    {
+        QSettings s(settingsFilePath(), QSettings::IniFormat);
+        s.setIniCodec("UTF-8");
+        s.beginGroup(QStringLiteral("BatchDialog"));
+
+        const QString outDir = s.value(QStringLiteral("outputDir")).toString();
+        if (!outDir.trimmed().isEmpty()) {
+            m_outputEdit->setText(outDir);
+        }
+
+        const QStringList extraDirs =
+            s.value(QStringLiteral("extraDirs")).toStringList();
+        for (const QString &d : extraDirs) {
+            const QString dd = d.trimmed();
+            if (dd.isEmpty()) continue;
+            if (dd == m_outputEdit->text()) continue;
+            bool dup = false;
+            for (int i = 0; i < m_extraDirsList->count(); ++i) {
+                if (m_extraDirsList->item(i)->text() == dd) {
+                    dup = true; break;
+                }
+            }
+            if (!dup) m_extraDirsList->addItem(dd);
+        }
+
+        const int shardIdx =
+            s.value(QStringLiteral("shardIndex"), 0).toInt();
+        const int totalShards =
+            s.value(QStringLiteral("totalShards"), 1).toInt();
+        m_shardIndexSpin->setValue(qBound(0, shardIdx, 63));
+        m_totalShardsSpin->setValue(qBound(1, totalShards, 64));
+
+        s.endGroup();
+    }
+
     updateButtonsState();
 }
 
@@ -379,6 +427,27 @@ void BatchDialog::onStart()
         QMessageBox::warning(this, QString::fromUtf8("提示"),
                              QString::fromUtf8("请至少勾选一个处理步骤。"));
         return;
+    }
+
+    // ---- 保存当前设置到 ini ----
+    {
+        QSettings s(settingsFilePath(), QSettings::IniFormat);
+        s.setIniCodec("UTF-8");
+        s.beginGroup(QStringLiteral("BatchDialog"));
+
+        s.setValue(QStringLiteral("outputDir"), m_outputEdit->text());
+
+        QStringList extraDirs;
+        for (int i = 0; i < m_extraDirsList->count(); ++i) {
+            const QString d = m_extraDirsList->item(i)->text().trimmed();
+            if (!d.isEmpty()) extraDirs.append(d);
+        }
+        s.setValue(QStringLiteral("extraDirs"), extraDirs);
+
+        s.setValue(QStringLiteral("shardIndex"), m_shardIndexSpin->value());
+        s.setValue(QStringLiteral("totalShards"), m_totalShardsSpin->value());
+
+        s.endGroup();
     }
 
     BatchOptions opt = buildOptions();
