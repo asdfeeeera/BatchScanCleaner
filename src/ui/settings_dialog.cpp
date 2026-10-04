@@ -58,6 +58,12 @@ AppSettings AppSettings::load()
     s.reportDir          = ini.value(QStringLiteral("reportDir")).toString();
     ini.endGroup();
 
+    // ★ 备份（与 batch_dialog.cpp 里读的键名保持一致）
+    ini.beginGroup(QStringLiteral("Backup"));
+    s.backupDir     = ini.value(QStringLiteral("backupDir")).toString();
+    s.backupEnabled = ini.value(QStringLiteral("backupEnabled"), false).toBool();
+    ini.endGroup();
+
     return s;
 }
 
@@ -88,6 +94,12 @@ void AppSettings::save() const
     ini.setValue(QStringLiteral("totalShards"), defaultTotalShards);
     ini.setValue(QStringLiteral("reportDir"),   reportDir);
     ini.endGroup();
+
+    // ★ 备份
+    ini.beginGroup(QStringLiteral("Backup"));
+    ini.setValue(QStringLiteral("backupDir"),     backupDir);
+    ini.setValue(QStringLiteral("backupEnabled"), backupEnabled);
+    ini.endGroup();
 }
 
 // ============================================================
@@ -97,7 +109,7 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     : QDialog(parent)
 {
     setWindowTitle(QString::fromUtf8("设置"));
-    resize(660, 780);
+    resize(660, 860);
     setupUi();
     loadToUi();
 }
@@ -128,7 +140,6 @@ void SettingsDialog::setupUi()
     m_jpegQualitySpin->setRange(1, 100);
     m_jpegQualitySpin->setValue(98);
 
-    // ★ 新增：默认 DPI
     m_dpiSpin = new QDoubleSpinBox(generalGroup);
     m_dpiSpin->setRange(50.0, 1200.0);
     m_dpiSpin->setDecimals(0);
@@ -243,6 +254,38 @@ void SettingsDialog::setupUi()
     batchForm->addRow(QString::fromUtf8("默认分片："), shardLayout);
     batchForm->addRow(QString::fromUtf8("报告目录："), reportDirLayout);
 
+    // ---------- ★ ④ 备份 ----------
+    QGroupBox *backupGroup = new QGroupBox(
+        QString::fromUtf8("备份（处理前把原图复制到备份目录）"), this);
+
+    m_backupEnabledCheck = new QCheckBox(
+        QString::fromUtf8("启用自动备份（批处理默认勾选）"), backupGroup);
+    m_backupEnabledCheck->setChecked(false);
+
+    QLabel *backupHint = new QLabel(
+        QString::fromUtf8("备份会放到：<备份目录>/YYYY-MM-DD/原文件名。\n"
+                          "支持移动硬盘、网络共享盘（如 //nas/share/backup）。"),
+        backupGroup);
+    backupHint->setWordWrap(true);
+
+    m_backupDirEdit = new QLineEdit(backupGroup);
+    m_backupDirEdit->setPlaceholderText(
+        QString::fromUtf8("例如 D:/backup 或 //nas/share/backup"));
+
+    m_backupDirBtn = new QPushButton(QString::fromUtf8("选择..."), backupGroup);
+    connect(m_backupDirBtn, &QPushButton::clicked,
+            this, &SettingsDialog::onBrowseBackupDir);
+
+    QHBoxLayout *backupDirLayout = new QHBoxLayout();
+    backupDirLayout->addWidget(new QLabel(QString::fromUtf8("备份目录："), backupGroup));
+    backupDirLayout->addWidget(m_backupDirEdit, 1);
+    backupDirLayout->addWidget(m_backupDirBtn);
+
+    QVBoxLayout *backupLayout = new QVBoxLayout(backupGroup);
+    backupLayout->addWidget(m_backupEnabledCheck);
+    backupLayout->addWidget(backupHint);
+    backupLayout->addLayout(backupDirLayout);
+
     // ---------- 底部按钮 ----------
     m_resetBtn  = new QPushButton(QString::fromUtf8("恢复默认"), this);
     m_okBtn     = new QPushButton(QString::fromUtf8("确定"), this);
@@ -270,6 +313,7 @@ void SettingsDialog::setupUi()
     mainLayout->addWidget(generalGroup);
     mainLayout->addWidget(tessGroup);
     mainLayout->addWidget(batchGroup, 1);
+    mainLayout->addWidget(backupGroup);
     mainLayout->addLayout(btnLayout);
 }
 
@@ -281,7 +325,6 @@ void SettingsDialog::loadToUi()
     m_suffixEdit->setText(s.defaultOutputSuffix);
     m_jpegQualitySpin->setValue(qBound(1, s.defaultJpegQuality, 100));
 
-    // ★ 新增：DPI
     double dpi = s.defaultDpi;
     if (dpi < 50.0)   dpi = 50.0;
     if (dpi > 1200.0) dpi = 1200.0;
@@ -303,6 +346,10 @@ void SettingsDialog::loadToUi()
     m_shardIndexSpin->setValue(qBound(0, s.defaultShardIndex, 63));
     m_totalShardsSpin->setValue(qBound(1, s.defaultTotalShards, 64));
     m_reportDirEdit->setText(s.reportDir);
+
+    // ★ 备份
+    m_backupEnabledCheck->setChecked(s.backupEnabled);
+    m_backupDirEdit->setText(s.backupDir);
 }
 
 void SettingsDialog::uiToSettings(AppSettings &s) const
@@ -310,8 +357,6 @@ void SettingsDialog::uiToSettings(AppSettings &s) const
     s.defaultOutputDir    = m_outputDirEdit->text().trimmed();
     s.defaultOutputSuffix = m_suffixEdit->text().trimmed();
     s.defaultJpegQuality  = m_jpegQualitySpin->value();
-
-    // ★ 新增：DPI
     s.defaultDpi          = m_dpiSpin->value();
 
     s.tesseractPath         = m_tesseractEdit->text().trimmed();
@@ -329,6 +374,10 @@ void SettingsDialog::uiToSettings(AppSettings &s) const
     s.defaultShardIndex  = m_shardIndexSpin->value();
     s.defaultTotalShards = m_totalShardsSpin->value();
     s.reportDir          = m_reportDirEdit->text().trimmed();
+
+    // ★ 备份
+    s.backupEnabled = m_backupEnabledCheck->isChecked();
+    s.backupDir     = m_backupDirEdit->text().trimmed();
 }
 
 void SettingsDialog::applySettings()
@@ -368,6 +417,17 @@ void SettingsDialog::onBrowseReportDir()
         m_reportDirEdit->text(),
         QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
     if (!dir.isEmpty()) m_reportDirEdit->setText(dir);
+}
+
+// ★ 备份目录选择
+void SettingsDialog::onBrowseBackupDir()
+{
+    const QString dir = QFileDialog::getExistingDirectory(
+        this,
+        QString::fromUtf8("选择备份目录"),
+        m_backupDirEdit->text(),
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+    if (!dir.isEmpty()) m_backupDirEdit->setText(dir);
 }
 
 void SettingsDialog::onAddExtraDir()
@@ -415,6 +475,10 @@ void SettingsDialog::onResetDefaults()
     m_shardIndexSpin->setValue(0);
     m_totalShardsSpin->setValue(1);
     m_reportDirEdit->clear();
+
+    // ★ 备份
+    m_backupEnabledCheck->setChecked(false);
+    m_backupDirEdit->clear();
 }
 
 void SettingsDialog::onApply()
