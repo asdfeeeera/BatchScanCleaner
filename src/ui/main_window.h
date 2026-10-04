@@ -15,6 +15,7 @@ class QVBoxLayout;
 class QSlider;
 class QSpinBox;
 class QTimer;
+class QCheckBox;
 
 namespace batch { class BatchDialog; }
 
@@ -65,7 +66,6 @@ private:
     void buildEnhancePanel(QVBoxLayout *paramLayout);
     process::EnhanceOptions currentEnhanceOptions() const;
 
-    // ★ 新增：应用"待确认中心"里已接受的黄色污渍
     void applyAcceptedYellowBlobs();
 
     QTreeView *m_folderTree = nullptr;
@@ -98,4 +98,13 @@ private:
     cv::Mat m_enhancePreviewBase;
 
     batch::BatchDialog *m_batchDialog = nullptr;
+
+    // ★ 一键处理下拉菜单的勾选框
+    QCheckBox *m_oneClickDeskewCheck = nullptr;
+    QCheckBox *m_oneClickBlackEdgeCheck = nullptr;
+    QCheckBox *m_oneClickErrPageCheck = nullptr;
+    QCheckBox *m_oneClickDenoiseCheck = nullptr;
+    QCheckBox *m_oneClickEnhanceCheck = nullptr;
+    QCheckBox *m_oneClickBackgroundCheck = nullptr;
+    QCheckBox *m_oneClickColorLineCheck = nullptr;
 };

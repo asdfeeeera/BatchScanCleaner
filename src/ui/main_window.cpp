@@ -30,6 +30,9 @@
 #include <QSpinBox>
 #include <QDir>
 #include <QDebug>
+#include <QMenu>
+#include <QWidgetAction>
+#include <QCheckBox>
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -130,8 +133,54 @@ void MainWindow::setupToolBar()
 
     toolBar->addSeparator();
 
-    QAction *oneClickAction = toolBar->addAction(QString::fromUtf8("一键处理"));
-    connect(oneClickAction, &QAction::triggered, this, &MainWindow::onOneClickProcess);
+    // ★ 一键处理：下拉菜单 + 勾选框
+    {
+        QToolButton *oneClickBtn = new QToolButton(toolBar);
+        oneClickBtn->setText(QString::fromUtf8("一键处理"));
+        oneClickBtn->setPopupMode(QToolButton::InstantPopup);
+
+        QMenu *menu = new QMenu(oneClickBtn);
+
+        auto makeCheckItem = [&](const QString &text, bool checked) -> QCheckBox* {
+            QWidget *w = new QWidget(menu);
+            QHBoxLayout *lay = new QHBoxLayout(w);
+            lay->setContentsMargins(20, 2, 20, 2);
+            QCheckBox *cb = new QCheckBox(text, w);
+            cb->setChecked(checked);
+            lay->addWidget(cb);
+            QWidgetAction *wa = new QWidgetAction(menu);
+            wa->setDefaultWidget(w);
+            menu->addAction(wa);
+            return cb;
+        };
+
+        m_oneClickDeskewCheck     = makeCheckItem(QString::fromUtf8("自动扶正"), true);
+        m_oneClickBlackEdgeCheck  = makeCheckItem(QString::fromUtf8("黑边去除"), true);
+        m_oneClickErrPageCheck    = makeCheckItem(QString::fromUtf8("错误页码处理"), false);
+        m_oneClickDenoiseCheck    = makeCheckItem(QString::fromUtf8("污点去除"), true);
+        m_oneClickEnhanceCheck    = makeCheckItem(QString::fromUtf8("文字加深"), true);
+        m_oneClickBackgroundCheck = makeCheckItem(QString::fromUtf8("底色处理"), false);
+        m_oneClickColorLineCheck  = makeCheckItem(QString::fromUtf8("彩色细线清除"), false);
+
+        menu->addSeparator();
+
+        QWidget *execWidget = new QWidget(menu);
+        QHBoxLayout *execLayout = new QHBoxLayout(execWidget);
+        execLayout->setContentsMargins(4, 4, 4, 4);
+        QPushButton *execBtn = new QPushButton(QString::fromUtf8("执行"), execWidget);
+        execLayout->addWidget(execBtn);
+        QWidgetAction *execAction = new QWidgetAction(menu);
+        execAction->setDefaultWidget(execWidget);
+        menu->addAction(execAction);
+
+        connect(execBtn, &QPushButton::clicked, this, [this, menu]() {
+            menu->close();
+            onOneClickProcess();
+        });
+
+        oneClickBtn->setMenu(menu);
+        toolBar->addWidget(oneClickBtn);
+    }
 
     QAction *deskewAction = toolBar->addAction(QString::fromUtf8("自动扶正"));
     connect(deskewAction, &QAction::triggered, this, &MainWindow::onDeskew);
@@ -803,6 +852,186 @@ void MainWindow::onBackground()
 
 void MainWindow::onOneClickProcess()
 {
+    if (!m_hasImage || m_currentMat.empty()) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+                                 QString::fromUtf8("请先打开一张图片。"));
+        return;
+    }
+
+    statusBar()->showMessage(QString::fromUtf8("一键处理中，请稍候..."));
+
+    QStringList doneSteps;
+    int pendingCount = 0;
+
+    // 1. 自动扶正
+    if (m_oneClickDeskewCheck && m_oneClickDeskewCheck->isChecked()) {
+        statusBar()->showMessage(QString::fromUtf8("一键处理：正在自动扶正..."));
+        const process::DeskewResult r = process::Deskew::autoDeskew(m_currentMat);
+        if (r.ok) {
+            m_currentMat = r.image;
+            doneSteps << QString::fromUtf8("扶正");
+        }
+    }
+
+    // 2. 黑边去除
+    if (m_oneClickBlackEdgeCheck && m_oneClickBlackEdgeCheck->isChecked()) {
+        statusBar()->showMessage(QString::fromUtf8("一键处理：正在去除黑边..."));
+        process::BlackEdgeOptions opt;
+        opt.paperSampleRatio = 0.6;
+        opt.paperPercentile  = 0.9;
+        opt.darkRatio        = 0.75;
+        opt.maxScanRatio     = 0.30;
+        opt.darkPixelRatio   = 0.50;
+        opt.gapTolerance     = 3;
+        opt.smoothKernelSize = 5;
+        opt.expandPixels     = 5;
+        opt.fillWhite        = true;
+
+        const process::BlackEdgeResult r =
+            process::BlackEdge::removeBlackEdge(m_currentMat, opt);
+        if (r.ok) {
+            m_currentMat = r.image;
+            doneSteps << QString::fromUtf8("黑边");
+        }
+    }
+
+    // 3. 错误页码处理
+    if (m_oneClickErrPageCheck && m_oneClickErrPageCheck->isChecked()
+        && !m_currentImagePath.isEmpty()) {
+        statusBar()->showMessage(QString::fromUtf8("一键处理：正在处理错误页码..."));
+        process::ErrPageOptions opt;
+        opt.detectTopLeft          = true;
+        opt.topLeftWidthRatio      = 0.12;
+        opt.topLeftHeightRatio     = 0.08;
+        opt.detectTopRight         = true;
+        opt.topRightWidthRatio     = 0.25;
+        opt.topRightHeightRatio    = 0.15;
+        opt.detectBottomRight      = true;
+        opt.bottomRightWidthRatio  = 0.25;
+        opt.bottomRightHeightRatio = 0.15;
+        opt.detectBottomLeft       = false;
+        opt.minDigitHeight         = 20;
+        opt.maxDigitHeight         = 100;
+        opt.minDigitWidth          = 10;
+        opt.maxDigitWidth          = 150;
+        opt.crossLineRatio         = 0.5;
+        opt.fillWhite              = true;
+        opt.tesseractPath          = QString();
+
+        const process::ErrPageResult r =
+            process::ErrPage::process(m_currentMat, m_currentImagePath, opt);
+        if (r.ok) {
+            m_currentMat = r.image;
+            doneSteps << QString::fromUtf8("错误页码");
+        }
+    }
+
+    // 4. 污点去除（含印章保护）
+    if (m_oneClickDenoiseCheck && m_oneClickDenoiseCheck->isChecked()) {
+        statusBar()->showMessage(QString::fromUtf8("一键处理：正在去除污点..."));
+
+        process::DenoiseOptions opt;
+        opt.maxSpotArea   = 200;
+        opt.maxSpotWidth  = 30;
+        opt.maxSpotHeight = 30;
+        opt.darkRatio     = 0.60;
+        opt.protectRadius = 2;
+        opt.strengthLevel = 1;
+        opt.useInpaint    = true;
+
+        // 印章保护
+        protect::StampProtectOptions protectOpt;
+        const protect::StampProtectResult pr =
+            protect::StampProtect::detect(m_currentMat, protectOpt);
+        if (pr.ok) {
+            opt.protectMask = pr.mask;
+        }
+
+        const process::DenoiseResult r =
+            process::Denoise::removeSpots(m_currentMat, opt);
+        if (r.ok) {
+            m_currentMat = r.image;
+            doneSteps << QString::fromUtf8("污点");
+        }
+    }
+
+    // 5. 文字加深
+    if (m_oneClickEnhanceCheck && m_oneClickEnhanceCheck->isChecked()) {
+        statusBar()->showMessage(QString::fromUtf8("一键处理：正在加深文字..."));
+        process::EnhanceOptions opt = currentEnhanceOptions();
+        const process::EnhanceResult r =
+            process::Enhance::enhanceText(m_currentMat, opt);
+        if (r.ok) {
+            m_currentMat = r.image;
+            doneSteps << QString::fromUtf8("文字");
+        }
+    }
+
+    // 6. 底色处理
+    if (m_oneClickBackgroundCheck && m_oneClickBackgroundCheck->isChecked()) {
+        statusBar()->showMessage(QString::fromUtf8("一键处理：正在处理底色..."));
+        process::BackgroundOptions opt;
+        opt.paperSampleRatio = 0.6;
+        opt.paperPercentile  = 0.9;
+        opt.contentRatio     = 0.70;
+        opt.targetPaperGray  = 255;
+        opt.protectColor     = true;
+        opt.colorSatMin      = 40;
+
+        protect::StampProtectOptions protectOpt;
+        const protect::StampProtectResult pr =
+            protect::StampProtect::detect(m_currentMat, protectOpt);
+        if (pr.ok) {
+            opt.protectMask = pr.mask;
+        }
+
+        const process::BackgroundResult r =
+            process::Background::whiten(m_currentMat, opt);
+        if (r.ok) {
+            m_currentMat = r.image;
+            doneSteps << QString::fromUtf8("底色");
+        }
+    }
+
+    // 7. 彩色细线清除
+    if (m_oneClickColorLineCheck && m_oneClickColorLineCheck->isChecked()) {
+        statusBar()->showMessage(QString::fromUtf8("一键处理：正在清除彩色细线..."));
+        process::ColorLineOptions opt;
+        opt.channelDiffThreshold = 8;
+        opt.valueThreshold       = 180;
+        opt.colorRatioThreshold  = 0.40;
+        opt.maxThickness         = 8;
+        opt.edgeMarginRatio      = 0.02;
+
+        const process::ColorLineResult r =
+            process::ColorLine::clear(m_currentMat, opt);
+        if (r.ok) {
+            m_currentMat = r.image;
+            doneSteps << QString::fromUtf8("彩色细线");
+        }
+    }
+
+    showMatOnPreview(m_currentMat);
+
+    pendingCount = analyze::PendingCenter::instance().pendingCount();
+
+    QString msg;
+    if (doneSteps.isEmpty()) {
+        msg = QString::fromUtf8("一键处理：未勾选任何步骤");
+    } else {
+        msg = QString::fromUtf8("一键处理完成：%1")
+                  .arg(doneSteps.join(QString::fromUtf8(" → ")));
+    }
+
+    if (pendingCount > 0) {
+        msg += QString::fromUtf8("。待确认 %1 项，请打开待确认中心处理。")
+                   .arg(pendingCount);
+    } else {
+        msg += QString::fromUtf8("。请点另存为保存。");
+    }
+
+    statusBar()->showMessage(msg);
+}
     if (!m_hasImage || m_currentMat.empty()) {
         QMessageBox::information(this, QString::fromUtf8("提示"),
                                  QString::fromUtf8("请先打开一张图片。"));
