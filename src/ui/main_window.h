@@ -17,8 +17,9 @@ class QSpinBox;
 class QTimer;
 class QCheckBox;
 
-namespace batch { class BatchDialog; }
-namespace ui    { class SettingsDialog; }
+namespace batch  { class BatchDialog; }
+namespace ui     { class SettingsDialog; }
+namespace backup { class BackupDialog; }
 
 class MainWindow : public QMainWindow
 {
@@ -49,8 +50,11 @@ private slots:
     void onBackground();
     void onBatchProcess();
 
-    // ★ 打开设置窗口
+    // 打开设置窗口
     void onOpenSettings();
+
+    // ★ 打开备份管理窗口
+    void onOpenBackupManager();
 
     void onBatchPreview(const cv::Mat &mat, bool before);
 
@@ -103,10 +107,13 @@ private:
 
     batch::BatchDialog *m_batchDialog = nullptr;
 
-    // ★ 设置窗口（非模态，延迟创建）
+    // 设置窗口（非模态，延迟创建）
     ui::SettingsDialog *m_settingsDialog = nullptr;
 
-    // ★ 一键处理下拉菜单的勾选框
+    // ★ 备份管理窗口（非模态，延迟创建）
+    backup::BackupDialog *m_backupDialog = nullptr;
+
+    // 一键处理下拉菜单的勾选框
     QCheckBox *m_oneClickDeskewCheck = nullptr;
     QCheckBox *m_oneClickBlackEdgeCheck = nullptr;
     QCheckBox *m_oneClickErrPageCheck = nullptr;
