@@ -123,10 +123,10 @@ private:
 
     bool runDeskew(cv::Mat &img);
     bool runBlackEdge(cv::Mat &img);
-    bool runDenoise(cv::Mat &img);
+    bool runDenoise(cv::Mat &img, const cv::Mat &protectMask);
     bool runEnhance(cv::Mat &img);
     bool runErrPage(cv::Mat &img, const QString &sourcePath);
-    bool runBackground(cv::Mat &img);
+    bool runBackground(cv::Mat &img, const cv::Mat &protectMask);
     bool runColorLine(cv::Mat &img);
 
     // 根据输入路径 + 输出根目录，生成输出文件路径
