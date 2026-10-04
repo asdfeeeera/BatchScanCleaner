@@ -1,6 +1,7 @@
 ﻿#include "batch_processor.h"
 
 #include <QFileInfo>
+#include <QFile>
 #include <QDir>
 #include <QDateTime>
 #include <QDebug>
@@ -28,6 +29,31 @@ void BatchProcessor::startBatch(const BatchOptions &options)
     if (m_running) return;
 
     m_options = options;
+
+    // ---- 规范化输出目录列表 ----
+    // outputDirs[0] 始终等于 outputDir（主输出目录），后续为副本目录
+    {
+        QStringList dirs;
+        dirs.append(m_options.outputDir);
+        for (const QString &d : m_options.outputDirs) {
+            if (d.isEmpty()) continue;
+            if (d == m_options.outputDir) continue;
+            if (dirs.contains(d)) continue;
+            dirs.append(d);
+        }
+        m_options.outputDirs = dirs;
+    }
+
+    // ---- 规范化分片参数 ----
+    if (m_options.totalShards < 1) m_options.totalShards = 1;
+    if (m_options.shardIndex < 0) m_options.shardIndex = 0;
+    if (m_options.totalShards > 0) {
+        m_options.shardIndex = m_options.shardIndex % m_options.totalShards;
+        if (m_options.shardIndex < 0) {
+            m_options.shardIndex += m_options.totalShards;
+        }
+    }
+
     m_running = true;
     m_paused = false;
     m_cancelled = false;
@@ -40,7 +66,10 @@ void BatchProcessor::startBatch(const BatchOptions &options)
 
     m_startMs = QDateTime::currentMSecsSinceEpoch();
 
-    QDir().mkpath(m_options.outputDir);
+    // 提前创建所有输出目录
+    for (const QString &d : m_options.outputDirs) {
+        QDir().mkpath(d);
+    }
 
     // 启动线程（会调用 run()）
     QThread::start();
@@ -72,7 +101,23 @@ void BatchProcessor::cancel()
 // ============================================================
 void BatchProcessor::run()
 {
-    const int total = m_options.inputFiles.size();
+    const int totalAll = m_options.inputFiles.size();
+
+    // ---- 多机分片：筛选出本机负责处理的文件索引 ----
+    // 规则：全局索引 i 满足 (i % totalShards == shardIndex) 的文件归本机
+    // totalShards == 1 时不过滤，处理全部
+    QList<int> myIndices;
+    myIndices.reserve(totalAll);
+    for (int i = 0; i < totalAll; ++i) {
+        if (m_options.totalShards > 1) {
+            if ((i % m_options.totalShards) != m_options.shardIndex) {
+                continue;
+            }
+        }
+        myIndices.append(i);
+    }
+
+    const int total = myIndices.size();
 
     for (m_index = 0; m_index < total; ++m_index) {
 
@@ -111,7 +156,8 @@ void BatchProcessor::run()
             return;
         }
 
-        const QString inputPath = m_options.inputFiles[m_index];
+        const int globalIdx = myIndices[m_index];
+        const QString inputPath = m_options.inputFiles[globalIdx];
         const QFileInfo fi(inputPath);
 
         emit fileStarted(inputPath);
@@ -226,6 +272,36 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
     if (!image::JpegWriter::write(outputPath, img, m_options.jpegOpt)) {
         outError = QString::fromUtf8("保存失败：%1").arg(outputPath);
         return false;
+    }
+
+    // ---- 多存储：复制主输出到其他目录 ----
+    // outputDirs[0] 是主目录（就是上面刚写入的 outputPath 所在目录）
+    // outputDirs[1..] 是副本目录（移动硬盘、网络共享盘等）
+    if (m_options.outputDirs.size() > 1) {
+        const QString fileName = QFileInfo(outputPath).fileName();
+
+        for (int i = 1; i < m_options.outputDirs.size(); ++i) {
+            const QString dstDir = m_options.outputDirs[i];
+            if (dstDir.isEmpty()) continue;
+
+            if (!QDir().mkpath(dstDir)) {
+                qWarning() << "[BatchProcessor] mkpath failed:" << dstDir;
+                continue;
+            }
+
+            const QString dstPath = QDir(dstDir).filePath(fileName);
+
+            // QFile::copy 目标已存在时会失败，先删
+            if (QFile::exists(dstPath)) {
+                QFile::remove(dstPath);
+            }
+
+            if (!QFile::copy(outputPath, dstPath)) {
+                // 副本失败不影响主流程（主目录已成功写入）
+                qWarning() << "[BatchProcessor] copy to backup failed:"
+                           << outputPath << "->" << dstPath;
+            }
+        }
     }
 
     return true;
