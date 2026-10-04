@@ -664,6 +664,11 @@ void MainWindow::onDenoise()
                 .arg(result.spotCount)
                 .arg(result.cleanedPixels));
     }
+    // ★ 暂时禁用黄色污渍检测（检测不准，会乱加项）
+    //   等以后有更好的方案再启用
+    {
+        result.yellowBlobs.clear();
+    }
 
     // ★ 先清掉本文件旧的黄色污渍项（避免重复）
     {
