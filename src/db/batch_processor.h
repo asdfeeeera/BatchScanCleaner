@@ -39,6 +39,10 @@ struct BatchOptions
     // 若为空，则使用 outputDir 作为唯一输出目录
     QStringList outputDirs;
 
+    // ★ 3.1 日志报告：报告文件输出目录
+    // 若为空，则使用 outputDir 作为报告目录
+    QString reportDir;
+
     // 多机分片：把文件按 totalShards 台机器分片，本机只处理
     // 索引 % totalShards == shardIndex 的文件
     // totalShards = 1 表示不分片（单机跑全部）
@@ -79,6 +83,9 @@ struct BatchResult
     int failed = 0;
     QStringList failedFiles;
     double totalSeconds = 0;
+
+    // ★ 3.1 日志报告：本次运行生成的报告文件路径（可能为空）
+    QString reportPath;
 };
 
 // ============================================================
@@ -130,6 +137,10 @@ private:
     QString makeOutputPath(const QString &inputPath) const;
     cv::Mat makePreview(const cv::Mat &img, int maxSize = 1000) const;
 
+    // ★ 3.1 写日志报告（在 run() 结束时调用）
+    // cancelled 表示是否是取消导致的中途结束
+    QString writeReport(bool cancelled) const;
+
     BatchOptions m_options;
     volatile bool m_running = false;
     volatile bool m_paused = false;
@@ -142,6 +153,10 @@ private:
 
     qint64 m_startMs = 0;
     QList<qint64> m_fileDurations;
+
+    // ★ 3.1 报告需要的一些运行时信息
+    int m_processedTotal = 0;   // 本机实际要处理的数量（分片后）
+    int m_globalTotal = 0;      // 输入文件总数（分片前）
 };
 
 } // namespace batch
