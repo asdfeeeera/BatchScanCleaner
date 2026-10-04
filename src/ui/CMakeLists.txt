@@ -3,6 +3,8 @@
     main_window.cpp
     settings_dialog.h
     settings_dialog.cpp
+    ${CMAKE_SOURCE_DIR}/src/backup/backup_dialog.h
+    ${CMAKE_SOURCE_DIR}/src/backup/backup_dialog.cpp
 )
 
 target_include_directories(ui PUBLIC
@@ -13,6 +15,7 @@ target_include_directories(ui PUBLIC
     ${CMAKE_SOURCE_DIR}/src/protect
     ${CMAKE_SOURCE_DIR}/src/analyze
     ${CMAKE_SOURCE_DIR}/src/db
+    ${CMAKE_SOURCE_DIR}/src/backup
 )
 
 target_link_libraries(ui PUBLIC
