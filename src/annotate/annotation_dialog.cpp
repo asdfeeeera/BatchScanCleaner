@@ -89,6 +89,8 @@ void AnnotationDialog::setupUi()
     m_categoryCombo = new QComboBox(this);
     m_categoryCombo->addItem(QString::fromUtf8("错误页码"),
                              QString::fromUtf8(kCategoryWrongPage));
+    m_categoryCombo->addItem(QString::fromUtf8("透印错码"),
+                             QString::fromUtf8(kCategoryBleedThrough));
     m_categoryCombo->addItem(QString::fromUtf8("装订孔"),
                              QString::fromUtf8(kCategoryBindingHole));
     m_categoryCombo->addItem(QString::fromUtf8("顽固污渍"),
@@ -173,7 +175,7 @@ void AnnotationDialog::setupUi()
                 this, &AnnotationDialog::onNextImage);
     }
 
-    //   Q = 错误页码
+    //   Q = 错误页码（索引 0）
     {
         QShortcut *sc = new QShortcut(QKeySequence(Qt::Key_Q), this);
         sc->setContext(Qt::WindowShortcut);
@@ -182,7 +184,7 @@ void AnnotationDialog::setupUi()
         });
     }
 
-    //   W = 装订孔
+    //   W = 透印错码（索引 1）
     {
         QShortcut *sc = new QShortcut(QKeySequence(Qt::Key_W), this);
         sc->setContext(Qt::WindowShortcut);
@@ -191,7 +193,7 @@ void AnnotationDialog::setupUi()
         });
     }
 
-    //   E = 顽固污渍
+    //   E = 装订孔（索引 2）
     {
         QShortcut *sc = new QShortcut(QKeySequence(Qt::Key_E), this);
         sc->setContext(Qt::WindowShortcut);
@@ -199,7 +201,15 @@ void AnnotationDialog::setupUi()
             m_categoryCombo->setCurrentIndex(2);
         });
     }
-}
+
+    //   R = 顽固污渍（索引 3）
+    {
+        QShortcut *sc = new QShortcut(QKeySequence(Qt::Key_R), this);
+        sc->setContext(Qt::WindowShortcut);
+        connect(sc, &QShortcut::activated, this, [this]() {
+            m_categoryCombo->setCurrentIndex(3);
+        });
+    }
 
 // ============================================================
 // 加载指定索引的图片
