@@ -24,6 +24,8 @@
 #include <QImage>
 #include <QPixmap>
 #include <QTimer>
+#include <QShortcut>
+#include <QKeySequence>
 #include <QScreen>
 #include <QGuiApplication>
 #include <QPen>
@@ -159,6 +161,42 @@ void AnnotationDialog::setupUi()
     mainLayout->addLayout(topLayout);
     mainLayout->addLayout(centerLayout, 1);
     mainLayout->addLayout(bottomLayout);
+
+    // ★ 快捷键
+    //   空格 = 下一张
+    {
+        QShortcut *scNext = new QShortcut(QKeySequence(Qt::Key_Space), this);
+        scNext->setContext(Qt::WindowShortcut);
+        connect(scNext, &QShortcut::activated,
+                this, &AnnotationDialog::onNextImage);
+    }
+
+    //   Q = 错误页码
+    {
+        QShortcut *sc = new QShortcut(QKeySequence(Qt::Key_Q), this);
+        sc->setContext(Qt::WindowShortcut);
+        connect(sc, &QShortcut::activated, this, [this]() {
+            m_categoryCombo->setCurrentIndex(0);
+        });
+    }
+
+    //   W = 装订孔
+    {
+        QShortcut *sc = new QShortcut(QKeySequence(Qt::Key_W), this);
+        sc->setContext(Qt::WindowShortcut);
+        connect(sc, &QShortcut::activated, this, [this]() {
+            m_categoryCombo->setCurrentIndex(1);
+        });
+    }
+
+    //   E = 顽固污渍
+    {
+        QShortcut *sc = new QShortcut(QKeySequence(Qt::Key_E), this);
+        sc->setContext(Qt::WindowShortcut);
+        connect(sc, &QShortcut::activated, this, [this]() {
+            m_categoryCombo->setCurrentIndex(2);
+        });
+    }
 }
 
 // ============================================================
@@ -168,7 +206,6 @@ void AnnotationDialog::loadImageAt(int index)
 {
     if (index < 0 || index >= m_imageFiles.size()) return;
 
-    // 先自动保存上一张
     if (m_currentIndex >= 0 && m_currentIndex != index) {
         saveToJson();
     }
@@ -183,7 +220,6 @@ void AnnotationDialog::loadImageAt(int index)
         return;
     }
 
-    // 清场景
     m_scene->clear();
     m_boxItems.clear();
     m_tempRect = nullptr;
@@ -200,7 +236,6 @@ void AnnotationDialog::loadImageAt(int index)
         m_view->fitInView(m_scene->sceneRect(), Qt::KeepAspectRatio);
     });
 
-    // 加载已保存的标注
     m_currentBoxes.clear();
     loadFromJson(m_currentBoxes);
     for (const BoxData &b : m_currentBoxes) {
