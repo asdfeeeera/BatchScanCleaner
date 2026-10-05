@@ -13,6 +13,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QComboBox>
+#include <QInputDialog>
 #include <QMessageBox>
 #include <QFileInfo>
 #include <QDir>
@@ -372,6 +373,31 @@ bool AnnotationDialog::eventFilter(QObject *obj, QEvent *event)
                     b.rect = r;
                     b.category = m_categoryCombo->currentData().toString();
                     b.value = m_valueEdit->text().trimmed();
+
+                    // ★ 错误页码 / 透印错码：画完框后弹输入框填数字
+                    const bool needNumber =
+                        (b.category == QString::fromUtf8(kCategoryWrongPage) ||
+                         b.category == QString::fromUtf8(kCategoryBleedThrough));
+
+                    if (needNumber) {
+                        QInputDialog dlg(this);
+                        dlg.setWindowTitle(QString::fromUtf8("输入数字"));
+                        dlg.setLabelText(QString::fromUtf8("数字："));
+                        dlg.setTextValue(b.value);
+                        dlg.setInputMode(QInputDialog::TextInput);
+
+                        // 定位到框的右下角附近
+                        const QPoint viewPt = m_view->mapFromScene(r.bottomLeft());
+                        const QPoint globalPt = m_view->viewport()->mapToGlobal(viewPt);
+                        dlg.move(globalPt + QPoint(15, 15));
+
+                        if (dlg.exec() == QDialog::Accepted) {
+                            b.value = dlg.textValue().trimmed();
+                        } else {
+                            // 用户取消 → 不添加这个框
+                            return true;
+                        }
+                    }
 
                     m_currentBoxes.append(b);
                     addBoxToScene(b);
