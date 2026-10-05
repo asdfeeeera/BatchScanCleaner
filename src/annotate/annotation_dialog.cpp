@@ -23,6 +23,7 @@
 #include <QMouseEvent>
 #include <QImage>
 #include <QPixmap>
+#include <QTimer>
 #include <QScreen>
 #include <QGuiApplication>
 #include <QPen>
@@ -195,7 +196,9 @@ void AnnotationDialog::loadImageAt(int index)
     m_scene->setSceneRect(0, 0, pix.width(), pix.height());
 
     m_view->resetTransform();
-    m_view->fitInView(m_scene->sceneRect(), Qt::KeepAspectRatio);
+    QTimer::singleShot(0, this, [this]() {
+        m_view->fitInView(m_scene->sceneRect(), Qt::KeepAspectRatio);
+    });
 
     // 加载已保存的标注
     m_currentBoxes.clear();
