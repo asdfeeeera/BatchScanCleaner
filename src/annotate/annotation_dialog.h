@@ -6,6 +6,7 @@
 #include <QList>
 #include <QRectF>
 #include <QPointF>
+#include <QPoint>
 
 class QGraphicsScene;
 class QGraphicsView;
@@ -51,6 +52,8 @@ public:
     ~AnnotationDialog() override;
 
     void moveToCenter();
+    // 重置视图（还原缩放）
+    void resetView();
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
@@ -84,6 +87,8 @@ private:
     QList<BoxData>   m_currentBoxes;
 
     bool              m_drawing = false;
+    bool              m_panning = false;
+    QPoint            m_panStart;
     QPointF           m_drawStart;
     QGraphicsRectItem *m_tempRect = nullptr;
 

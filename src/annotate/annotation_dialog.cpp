@@ -22,6 +22,8 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QMouseEvent>
+#include <QWheelEvent>
+#include <QScrollBar>
 #include <QImage>
 #include <QPixmap>
 #include <QTimer>
@@ -210,6 +212,26 @@ void AnnotationDialog::setupUi()
             m_categoryCombo->setCurrentIndex(3);
         });
     }
+
+    // ★ ESC = 重置视图（还原缩放）
+    {
+        QShortcut *scReset = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+        scReset->setContext(Qt::WindowShortcut);
+        connect(scReset, &QShortcut::activated,
+                this, &AnnotationDialog::resetView);
+    }
+}
+
+// ============================================================
+// 重置视图
+// ============================================================
+void AnnotationDialog::resetView()
+{
+    if (!m_view) return;
+    m_view->resetTransform();
+    if (m_pixmapItem) {
+        m_view->fitInView(m_scene->sceneRect(), Qt::KeepAspectRatio);
+    }
 }
 
 // ============================================================
@@ -237,6 +259,7 @@ void AnnotationDialog::loadImageAt(int index)
     m_boxItems.clear();
     m_tempRect = nullptr;
     m_drawing = false;
+    m_panning = false;
     m_pixmapItem = nullptr;
 
     QPixmap pix = QPixmap::fromImage(img);
@@ -331,7 +354,7 @@ void AnnotationDialog::updateStatusLabel()
 }
 
 // ============================================================
-// 事件过滤器：处理鼠标画框
+// 事件过滤器：滚轮缩放 / 中键平移 / 左键画框
 // ============================================================
 bool AnnotationDialog::eventFilter(QObject *obj, QEvent *event)
 {
@@ -339,8 +362,34 @@ bool AnnotationDialog::eventFilter(QObject *obj, QEvent *event)
         return QDialog::eventFilter(obj, event);
     }
 
+    // ---------- 滚轮缩放 ----------
+    if (event->type() == QEvent::Wheel) {
+        if (!m_pixmapItem) return true;
+        QWheelEvent *we = static_cast<QWheelEvent*>(event);
+
+        const double factor = (we->angleDelta().y() > 0)
+                              ? 1.15
+                              : 1.0 / 1.15;
+
+        m_view->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
+        m_view->scale(factor, factor);
+        m_view->setTransformationAnchor(QGraphicsView::AnchorViewCenter);
+        return true;
+    }
+
+    // ---------- 鼠标事件 ----------
     if (event->type() == QEvent::MouseButtonPress) {
         QMouseEvent *me = static_cast<QMouseEvent*>(event);
+
+        // 中键：开始平移
+        if (me->button() == Qt::MiddleButton) {
+            m_panning = true;
+            m_panStart = me->pos();
+            m_view->viewport()->setCursor(Qt::ClosedHandCursor);
+            return true;
+        }
+
+        // 左键：开始画框
         if (me->button() == Qt::LeftButton && m_pixmapItem) {
             m_drawStart = m_view->mapToScene(me->pos());
             m_drawing = true;
@@ -360,8 +409,22 @@ bool AnnotationDialog::eventFilter(QObject *obj, QEvent *event)
         }
     }
     else if (event->type() == QEvent::MouseMove) {
+        QMouseEvent *me = static_cast<QMouseEvent*>(event);
+
+        // 平移中
+        if (m_panning) {
+            const QPoint delta = me->pos() - m_panStart;
+            m_panStart = me->pos();
+
+            QScrollBar *hBar = m_view->horizontalScrollBar();
+            QScrollBar *vBar = m_view->verticalScrollBar();
+            hBar->setValue(hBar->value() - delta.x());
+            vBar->setValue(vBar->value() - delta.y());
+            return true;
+        }
+
+        // 画框中
         if (m_drawing && m_tempRect) {
-            QMouseEvent *me = static_cast<QMouseEvent*>(event);
             const QPointF cur = m_view->mapToScene(me->pos());
             QRectF r(m_drawStart, cur);
             r = r.normalized();
@@ -371,6 +434,15 @@ bool AnnotationDialog::eventFilter(QObject *obj, QEvent *event)
     }
     else if (event->type() == QEvent::MouseButtonRelease) {
         QMouseEvent *me = static_cast<QMouseEvent*>(event);
+
+        // 中键松开：结束平移
+        if (me->button() == Qt::MiddleButton && m_panning) {
+            m_panning = false;
+            m_view->viewport()->unsetCursor();
+            return true;
+        }
+
+        // 左键松开：完成画框
         if (me->button() == Qt::LeftButton && m_drawing) {
             m_drawing = false;
 
