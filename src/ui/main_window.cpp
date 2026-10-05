@@ -1,5 +1,4 @@
 ﻿#include "main_window.h"
-#include <QApplication>
 
 #include <QMenuBar>
 #include <QToolBar>
@@ -35,6 +34,7 @@
 #include <QWidgetAction>
 #include <QCheckBox>
 #include <QPushButton>
+#include <QApplication>
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -58,8 +58,11 @@
 // 3.2 设置窗口
 #include "settings_dialog.h"
 
-// ★ 3.3 备份管理窗口
+// 3.3 备份管理窗口
 #include "../backup/backup_dialog.h"
+
+// ★ 标注工具
+#include "../annotate/annotation_dialog.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -116,12 +119,15 @@ void MainWindow::setupMenuBar()
     toolMenu->addAction(QString::fromUtf8("任务队列"));
     toolMenu->addAction(QString::fromUtf8("日志与报告"));
 
-    // ★ 3.3 备份管理（接上槽）
     QAction *backupAct = toolMenu->addAction(QString::fromUtf8("备份管理"));
     connect(backupAct, &QAction::triggered,
             this, &MainWindow::onOpenBackupManager);
 
-    // 3.2 设置（接上槽）
+    // ★ 标注工具
+    QAction *annotateAct = toolMenu->addAction(QString::fromUtf8("标注工具"));
+    connect(annotateAct, &QAction::triggered,
+            this, &MainWindow::onOpenAnnotator);
+
     QAction *settingsAct = toolMenu->addAction(QString::fromUtf8("设置"));
     connect(settingsAct, &QAction::triggered, this, &MainWindow::onOpenSettings);
 
@@ -235,7 +241,6 @@ void MainWindow::setupToolBar()
     QAction *presetAction = toolBar->addAction(QString::fromUtf8("预设"));
     Q_UNUSED(presetAction);
 
-    // 3.2 设置按钮
     QAction *settingsAction = toolBar->addAction(QString::fromUtf8("设置"));
     connect(settingsAction, &QAction::triggered, this, &MainWindow::onOpenSettings);
 
@@ -309,9 +314,9 @@ void MainWindow::setupCentralWidget()
     mainSplitter->setStretchFactor(1, 3);
     mainSplitter->setStretchFactor(2, 1);
 
-
     // ★ 初始分隔位置：左 440 / 中 600 / 右 240（可手动拖动）
     mainSplitter->setSizes({440, 600, 240});
+
     setCentralWidget(mainSplitter);
 }
 void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
@@ -756,7 +761,6 @@ void MainWindow::onDenoise()
         }
     }
 
-    // 暂时禁用黄色污渍检测（检测不准，会乱加项）
     if (false && !result.yellowBlobs.empty()) {
         const QFileInfo fi(m_currentImagePath);
         for (const cv::Rect &r : result.yellowBlobs) {
@@ -888,7 +892,6 @@ void MainWindow::onOneClickProcess()
     QStringList doneSteps;
     int pendingCount = 0;
 
-    // 1. 自动扶正
     if (m_oneClickDeskewCheck && m_oneClickDeskewCheck->isChecked()) {
         statusBar()->showMessage(QString::fromUtf8("一键处理：正在自动扶正..."));
         const process::DeskewResult r = process::Deskew::autoDeskew(m_currentMat);
@@ -898,7 +901,6 @@ void MainWindow::onOneClickProcess()
         }
     }
 
-    // 2. 黑边去除
     if (m_oneClickBlackEdgeCheck && m_oneClickBlackEdgeCheck->isChecked()) {
         statusBar()->showMessage(QString::fromUtf8("一键处理：正在去除黑边..."));
         process::BlackEdgeOptions opt;
@@ -920,7 +922,6 @@ void MainWindow::onOneClickProcess()
         }
     }
 
-    // 3. 错误页码处理
     if (m_oneClickErrPageCheck && m_oneClickErrPageCheck->isChecked()
         && !m_currentImagePath.isEmpty()) {
         statusBar()->showMessage(QString::fromUtf8("一键处理：正在处理错误页码..."));
@@ -951,7 +952,6 @@ void MainWindow::onOneClickProcess()
         }
     }
 
-    // 4. 污点去除（含印章保护）
     if (m_oneClickDenoiseCheck && m_oneClickDenoiseCheck->isChecked()) {
         statusBar()->showMessage(QString::fromUtf8("一键处理：正在去除污点..."));
 
@@ -979,7 +979,6 @@ void MainWindow::onOneClickProcess()
         }
     }
 
-    // 5. 文字加深
     if (m_oneClickEnhanceCheck && m_oneClickEnhanceCheck->isChecked()) {
         statusBar()->showMessage(QString::fromUtf8("一键处理：正在加深文字..."));
         process::EnhanceOptions opt = currentEnhanceOptions();
@@ -991,7 +990,6 @@ void MainWindow::onOneClickProcess()
         }
     }
 
-    // 6. 底色处理
     if (m_oneClickBackgroundCheck && m_oneClickBackgroundCheck->isChecked()) {
         statusBar()->showMessage(QString::fromUtf8("一键处理：正在处理底色..."));
         process::BackgroundOptions opt;
@@ -1017,7 +1015,6 @@ void MainWindow::onOneClickProcess()
         }
     }
 
-    // 7. 彩色细线清除
     if (m_oneClickColorLineCheck && m_oneClickColorLineCheck->isChecked()) {
         statusBar()->showMessage(QString::fromUtf8("一键处理：正在清除彩色细线..."));
         process::ColorLineOptions opt;
@@ -1146,7 +1143,6 @@ void MainWindow::onProcessErrPage()
         return;
     }
 
-    // ★ 处理前：显示沙漏光标 + 状态栏提示，让用户知道程序在忙
     QApplication::setOverrideCursor(Qt::WaitCursor);
     statusBar()->showMessage(
         QString::fromUtf8("正在处理错误页码，请稍候（一张图可能要几秒）..."));
@@ -1176,7 +1172,6 @@ void MainWindow::onProcessErrPage()
     const process::ErrPageResult result =
         process::ErrPage::process(m_currentMat, m_currentImagePath, options);
 
-    // ★ 处理完：先恢复光标，再判断结果
     QApplication::restoreOverrideCursor();
 
     if (!result.ok) {
@@ -1376,7 +1371,7 @@ void MainWindow::onOpenSettings()
     m_settingsDialog->show();
 }
 
-// ★ 3.3 打开备份管理窗口
+// 3.3 打开备份管理窗口
 void MainWindow::onOpenBackupManager()
 {
     if (m_backupDialog) {
@@ -1393,6 +1388,38 @@ void MainWindow::onOpenBackupManager()
     });
 
     m_backupDialog->show();
+}
+
+// ★ 打开标注工具窗口
+void MainWindow::onOpenAnnotator()
+{
+    if (m_annotateDialog) {
+        m_annotateDialog->raise();
+        m_annotateDialog->activateWindow();
+        return;
+    }
+
+    if (m_currentFiles.isEmpty()) {
+        QMessageBox::information(this, QString::fromUtf8("提示"),
+            QString::fromUtf8("请先点\"添加文件夹\"扫描图片，再打开标注工具。"));
+        return;
+    }
+
+    // 标注结果存到程序目录下的 annotation_output 子目录
+    const QString outputRoot =
+        QDir(QCoreApplication::applicationDirPath())
+            .filePath(QStringLiteral("annotation_output"));
+
+    m_annotateDialog = new annotate::AnnotationDialog(
+        m_currentFiles, m_currentFolder, outputRoot, this);
+    m_annotateDialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    connect(m_annotateDialog, &QObject::destroyed, this, [this]() {
+        m_annotateDialog = nullptr;
+    });
+
+    m_annotateDialog->show();
+    m_annotateDialog->moveToCenter();
 }
 
 void MainWindow::onBatchPreview(const cv::Mat &mat, bool before)
