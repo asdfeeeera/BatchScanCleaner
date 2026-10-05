@@ -1412,8 +1412,18 @@ void MainWindow::onOpenAnnotator()
         QDir(QCoreApplication::applicationDirPath())
             .filePath(QStringLiteral("annotation_output"));
 
+    // ★ 用当前文件夹的上一级作为"标注根目录"
+    //   这样不同子文件夹的同名图片（001.jpg）不会互相覆盖
+    QString imageRootDir = m_currentFolder;
+    {
+        QDir up(m_currentFolder);
+        if (up.cdUp()) {
+            imageRootDir = up.absolutePath();
+        }
+    }
+
     m_annotateDialog = new annotate::AnnotationDialog(
-        m_currentFiles, m_currentFolder, outputRoot, this);
+        m_currentFiles, imageRootDir, outputRoot, this);
     m_annotateDialog->setAttribute(Qt::WA_DeleteOnClose);
 
     connect(m_annotateDialog, &QObject::destroyed, this, [this]() {
