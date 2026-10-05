@@ -36,6 +36,7 @@
 namespace annotate {
 
 const char *kCategoryWrongPage   = "wrong_page";
+const char *kCategoryBleedThrough = "bleed_through";
 const char *kCategoryBindingHole = "binding_hole";
 const char *kCategoryStain       = "stain";
 
