@@ -277,6 +277,8 @@ void MainWindow::setupCentralWidget()
     m_fileTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_fileTable->horizontalHeader()->setStretchLastSection(true);
     m_fileTable->verticalHeader()->setVisible(false);
+    connect(m_fileTable, &QTableView::clicked,
+            this, &MainWindow::onFileDoubleClicked);
     connect(m_fileTable, &QTableView::doubleClicked,
             this, &MainWindow::onFileDoubleClicked);
     leftLayout->addWidget(m_fileTable);
