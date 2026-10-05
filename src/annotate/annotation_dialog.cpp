@@ -35,10 +35,10 @@
 
 namespace annotate {
 
-const char *kCategoryWrongPage   = "wrong_page";
+const char *kCategoryWrongPage    = "wrong_page";
 const char *kCategoryBleedThrough = "bleed_through";
-const char *kCategoryBindingHole = "binding_hole";
-const char *kCategoryStain       = "stain";
+const char *kCategoryBindingHole  = "binding_hole";
+const char *kCategoryStain        = "stain";
 
 // ============================================================
 // 构造
@@ -210,6 +210,7 @@ void AnnotationDialog::setupUi()
             m_categoryCombo->setCurrentIndex(3);
         });
     }
+}
 
 // ============================================================
 // 加载指定索引的图片
@@ -385,7 +386,6 @@ bool AnnotationDialog::eventFilter(QObject *obj, QEvent *event)
                     b.category = m_categoryCombo->currentData().toString();
                     b.value = m_valueEdit->text().trimmed();
 
-                    // ★ 错误页码 / 透印错码：画完框后弹输入框填数字
                     const bool needNumber =
                         (b.category == QString::fromUtf8(kCategoryWrongPage) ||
                          b.category == QString::fromUtf8(kCategoryBleedThrough));
@@ -397,7 +397,6 @@ bool AnnotationDialog::eventFilter(QObject *obj, QEvent *event)
                         dlg.setTextValue(b.value);
                         dlg.setInputMode(QInputDialog::TextInput);
 
-                        // 定位到框的右下角附近
                         const QPoint viewPt = m_view->mapFromScene(r.bottomLeft());
                         const QPoint globalPt = m_view->viewport()->mapToGlobal(viewPt);
                         dlg.move(globalPt + QPoint(15, 15));
@@ -405,7 +404,6 @@ bool AnnotationDialog::eventFilter(QObject *obj, QEvent *event)
                         if (dlg.exec() == QDialog::Accepted) {
                             b.value = dlg.textValue().trimmed();
                         } else {
-                            // 用户取消 → 不添加这个框
                             return true;
                         }
                     }
