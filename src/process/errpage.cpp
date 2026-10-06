@@ -149,6 +149,13 @@ bool fuzzyMatchPage(int recognized, int correctPage)
     const QString recStr = QString::number(recognized);
     const QString corrStr = QString::number(correctPage);
 
+    // ★ 末位相同 → 视为正确页码（防 ONNX 首/中位误识）
+    if (!recStr.isEmpty() && !corrStr.isEmpty() &&
+        recStr.right(1) == corrStr.right(1)) {
+        return true;
+    }
+
+    // 原有规则：前缀/后缀包含
     if (std::abs(recStr.length() - corrStr.length()) > 1) return false;
 
     if (corrStr.endsWith(recStr) || recStr.endsWith(corrStr)) return true;
