@@ -13,6 +13,8 @@ add_library(process STATIC
     errpage.cpp
     background.h
     background.cpp
+    onnx_ocr.h
+    onnx_ocr.cpp
 )
 
 target_include_directories(process PUBLIC
