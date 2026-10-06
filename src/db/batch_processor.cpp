@@ -384,17 +384,28 @@ QString BatchProcessor::relativeSubDir(const QString &inputPath) const
     if (rel.startsWith(QStringLiteral(".."))) return QString();
     if (QDir::isAbsolutePath(rel)) return QString();
 
+    // 去掉文件名部分（保留子目录）
     const int slash     = rel.lastIndexOf(QLatin1Char('/'));
     const int backslash = rel.lastIndexOf(QLatin1Char('\\'));
     const int idx = qMax(slash, backslash);
 
-    if (idx < 0) return QString();
+    QString subDir;
+    if (idx >= 0) {
+        subDir = rel.left(idx);
+        subDir.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        while (subDir.startsWith(QLatin1Char('/'))) subDir.remove(0, 1);
+        while (subDir.endsWith(QLatin1Char('/')))   subDir.chop(1);
+    }
 
-    QString subDir = rel.left(idx);
-    subDir.replace(QLatin1Char('\\'), QLatin1Char('/'));
-
-    while (subDir.startsWith(QLatin1Char('/'))) subDir.remove(0, 1);
-    while (subDir.endsWith(QLatin1Char('/')))   subDir.chop(1);
+    // ★ 第一层：用户所选文件夹的名字
+    const QString rootName = QFileInfo(m_options.inputRootDir).fileName();
+    if (!rootName.isEmpty()) {
+        if (subDir.isEmpty()) {
+            subDir = rootName;
+        } else {
+            subDir = rootName + QLatin1Char('/') + subDir;
+        }
+    }
 
     return subDir;
 }
