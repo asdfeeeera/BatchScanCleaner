@@ -1,4 +1,5 @@
 ﻿#include "errpage.h"
+#include "onnx_ocr.h"
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -385,7 +386,18 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
                                      QString &outText,
                                      double &outConfidence)
-{
+{    
+       // ★ 先试 ONNX 模型（比 Tesseract 准）
+    {
+        process::OnnxOcr &ocr = process::OnnxOcr::instance();
+        process::OnnxOcr::Result r = ocr.recognize(digitImage);
+        if (r.ok) {
+            outText = r.text;
+            outConfidence = r.confidence;
+            return r.number;
+        }
+    }
+
     outText.clear();
     outConfidence = 0.0;
 
