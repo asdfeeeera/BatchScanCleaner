@@ -41,6 +41,7 @@ const char *kCategoryWrongPage    = "wrong_page";
 const char *kCategoryBleedThrough = "bleed_through";
 const char *kCategoryBindingHole  = "binding_hole";
 const char *kCategoryStain        = "stain";
+const char *kCategoryCorrectPage  = "correct_page";
 
 // ============================================================
 // 构造
@@ -73,7 +74,6 @@ AnnotationDialog::~AnnotationDialog() = default;
 // ============================================================
 void AnnotationDialog::setupUi()
 {
-    // ---------- 场景与视图 ----------
     m_scene = new QGraphicsScene(this);
     m_view = new QGraphicsView(m_scene, this);
     m_view->setRenderHint(QPainter::SmoothPixmapTransform);
@@ -83,7 +83,6 @@ void AnnotationDialog::setupUi()
 
     m_view->viewport()->installEventFilter(this);
 
-    // ---------- 右侧：框列表 + 属性 ----------
     m_boxList = new QListWidget(this);
     connect(m_boxList, &QListWidget::itemSelectionChanged,
             this, &AnnotationDialog::onBoxListSelectionChanged);
@@ -97,6 +96,8 @@ void AnnotationDialog::setupUi()
                              QString::fromUtf8(kCategoryBindingHole));
     m_categoryCombo->addItem(QString::fromUtf8("顽固污渍"),
                              QString::fromUtf8(kCategoryStain));
+    m_categoryCombo->addItem(QString::fromUtf8("正确页码"),
+                             QString::fromUtf8(kCategoryCorrectPage));
 
     m_valueEdit = new QLineEdit(this);
     m_valueEdit->setPlaceholderText(
@@ -128,7 +129,6 @@ void AnnotationDialog::setupUi()
     rightWidget->setLayout(rightLayout);
     rightWidget->setMaximumWidth(320);
 
-    // ---------- 底部按钮 ----------
     m_prevBtn          = new QPushButton(QString::fromUtf8("← 上一张"), this);
     m_nextBtn          = new QPushButton(QString::fromUtf8("下一张 →"), this);
     m_nextUnlabeledBtn = new QPushButton(QString::fromUtf8("跳到未标注"), this);
@@ -150,7 +150,6 @@ void AnnotationDialog::setupUi()
     bottomLayout->addStretch();
     bottomLayout->addWidget(m_saveBtn);
 
-    // ---------- 顶部：文件名 + 状态 ----------
     m_imageNameLabel = new QLabel(QString::fromUtf8("（未加载）"), this);
     m_statusLabel = new QLabel(QString::fromUtf8("就绪"), this);
 
@@ -158,7 +157,6 @@ void AnnotationDialog::setupUi()
     topLayout->addWidget(m_imageNameLabel, 1);
     topLayout->addWidget(m_statusLabel);
 
-    // ---------- 主布局 ----------
     QHBoxLayout *centerLayout = new QHBoxLayout();
     centerLayout->addWidget(m_view, 1);
     centerLayout->addWidget(rightWidget);
@@ -213,7 +211,16 @@ void AnnotationDialog::setupUi()
         });
     }
 
-    // ★ ESC = 重置视图（还原缩放）
+    //   T = 正确页码（索引 4）
+    {
+        QShortcut *sc = new QShortcut(QKeySequence(Qt::Key_T), this);
+        sc->setContext(Qt::WindowShortcut);
+        connect(sc, &QShortcut::activated, this, [this]() {
+            m_categoryCombo->setCurrentIndex(4);
+        });
+    }
+
+    // ★ ESC = 重置视图
     {
         QShortcut *scReset = new QShortcut(QKeySequence(Qt::Key_Escape), this);
         scReset->setContext(Qt::WindowShortcut);
@@ -288,9 +295,6 @@ void AnnotationDialog::loadImageAt(int index)
     updateStatusLabel();
 }
 
-// ============================================================
-// 清空当前框
-// ============================================================
 void AnnotationDialog::clearBoxItems()
 {
     for (QGraphicsRectItem *item : m_boxItems) {
@@ -300,9 +304,6 @@ void AnnotationDialog::clearBoxItems()
     m_boxItems.clear();
 }
 
-// ============================================================
-// 创建矩形图元
-// ============================================================
 QGraphicsRectItem *AnnotationDialog::createBoxItem(const QRectF &rect,
                                                     bool selected) const
 {
@@ -315,9 +316,6 @@ QGraphicsRectItem *AnnotationDialog::createBoxItem(const QRectF &rect,
     return item;
 }
 
-// ============================================================
-// 把框数据加到场景
-// ============================================================
 void AnnotationDialog::addBoxToScene(const BoxData &data)
 {
     QGraphicsRectItem *item = createBoxItem(data.rect, false);
@@ -325,9 +323,6 @@ void AnnotationDialog::addBoxToScene(const BoxData &data)
     m_boxItems.append(item);
 }
 
-// ============================================================
-// 刷新右侧列表
-// ============================================================
 void AnnotationDialog::refreshBoxList()
 {
     m_boxList->clear();
@@ -344,44 +339,33 @@ void AnnotationDialog::refreshBoxList()
     }
 }
 
-// ============================================================
-// 更新状态
-// ============================================================
 void AnnotationDialog::updateStatusLabel()
 {
     m_statusLabel->setText(
         QString::fromUtf8("本图框数：%1").arg(m_currentBoxes.size()));
 }
 
-// ============================================================
-// 事件过滤器：滚轮缩放 / 中键平移 / 左键画框
-// ============================================================
 bool AnnotationDialog::eventFilter(QObject *obj, QEvent *event)
 {
     if (obj != m_view->viewport()) {
         return QDialog::eventFilter(obj, event);
     }
 
-    // ---------- 滚轮缩放 ----------
     if (event->type() == QEvent::Wheel) {
         if (!m_pixmapItem) return true;
         QWheelEvent *we = static_cast<QWheelEvent*>(event);
-
         const double factor = (we->angleDelta().y() > 0)
                               ? 1.15
                               : 1.0 / 1.15;
-
         m_view->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
         m_view->scale(factor, factor);
         m_view->setTransformationAnchor(QGraphicsView::AnchorViewCenter);
         return true;
     }
 
-    // ---------- 鼠标事件 ----------
     if (event->type() == QEvent::MouseButtonPress) {
         QMouseEvent *me = static_cast<QMouseEvent*>(event);
 
-        // 中键：开始平移
         if (me->button() == Qt::MiddleButton) {
             m_panning = true;
             m_panStart = me->pos();
@@ -389,7 +373,6 @@ bool AnnotationDialog::eventFilter(QObject *obj, QEvent *event)
             return true;
         }
 
-        // 左键：开始画框
         if (me->button() == Qt::LeftButton && m_pixmapItem) {
             m_drawStart = m_view->mapToScene(me->pos());
             m_drawing = true;
@@ -411,11 +394,9 @@ bool AnnotationDialog::eventFilter(QObject *obj, QEvent *event)
     else if (event->type() == QEvent::MouseMove) {
         QMouseEvent *me = static_cast<QMouseEvent*>(event);
 
-        // 平移中
         if (m_panning) {
             const QPoint delta = me->pos() - m_panStart;
             m_panStart = me->pos();
-
             QScrollBar *hBar = m_view->horizontalScrollBar();
             QScrollBar *vBar = m_view->verticalScrollBar();
             hBar->setValue(hBar->value() - delta.x());
@@ -423,7 +404,6 @@ bool AnnotationDialog::eventFilter(QObject *obj, QEvent *event)
             return true;
         }
 
-        // 画框中
         if (m_drawing && m_tempRect) {
             const QPointF cur = m_view->mapToScene(me->pos());
             QRectF r(m_drawStart, cur);
@@ -435,14 +415,12 @@ bool AnnotationDialog::eventFilter(QObject *obj, QEvent *event)
     else if (event->type() == QEvent::MouseButtonRelease) {
         QMouseEvent *me = static_cast<QMouseEvent*>(event);
 
-        // 中键松开：结束平移
         if (me->button() == Qt::MiddleButton && m_panning) {
             m_panning = false;
             m_view->viewport()->unsetCursor();
             return true;
         }
 
-        // 左键松开：完成画框
         if (me->button() == Qt::LeftButton && m_drawing) {
             m_drawing = false;
 
@@ -493,9 +471,6 @@ bool AnnotationDialog::eventFilter(QObject *obj, QEvent *event)
     return QDialog::eventFilter(obj, event);
 }
 
-// ============================================================
-// 槽：上一张 / 下一张 / 跳到未标注
-// ============================================================
 void AnnotationDialog::onPrevImage()
 {
     if (m_currentIndex <= 0) return;
@@ -521,9 +496,6 @@ void AnnotationDialog::onNextUnlabeled()
         QString::fromUtf8("后面没有未标注的图片了。"));
 }
 
-// ============================================================
-// 槽：保存
-// ============================================================
 void AnnotationDialog::onSaveCurrent()
 {
     if (m_currentIndex < 0) return;
@@ -536,9 +508,6 @@ void AnnotationDialog::onSaveCurrent()
     }
 }
 
-// ============================================================
-// 槽：删除选中框
-// ============================================================
 void AnnotationDialog::onDeleteSelectedBox()
 {
     const int row = m_boxList->currentRow();
@@ -558,9 +527,6 @@ void AnnotationDialog::onDeleteSelectedBox()
     updateStatusLabel();
 }
 
-// ============================================================
-// 槽：列表选中变化
-// ============================================================
 void AnnotationDialog::onBoxListSelectionChanged()
 {
     const int row = m_boxList->currentRow();
@@ -583,9 +549,6 @@ void AnnotationDialog::onBoxListSelectionChanged()
     }
 }
 
-// ============================================================
-// 槽：应用属性修改
-// ============================================================
 void AnnotationDialog::onApplyAttributes()
 {
     const int row = m_boxList->currentRow();
@@ -599,9 +562,6 @@ void AnnotationDialog::onApplyAttributes()
     m_boxList->setCurrentRow(row);
 }
 
-// ============================================================
-// JSON 路径
-// ============================================================
 QString AnnotationDialog::jsonPathForImage(const QString &imagePath) const
 {
     const QFileInfo fi(imagePath);
@@ -625,9 +585,6 @@ QString AnnotationDialog::jsonPathForImage(const QString &imagePath) const
     return QDir(m_outputRootDir).filePath(relJson);
 }
 
-// ============================================================
-// 保存
-// ============================================================
 bool AnnotationDialog::saveToJson() const
 {
     if (m_currentIndex < 0 || m_currentIndex >= m_imageFiles.size()) return false;
@@ -673,9 +630,6 @@ bool AnnotationDialog::saveToJson() const
     return true;
 }
 
-// ============================================================
-// 加载
-// ============================================================
 bool AnnotationDialog::loadFromJson(QList<BoxData> &outBoxes) const
 {
     outBoxes.clear();
@@ -712,9 +666,6 @@ bool AnnotationDialog::loadFromJson(QList<BoxData> &outBoxes) const
     return true;
 }
 
-// ============================================================
-// 第一个未标注的索引
-// ============================================================
 int AnnotationDialog::firstUnlabeledIndex() const
 {
     for (int i = 0; i < m_imageFiles.size(); ++i) {
@@ -724,9 +675,6 @@ int AnnotationDialog::firstUnlabeledIndex() const
     return -1;
 }
 
-// ============================================================
-// 居中
-// ============================================================
 void AnnotationDialog::moveToCenter()
 {
     QScreen *screen = QGuiApplication::primaryScreen();

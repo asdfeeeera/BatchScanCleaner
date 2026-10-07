@@ -36,6 +36,7 @@ extern const char *kCategoryWrongPage;    // "wrong_page"     错误页码
 extern const char *kCategoryBleedThrough; // "bleed_through"  透印错码
 extern const char *kCategoryBindingHole;  // "binding_hole"   装订孔
 extern const char *kCategoryStain;        // "stain"          顽固污渍
+extern const char *kCategoryCorrectPage;  // "correct_page" 正确页码
 
 // ============================================================
 // 通用文档异常标注窗口
