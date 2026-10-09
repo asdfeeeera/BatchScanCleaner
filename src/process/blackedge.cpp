@@ -170,13 +170,24 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
     const double paperGray = estimatePaperGray(gray, options);
     result.paperGray = paperGray;
 
-    const double darkThreshold = paperGray * options.darkRatio;
+    double darkThreshold = paperGray * options.darkRatio;
+    // ★ 黑边必须是"绝对黑"：如果算出来的阈值超过 100，说明阈值太松
+    //   真正的扫描黑边灰度通常 < 80，浅灰阴影（复印/扫描）会被误判
+    if (darkThreshold > 100.0) darkThreshold = 100.0;
     result.darkThreshold = darkThreshold;
 
     const int top    = scanTop(gray, darkThreshold, options);
     const int bottom = scanBottom(gray, darkThreshold, options);
     const int left   = scanLeft(gray, darkThreshold, options);
     const int right  = scanRight(gray, darkThreshold, options);
+
+    // ★ 黑边不可能超过页面尺寸的 10%，超过一定是误判（浅灰阴影）
+    const int maxTopBottom = static_cast<int>(H * 0.10);
+    const int maxLeftRight = static_cast<int>(W * 0.10);
+    if (top > maxTopBottom)       top = 0;
+    if (bottom > maxTopBottom)    bottom = 0;
+    if (left > maxLeftRight)      left = 0;
+    if (right > maxLeftRight)     right = 0;
 
     result.topPixels = top;
     result.bottomPixels = bottom;
