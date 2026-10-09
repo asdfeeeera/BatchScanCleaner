@@ -395,12 +395,7 @@ void eraseBlock(cv::Mat &dst,
     roiDst.setTo(white, keep);
 }
 
-    cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
-    cv::dilate(keep, keep, k);
-
-    cv::Mat roiDst = dst(r);
-    roiDst.setTo(white, keep);
-}
+    
 
 } // namespace
 
