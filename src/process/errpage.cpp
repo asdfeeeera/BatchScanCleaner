@@ -140,7 +140,7 @@ QString locateTesseract(const QString &hint)
     return QString();
 }
 
-// ★ 修改①：只允许前缀/后缀包含，避免 12 被误判为匹配 24
+// ★ 修改①：宽松匹配（末位相同 / 数字集合相同 / 前后缀包含）
 bool fuzzyMatchPage(int recognized, int correctPage)
 {
     if (recognized < 0 || correctPage < 0) return false;
@@ -149,15 +149,35 @@ bool fuzzyMatchPage(int recognized, int correctPage)
     const QString recStr = QString::number(recognized);
     const QString corrStr = QString::number(correctPage);
 
-    // ★ 末位相同 → 视为正确页码（防 ONNX 首/中位误识）
+    // 规则 1：末位相同 → 视为正确页码
     if (!recStr.isEmpty() && !corrStr.isEmpty() &&
         recStr.right(1) == corrStr.right(1)) {
         return true;
     }
 
-    // 原有规则：前缀/后缀包含
-    if (std::abs(recStr.length() - corrStr.length()) > 1) return false;
+    // 规则 2：去掉前导 0 后，数字集合相同 → 视为正确页码
+    //   处理 "017" vs "71" 这种位置调换
+    {
+        QString recNoZero = recStr;
+        QString corrNoZero = corrStr;
+        while (recNoZero.startsWith(QLatin1Char('0')) && recNoZero.length() > 1) {
+            recNoZero.remove(0, 1);
+        }
+        while (corrNoZero.startsWith(QLatin1Char('0')) && corrNoZero.length() > 1) {
+            corrNoZero.remove(0, 1);
+        }
 
+        if (recNoZero.length() == corrNoZero.length()) {
+            QString recSorted = recNoZero;
+            QString corrSorted = corrNoZero;
+            std::sort(recSorted.begin(), recSorted.end());
+            std::sort(corrSorted.begin(), corrSorted.end());
+            if (recSorted == corrSorted) return true;
+        }
+    }
+
+    // 规则 3：前缀/后缀包含
+    if (std::abs(recStr.length() - corrStr.length()) > 1) return false;
     if (corrStr.endsWith(recStr) || recStr.endsWith(corrStr)) return true;
     if (corrStr.startsWith(recStr) || recStr.startsWith(corrStr)) return true;
 
@@ -799,7 +819,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         detectDigitsInRegion(gray, region, options, allItems);
     }
 
-    const double CORNER_RATIO = 0.25;
+    const double CORNER_RATIO = 0.08;
     const double MIN_H_RATIO  = 0.013;
 
     std::vector<PageNumberItem> candidates;
