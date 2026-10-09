@@ -58,8 +58,8 @@ std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
         const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
         const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
 
-        if (h < 15 || h > 250) continue;
-        if (w < 8 || w > 350) continue;
+        if (h < 15 || h > 180) continue;
+        if (w < 8 || w > 300) continue;
         if (area < 40) continue;
 
         const double aspect = static_cast<double>(h) / std::max(1, w);
@@ -877,7 +877,9 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             continue;
         }
 
-        if (item.isCrossed && item.recognizedNumber >= 1) {
+        const double kMinConf = 0.5;
+        if (item.isCrossed && item.recognizedNumber >= 10
+            && item.confidence >= kMinConf) {
             eraseBlock(dst, gray, item.boundingBox, white);
             ++result.crossedRemoved;
             writeDiag(QString::fromUtf8("  → 识别=%1，划线=是，涂白")
