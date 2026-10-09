@@ -74,22 +74,54 @@ BackgroundResult Background::whiten(const cv::Mat &src,
     }
 
     // Content mask: darker than paperGray * contentRatio
-        const double contentThreshold = paperGray * options.contentRatio;
+    const double contentThreshold = paperGray * options.contentRatio;
 
     cv::Mat contentMask;
     cv::threshold(gray, contentMask, contentThreshold, 255, cv::THRESH_BINARY_INV);
 
-    // ★ 保护表格线：灰度低于 paperGray * 0.85 的像素不当背景
-    //   原因：表格线通常不是纯黑，灰度在 paperGray 的 70%~85% 之间，
-    //   如果不额外保护，会被当成"泛黄背景"一起涂白，导致线条变细。
+    // ============================================================
+    // ★ 形态学保护表格线（无论灰度多少）
+    //   思路：
+    //   1. 二值化（灰度 < paperGray*0.9 算候选）
+    //   2. 闭运算连接断线
+    //   3. 用 (40,1) 检测横线、(1,40) 检测竖线
+    //   4. 膨胀 3 像素保护线边缘
+    //   5. 加入 contentMask → 保护
+    // ============================================================
     {
-        const double lineProtectThreshold = paperGray * 0.85;
-        if (lineProtectThreshold > contentThreshold) {
-            cv::Mat lineMask;
-            cv::threshold(gray, lineMask, lineProtectThreshold, 255,
-                          cv::THRESH_BINARY_INV);
-            cv::bitwise_or(contentMask, lineMask, contentMask);
-        }
+        cv::Mat darkBin;
+        const double darkThr = paperGray * 0.9;
+        cv::threshold(gray, darkBin, darkThr, 255, cv::THRESH_BINARY_INV);
+
+        // 闭运算连接断线（防扫描/压缩导致线断开）
+        cv::Mat closeKernel = cv::getStructuringElement(
+            cv::MORPH_RECT, cv::Size(5, 5));
+        cv::Mat connected;
+        cv::morphologyEx(darkBin, connected, cv::MORPH_CLOSE, closeKernel);
+
+        // 检测横线（宽度 >= 40 像素）
+        cv::Mat hKernel = cv::getStructuringElement(
+            cv::MORPH_RECT, cv::Size(40, 1));
+        cv::Mat hLines;
+        cv::morphologyEx(connected, hLines, cv::MORPH_OPEN, hKernel);
+
+        // 检测竖线（高度 >= 40 像素）
+        cv::Mat vKernel = cv::getStructuringElement(
+            cv::MORPH_RECT, cv::Size(1, 40));
+        cv::Mat vLines;
+        cv::morphologyEx(connected, vLines, cv::MORPH_OPEN, vKernel);
+
+        // 合并横竖线
+        cv::Mat linesMask;
+        cv::bitwise_or(hLines, vLines, linesMask);
+
+        // 膨胀 3 像素保护线边缘
+        cv::Mat dilateKernel = cv::getStructuringElement(
+            cv::MORPH_RECT, cv::Size(3, 3));
+        cv::dilate(linesMask, linesMask, dilateKernel);
+
+        // 加入 contentMask（保护）
+        cv::bitwise_or(contentMask, linesMask, contentMask);
     }
 
     // Protect colored content (red stamps, blue signatures)
