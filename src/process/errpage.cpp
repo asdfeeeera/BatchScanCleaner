@@ -347,10 +347,10 @@ void eraseBlock(cv::Mat &dst,
                 const cv::Scalar &white)
 {
     cv::Rect r = box;
-    r.x -= 3;
-    r.y -= 3;
-    r.width += 6;
-    r.height += 6;
+    r.x -= 2;
+    r.y -= 2;
+    r.width += 4;
+    r.height += 4;
     r &= cv::Rect(0, 0, dst.cols, dst.rows);
     if (r.width <= 0 || r.height <= 0) return;
 
@@ -362,8 +362,10 @@ void eraseBlock(cv::Mat &dst,
     const int n = cv::connectedComponentsWithStats(bin, labels, stats,
                                                      centroids, 8, CV_32S);
 
-    const int boxLeft = 3;
+    const int boxLeft = 2;
+    const int boxTop = 2;
     const int boxRight = boxLeft + box.width;
+    const int boxBottom = boxTop + box.height;
 
     cv::Mat keep = cv::Mat::zeros(bin.size(), CV_8UC1);
     for (int i = 1; i < n; ++i) {
@@ -371,14 +373,27 @@ void eraseBlock(cv::Mat &dst,
         if (area < 10) continue;
 
         const int cLeft = stats.at<int>(i, cv::CC_STAT_LEFT);
+        const int cTop = stats.at<int>(i, cv::CC_STAT_TOP);
         const int cWidth = stats.at<int>(i, cv::CC_STAT_WIDTH);
+        const int cHeight = stats.at<int>(i, cv::CC_STAT_HEIGHT);
         const int cRight = cLeft + cWidth;
+        const int cBottom = cTop + cHeight;
 
+        // ★ 整个连通域必须完全在 box 内（左右上下都检查）
         if (cLeft < boxLeft - 2) continue;
         if (cRight > boxRight + 2) continue;
+        if (cTop < boxTop - 2) continue;
+        if (cBottom > boxBottom + 2) continue;
 
         keep.setTo(255, labels == i);
     }
+
+    cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+    cv::dilate(keep, keep, k);
+
+    cv::Mat roiDst = dst(r);
+    roiDst.setTo(white, keep);
+}
 
     cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
     cv::dilate(keep, keep, k);
