@@ -814,7 +814,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         detectDigitsInRegion(gray, region, options, allItems);
     }
 
-    const double CORNER_RATIO = 0.02;
+    const double CORNER_RATIO = 0.20;
     const double MIN_H_RATIO  = 0.013;
 
     std::vector<PageNumberItem> candidates;
