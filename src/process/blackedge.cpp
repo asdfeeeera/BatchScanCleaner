@@ -176,10 +176,10 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
     if (darkThreshold > 100.0) darkThreshold = 100.0;
     result.darkThreshold = darkThreshold;
 
-    const int top    = scanTop(gray, darkThreshold, options);
-    const int bottom = scanBottom(gray, darkThreshold, options);
-    const int left   = scanLeft(gray, darkThreshold, options);
-    const int right  = scanRight(gray, darkThreshold, options);
+    int top    = scanTop(gray, darkThreshold, options);
+    int bottom = scanBottom(gray, darkThreshold, options);
+    int left   = scanLeft(gray, darkThreshold, options);
+    int right  = scanRight(gray, darkThreshold, options);
 
     // ★ 黑边不可能超过页面尺寸的 10%，超过一定是误判（浅灰阴影）
     const int maxTopBottom = static_cast<int>(H * 0.10);
