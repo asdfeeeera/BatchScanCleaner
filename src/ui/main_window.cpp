@@ -1465,9 +1465,16 @@ void MainWindow::applyAcceptedYellowBlobs()
     }
 
     for (const analyze::PendingItem &item : allItems) {
-        if (item.type != analyze::PendingType::YellowBlob) continue;
+        // ★ 只处理"已接受"的项
         if (item.decision != analyze::PendingDecision::Accepted) continue;
+        // ★ 只处理当前图片
         if (item.sourceImagePath != m_currentImagePath) continue;
+
+        // ★ 支持 2 种类型：黄色污渍 + 错误页码
+        if (item.type != analyze::PendingType::YellowBlob &&
+            item.type != analyze::PendingType::WrongPageNumber) {
+            continue;
+        }
 
         cv::Rect r = item.boundingBox &
             cv::Rect(0, 0, m_currentMat.cols, m_currentMat.rows);
@@ -1480,7 +1487,7 @@ void MainWindow::applyAcceptedYellowBlobs()
     if (applied > 0) {
         showMatOnPreview(m_currentMat);
         statusBar()->showMessage(
-            QString::fromUtf8("已处理 %1 处黄色污渍").arg(applied));
+            QString::fromUtf8("已处理 %1 处待确认项").arg(applied));
     }
 }
 
