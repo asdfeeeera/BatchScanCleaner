@@ -74,10 +74,23 @@ BackgroundResult Background::whiten(const cv::Mat &src,
     }
 
     // Content mask: darker than paperGray * contentRatio
-    const double contentThreshold = paperGray * options.contentRatio;
+        const double contentThreshold = paperGray * options.contentRatio;
 
     cv::Mat contentMask;
     cv::threshold(gray, contentMask, contentThreshold, 255, cv::THRESH_BINARY_INV);
+
+    // ★ 保护表格线：灰度低于 paperGray * 0.85 的像素不当背景
+    //   原因：表格线通常不是纯黑，灰度在 paperGray 的 70%~85% 之间，
+    //   如果不额外保护，会被当成"泛黄背景"一起涂白，导致线条变细。
+    {
+        const double lineProtectThreshold = paperGray * 0.85;
+        if (lineProtectThreshold > contentThreshold) {
+            cv::Mat lineMask;
+            cv::threshold(gray, lineMask, lineProtectThreshold, 255,
+                          cv::THRESH_BINARY_INV);
+            cv::bitwise_or(contentMask, lineMask, contentMask);
+        }
+    }
 
     // Protect colored content (red stamps, blue signatures)
     if (options.protectColor && channels >= 3) {
