@@ -149,11 +149,6 @@ bool fuzzyMatchPage(int recognized, int correctPage)
     const QString recStr = QString::number(recognized);
     const QString corrStr = QString::number(correctPage);
 
-    // 规则 1：末位相同 → 视为正确页码
-    if (!recStr.isEmpty() && !corrStr.isEmpty() &&
-        recStr.right(1) == corrStr.right(1)) {
-        return true;
-    }
 
     // 规则 2：去掉前导 0 后，数字集合相同 → 视为正确页码
     //   处理 "017" vs "71" 这种位置调换
