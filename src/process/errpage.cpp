@@ -877,7 +877,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             continue;
         }
 
-        const double kMinConf = 0.5;
+        const double kMinConf = 0.85;
         if (item.isCrossed && item.recognizedNumber >= 10
             && item.confidence >= kMinConf) {
             eraseBlock(dst, gray, item.boundingBox, white);
