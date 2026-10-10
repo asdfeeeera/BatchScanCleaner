@@ -199,6 +199,8 @@ QByteArray PaddleOcr::readOneJsonLine(int timeoutMs)
 
 // ============================================================
 // 解析 JSON
+//   ★ PaddleOCR-json v1.4.1 的置信度字段名是 "score"，
+//     这里同时兼容 "score" 与 "confidence"，优先用 "score"
 // ============================================================
 PaddleOcrResult PaddleOcr::parseResult(const QByteArray &jsonLine)
 {
@@ -239,7 +241,14 @@ PaddleOcrResult PaddleOcr::parseResult(const QByteArray &jsonLine)
 
         PaddleOcrBox box;
         box.text = obj.value(QStringLiteral("text")).toString();
-        box.confidence = obj.value(QStringLiteral("confidence")).toDouble();
+
+        // ★ 关键修复：PaddleOCR-json 用的是 "score"，不是 "confidence"
+        double conf = obj.value(QStringLiteral("score")).toDouble();
+        if (conf <= 0.0) {
+            // 兼容旧版本 / 其他命名
+            conf = obj.value(QStringLiteral("confidence")).toDouble();
+        }
+        box.confidence = conf;
 
         const QJsonArray boxArr = obj.value(QStringLiteral("box")).toArray();
         if (boxArr.size() >= 4) {
@@ -258,7 +267,8 @@ PaddleOcrResult PaddleOcr::parseResult(const QByteArray &jsonLine)
         result.boxes.append(box);
         allText += box.text;
 
-        if (box.confidence < result.confidence) {
+        // 取最小置信度作为整体置信度（只要有一个块不确定就保守处理）
+        if (box.confidence > 0.0 && box.confidence < result.confidence) {
             result.confidence = box.confidence;
         }
     }
