@@ -1,5 +1,10 @@
 ﻿#include "errpage.h"
 #include "onnx_ocr.h"
+#include "paddle_ocr.h"
+#include <QFileInfo>
+#include <QCoreApplication>
+#include <QMutex>
+#include <QMutexLocker>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -39,6 +44,37 @@ int ErrPage::parseCorrectPage(const QString &sourcePath)
 }
 
 namespace {
+
+// ★ PaddleOCR 引擎（单例，懒加载）
+static process::PaddleOcr *g_paddleOcr = nullptr;
+static QMutex             g_paddleMutex;
+
+static process::PaddleOcr *getPaddleOcr()
+{
+    QMutexLocker locker(&g_paddleMutex);
+
+    if (g_paddleOcr && g_paddleOcr->isReady()) {
+        return g_paddleOcr;
+    }
+    if (g_paddleOcr) {
+        delete g_paddleOcr;
+        g_paddleOcr = nullptr;
+    }
+
+    const QString exePath = QCoreApplication::applicationDirPath()
+        + QStringLiteral("/PaddleOCR-json/PaddleOCR-json.exe");
+    if (!QFileInfo::exists(exePath)) {
+        return nullptr;   // 没装 PaddleOCR 就跳过
+    }
+
+    process::PaddleOcr *ocr = new process::PaddleOcr();
+    if (!ocr->start(exePath)) {
+        delete ocr;
+        return nullptr;
+    }
+    g_paddleOcr = ocr;
+    return g_paddleOcr;
+}
 
 std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
                                       const ErrPageOptions &options)
@@ -418,7 +454,17 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
                                      QString &outText,
                                      double &outConfidence)
-{    
+{ 
+    // ★ 优先 PaddleOCR（准确率最高，失败才退 ONNX）
+    if (process::PaddleOcr *pocr = getPaddleOcr()) {
+        const process::PaddleOcrResult pr = pocr->recognize(digitImage);
+        if (pr.ok && !pr.text.isEmpty()) {
+            outText = pr.text;
+            outConfidence = pr.confidence;
+            return pr.number;
+        }
+    }
+   
        // ★ 先试 ONNX 模型（比 Tesseract 准）
     {
         process::OnnxOcr &ocr = process::OnnxOcr::instance();
