@@ -169,8 +169,8 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
     result.paperGray = paperGray;
 
     // ★ 黑边必须是"绝对黑"：只用 0.55，且上限 60
-    double darkThreshold = paperGray * 0.55;
-    if (darkThreshold > 60.0) darkThreshold = 60.0;
+    double darkThreshold = paperGray * 0.65;
+    if (darkThreshold > 120.0) darkThreshold = 120.0;
     result.darkThreshold = darkThreshold;
 
     int top    = scanTop(gray, darkThreshold, options);
