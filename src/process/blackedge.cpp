@@ -34,15 +34,12 @@ double BlackEdge::estimatePaperGray(const cv::Mat &gray,
 
 namespace {
 
-// ============================================================
-// 上下扫描：从顶部（或底部）按行采样，返回"脏行"数
-// ============================================================
 int countDirtyRows(const cv::Mat &gray, int paperGray,
                    bool fromTop, int maxScan)
 {
     const int W = gray.cols;
     const int H = gray.rows;
-    const int whiteThr = paperGray - 25;   // ★ 降低阈值到 -25
+    const int whiteThr = paperGray - 10;   // ★ 阈值 -10（更敏感）
     const int minWhiteRun = 3;
 
     int whiteRun = 0;
@@ -54,7 +51,6 @@ int countDirtyRows(const cv::Mat &gray, int paperGray,
         else         y = H - 1 - i;
         if (y < 0 || y >= H) break;
 
-        // 按行采样（每 4 像素取 1）
         std::vector<uchar> vals;
         vals.reserve(W / 4 + 1);
         const uchar *row = gray.ptr<uchar>(y);
@@ -63,7 +59,6 @@ int countDirtyRows(const cv::Mat &gray, int paperGray,
         }
         if (vals.empty()) break;
 
-        // 中位数
         const size_t mid = vals.size() / 2;
         std::nth_element(vals.begin(), vals.begin() + mid, vals.end());
         const uchar median = vals[mid];
@@ -83,15 +78,12 @@ int countDirtyRows(const cv::Mat &gray, int paperGray,
     return dirtyEnd;
 }
 
-// ============================================================
-// 左右扫描：从左侧（或右侧）按列采样，返回"脏列"数
-// ============================================================
 int countDirtyCols(const cv::Mat &gray, int paperGray,
                    bool fromLeft, int maxScan)
 {
     const int W = gray.cols;
     const int H = gray.rows;
-    const int whiteThr = paperGray - 25;
+    const int whiteThr = paperGray - 10;   // ★ 阈值 -10
     const int minWhiteRun = 3;
 
     int whiteRun = 0;
@@ -200,12 +192,12 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
 
     const double paperGray = estimatePaperGray(gray, options);
     result.paperGray = paperGray;
-    result.darkThreshold = paperGray - 25;
+    result.darkThreshold = paperGray - 10;
 
-    int top    = scanTop(gray, paperGray - 25, options);
-    int bottom = scanBottom(gray, paperGray - 25, options);
-    int left   = scanLeft(gray, paperGray - 25, options);
-    int right  = scanRight(gray, paperGray - 25, options);
+    int top    = scanTop(gray, paperGray - 10, options);
+    int bottom = scanBottom(gray, paperGray - 10, options);
+    int left   = scanLeft(gray, paperGray - 10, options);
+    int right  = scanRight(gray, paperGray - 10, options);
 
     const int maxTopBottom = static_cast<int>(H * 0.05);
     const int maxLeftRight = static_cast<int>(W * 0.05);
