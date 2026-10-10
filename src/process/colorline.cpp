@@ -43,25 +43,33 @@ void ColorLine::buildColorMask(const cv::Mat &bgr,
 namespace {
 
 const int kMinColorDiff = 6;    // 像素级色度差阈值
-const int kMinBrightness = 120; // 像素级亮度阈值
+const int kMinBrightness = 120; // 彩色像素的最小亮度（防阴影误判）
+const int kMaxDarkBrightness = 100;  // 黑色像素的最大亮度
 
-// 判断一个像素是否"明显彩色"
-inline bool isPixelColorful(int b, int g, int r)
+// ★ 判断一个像素是否属于"故障线候选"：明显彩色 或 明显暗色
+inline bool isPixelInk(int b, int g, int r)
 {
     const int mx = std::max({b, g, r});
     const int mn = std::min({b, g, r});
-    if (mx - mn < kMinColorDiff) return false;
     const int bright = (b + g + r) / 3;
-    return bright >= kMinBrightness;
+
+    // 1. 彩色像素（色度差大 + 亮度够）
+    if (mx - mn >= kMinColorDiff && bright >= kMinBrightness) {
+        return true;
+    }
+    // 2. 黑色像素（亮度低）
+    if (bright < kMaxDarkBrightness) {
+        return true;
+    }
+    return false;
 }
 
-// 分析一行：返回 (彩色像素占比, 跨度占页面宽度比例)
-// 跨度为最右彩色像素 - 最左彩色像素
+// 分析一行：返回 (故障像素占比, 跨度占页面宽度比例)
 struct RowAnalysis
 {
-    double colorRatio = 0.0;
+    double inkRatio = 0.0;
     double spanRatio = 0.0;
-    int colorCount = 0;
+    int inkCount = 0;
 };
 
 RowAnalysis analyzeRow(const cv::Mat &B, const cv::Mat &G, const cv::Mat &R,
@@ -79,14 +87,14 @@ RowAnalysis analyzeRow(const cv::Mat &B, const cv::Mat &G, const cv::Mat &R,
     int lastX = -1;
 
     for (int x = x0; x < x1; ++x) {
-        if (isPixelColorful(bRow[x], gRow[x], rRow[x])) {
+        if (isPixelInk(bRow[x], gRow[x], rRow[x])) {
             if (firstX < 0) firstX = x;
             lastX = x;
-            ++ra.colorCount;
+            ++ra.inkCount;
         }
     }
 
-    ra.colorRatio = static_cast<double>(ra.colorCount) / width;
+    ra.inkRatio = static_cast<double>(ra.inkCount) / width;
     if (firstX >= 0 && lastX >= firstX) {
         const int span = lastX - firstX + 1;
         ra.spanRatio = static_cast<double>(span) / width;
@@ -98,9 +106,9 @@ RowAnalysis analyzeRow(const cv::Mat &B, const cv::Mat &G, const cv::Mat &R,
 
 struct ColAnalysis
 {
-    double colorRatio = 0.0;
+    double inkRatio = 0.0;
     double spanRatio = 0.0;
-    int colorCount = 0;
+    int inkCount = 0;
 };
 
 ColAnalysis analyzeCol(const cv::Mat &B, const cv::Mat &G, const cv::Mat &R,
@@ -117,14 +125,14 @@ ColAnalysis analyzeCol(const cv::Mat &B, const cv::Mat &G, const cv::Mat &R,
         const int b = B.at<uchar>(y, x);
         const int g = G.at<uchar>(y, x);
         const int r = R.at<uchar>(y, x);
-        if (isPixelColorful(b, g, r)) {
+        if (isPixelInk(b, g, r)) {
             if (firstY < 0) firstY = y;
             lastY = y;
-            ++ca.colorCount;
+            ++ca.inkCount;
         }
     }
 
-    ca.colorRatio = static_cast<double>(ca.colorCount) / height;
+    ca.inkRatio = static_cast<double>(ca.inkCount) / height;
     if (firstY >= 0 && lastY >= firstY) {
         const int span = lastY - firstY + 1;
         ca.spanRatio = static_cast<double>(span) / height;
@@ -207,16 +215,14 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
     for (int y = y0; y < y1; ++y) {
         const RowAnalysis ra = analyzeRow(ch[0], ch[1], ch[2], y, x0, x1);
 
-        // 关键过滤：
-        // 1. 彩色像素占整行比例 >= 20%（有足够彩色）
-        // 2. 跨度 >= 页面宽度 80%（贯穿整页）
-        if (ra.colorRatio >= 0.20 && ra.spanRatio >= 0.80) {
+        // ★ 判定：跨度 >= 95%（贯穿整页）
+        //   故障线像素占比 >= 20%（避免空白行被误判）
+        if (ra.inkRatio >= 0.20 && ra.spanRatio >= 0.95) {
             rowIsLine[y] = true;
-            rowBias[y] = ra.colorRatio;
+            rowBias[y] = ra.inkRatio;
         }
     }
 
-    // 合并相邻行
     int runStart = -1;
     for (int y = y0; y <= y1; ++y) {
         const bool isLine = (y < y1) && rowIsLine[y];
@@ -244,9 +250,9 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
     for (int x = x0; x < x1; ++x) {
         const ColAnalysis ca = analyzeCol(ch[0], ch[1], ch[2], x, y0, y1);
 
-        if (ca.colorRatio >= 0.20 && ca.spanRatio >= 0.80) {
+        if (ca.inkRatio >= 0.20 && ca.spanRatio >= 0.95) {
             colIsLine[x] = true;
-            colBias[x] = ca.colorRatio;
+            colBias[x] = ca.inkRatio;
         }
     }
 
@@ -270,7 +276,6 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
         }
     }
 
-    // 生成标记图
     cv::Mat marked = bgr.clone();
     for (const auto &item : result.items) {
         if (item.horizontal) {
@@ -305,7 +310,6 @@ ColorLineResult ColorLine::clear(const cv::Mat &src,
     const int W = bgr.cols;
     const int H = bgr.rows;
 
-    // 细线区域掩膜
     cv::Mat lineMask = cv::Mat::zeros(H, W, CV_8UC1);
     for (const auto &item : result.items) {
         if (item.horizontal) {
@@ -321,28 +325,26 @@ ColorLineResult ColorLine::clear(const cv::Mat &src,
         }
     }
 
-    // 像素级彩色判断：只清除"明显彩色且亮"的像素
-    // 文字（黑）色度差小、亮度低 → 不会被选中
+    // ★ 像素级"墨"判定：彩色 或 暗色
     std::vector<cv::Mat> ch;
     cv::split(bgr, ch);
 
-    cv::Mat pixelColorMask = cv::Mat::zeros(H, W, CV_8UC1);
+    cv::Mat pixelInkMask = cv::Mat::zeros(H, W, CV_8UC1);
     for (int y = 0; y < H; ++y) {
         const uchar *bRow = ch[0].ptr<uchar>(y);
         const uchar *gRow = ch[1].ptr<uchar>(y);
         const uchar *rRow = ch[2].ptr<uchar>(y);
-        uchar *mRow = pixelColorMask.ptr<uchar>(y);
+        uchar *mRow = pixelInkMask.ptr<uchar>(y);
         for (int x = 0; x < W; ++x) {
-            if (isPixelColorful(bRow[x], gRow[x], rRow[x])) {
+            if (isPixelInk(bRow[x], gRow[x], rRow[x])) {
                 mRow[x] = 255;
             }
         }
     }
 
     cv::Mat clearMask;
-    cv::bitwise_and(pixelColorMask, lineMask, clearMask);
+    cv::bitwise_and(pixelInkMask, lineMask, clearMask);
 
-    // 膨胀一点，让清除平滑
     cv::Mat dilateKernel = cv::getStructuringElement(
         cv::MORPH_ELLIPSE, cv::Size(3, 3));
     cv::dilate(clearMask, clearMask, dilateKernel);
