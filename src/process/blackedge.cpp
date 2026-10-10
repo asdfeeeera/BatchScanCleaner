@@ -34,7 +34,6 @@ double BlackEdge::estimatePaperGray(const cv::Mat &gray,
 
 namespace {
 
-// 从 (x, y) 沿 (dx, dy) 扫描，允许前面有 whiteTolerance 个白像素
 int scanEdgeDepth(const cv::Mat &gray, int x, int y, int dx, int dy,
                   int maxScan, double darkThreshold,
                   int whiteTolerance, int gapTolerance)
@@ -68,7 +67,6 @@ int scanEdgeDepth(const cv::Mat &gray, int x, int y, int dx, int dy,
     return (lastDark < 0) ? 0 : (lastDark + 1);
 }
 
-// 稳健最大值：剔除超过 maxAllowed 的异常值，剩余取最大
 int robustMax(std::vector<int> &v, int maxAllowed)
 {
     if (v.empty()) return 0;
@@ -170,10 +168,9 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
     const double paperGray = estimatePaperGray(gray, options);
     result.paperGray = paperGray;
 
-    double darkThreshold = paperGray * options.darkRatio;
-    // ★ 黑边必须是"绝对黑"：如果算出来的阈值超过 100，说明阈值太松
-    //   真正的扫描黑边灰度通常 < 80，浅灰阴影（复印/扫描）会被误判
-    if (darkThreshold > 100.0) darkThreshold = 100.0;
+    // ★ 黑边必须是"绝对黑"：只用 0.55，且上限 60
+    double darkThreshold = paperGray * 0.55;
+    if (darkThreshold > 60.0) darkThreshold = 60.0;
     result.darkThreshold = darkThreshold;
 
     int top    = scanTop(gray, darkThreshold, options);
@@ -181,9 +178,9 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
     int left   = scanLeft(gray, darkThreshold, options);
     int right  = scanRight(gray, darkThreshold, options);
 
-    // ★ 黑边不可能超过页面尺寸的 10%，超过一定是误判（浅灰阴影）
-    const int maxTopBottom = static_cast<int>(H * 0.10);
-    const int maxLeftRight = static_cast<int>(W * 0.10);
+    // ★ 黑边不可能超过页面尺寸的 5%，超过一定是误判
+    const int maxTopBottom = static_cast<int>(H * 0.05);
+    const int maxLeftRight = static_cast<int>(W * 0.05);
     if (top > maxTopBottom)       top = 0;
     if (bottom > maxTopBottom)    bottom = 0;
     if (left > maxLeftRight)      left = 0;
