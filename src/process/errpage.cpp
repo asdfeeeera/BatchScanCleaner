@@ -904,6 +904,9 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         white = cv::Scalar(255, 255, 255);
     }
 
+    // ★ 只装真正需要待确认的项（已涂白的 / 已跳过的不入）
+    std::vector<PageNumberItem> pendingItems;
+
     // ★ 修改②：划线涂白阈值从 10 降到 1
     for (auto &item : candidates) {
         const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber,
@@ -911,10 +914,11 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         const bool ocrFailed = (item.recognizedNumber < 0);
 
         if (matchesCorrect) {
-            continue;
+            continue;  // 正确页码，不入待确认
         }
         if (ocrFailed) {
             ++result.pendingCount;
+            pendingItems.push_back(item);  // OCR 失败 → 待确认
             continue;
         }
 
@@ -923,10 +927,12 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             && item.confidence >= kMinConf) {
             eraseBlock(dst, gray, item.boundingBox, white);
             ++result.crossedRemoved;
+            // ★ 已自动涂白，不入待确认
             writeDiag(QString::fromUtf8("  → 识别=%1，划线=是，涂白")
                           .arg(item.recognizedNumber));
         } else {
             ++result.pendingCount;
+            pendingItems.push_back(item);  // 不满足涂白条件 → 待确认
             writeDiag(QString::fromUtf8("  → 识别=%1，划线=否，加待确认")
                           .arg(item.recognizedNumber));
         }
@@ -967,7 +973,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     result.image = dst;
     result.markedImage = marked;
-    result.items = candidates;
+    result.items = pendingItems;   // ★ 只返回待确认项
     result.ok = true;
 
     if (candidates.empty()) {
