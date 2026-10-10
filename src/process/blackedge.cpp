@@ -34,16 +34,21 @@ double BlackEdge::estimatePaperGray(const cv::Mat &gray,
 
 namespace {
 
-int countDirtyRows(const cv::Mat &gray, int paperGray,
-                   bool fromTop, int maxScan)
+// ============================================================
+// ★ 投影法：按行算"平均灰度"，找"脏 → 干净"的跳变点
+// ============================================================
+int scanRowsByProjection(const cv::Mat &gray, int paperGray,
+                         bool fromTop, int maxScan)
 {
     const int W = gray.cols;
     const int H = gray.rows;
-    const int whiteThr = paperGray - 10;   // ★ 阈值 -10（更敏感）
-    const int minWhiteRun = 3;
+    const int step = 4;
+    const int dirtyThr = paperGray - 20;    // 低于 = 脏
+    const int cleanThr = paperGray - 8;     // 高于 = 干净
+    const int minCleanRun = 3;
 
-    int whiteRun = 0;
-    int dirtyEnd = 0;
+    int lastDirty = -1;
+    int cleanRun = 0;
 
     for (int i = 0; i < maxScan; ++i) {
         int y;
@@ -51,43 +56,44 @@ int countDirtyRows(const cv::Mat &gray, int paperGray,
         else         y = H - 1 - i;
         if (y < 0 || y >= H) break;
 
-        std::vector<uchar> vals;
-        vals.reserve(W / 4 + 1);
         const uchar *row = gray.ptr<uchar>(y);
-        for (int x = 0; x < W; x += 4) {
-            vals.push_back(row[x]);
+        long sum = 0;
+        int cnt = 0;
+        for (int x = 0; x < W; x += step) {
+            sum += row[x];
+            ++cnt;
         }
-        if (vals.empty()) break;
+        const double avg = (cnt > 0) ? (static_cast<double>(sum) / cnt) : 0.0;
 
-        const size_t mid = vals.size() / 2;
-        std::nth_element(vals.begin(), vals.begin() + mid, vals.end());
-        const uchar median = vals[mid];
-
-        if (median >= whiteThr) {
-            ++whiteRun;
-            if (whiteRun >= minWhiteRun) {
-                dirtyEnd = i - minWhiteRun + 1;
-                return dirtyEnd;
+        if (avg < dirtyThr) {
+            lastDirty = i;
+            cleanRun = 0;
+        } else if (avg >= cleanThr) {
+            ++cleanRun;
+            if (lastDirty >= 0 && cleanRun >= minCleanRun) {
+                return lastDirty + 1;
             }
         } else {
-            whiteRun = 0;
-            dirtyEnd = i + 1;
+            lastDirty = i;
+            cleanRun = 0;
         }
     }
 
-    return dirtyEnd;
+    return (lastDirty < 0) ? 0 : (lastDirty + 1);
 }
 
-int countDirtyCols(const cv::Mat &gray, int paperGray,
-                   bool fromLeft, int maxScan)
+int scanColsByProjection(const cv::Mat &gray, int paperGray,
+                         bool fromLeft, int maxScan)
 {
     const int W = gray.cols;
     const int H = gray.rows;
-    const int whiteThr = paperGray - 10;   // ★ 阈值 -10
-    const int minWhiteRun = 3;
+    const int step = 4;
+    const int dirtyThr = paperGray - 20;
+    const int cleanThr = paperGray - 8;
+    const int minCleanRun = 3;
 
-    int whiteRun = 0;
-    int dirtyEnd = 0;
+    int lastDirty = -1;
+    int cleanRun = 0;
 
     for (int i = 0; i < maxScan; ++i) {
         int x;
@@ -95,30 +101,29 @@ int countDirtyCols(const cv::Mat &gray, int paperGray,
         else          x = W - 1 - i;
         if (x < 0 || x >= W) break;
 
-        std::vector<uchar> vals;
-        vals.reserve(H / 4 + 1);
-        for (int y = 0; y < H; y += 4) {
-            vals.push_back(gray.at<uchar>(y, x));
+        long sum = 0;
+        int cnt = 0;
+        for (int y = 0; y < H; y += step) {
+            sum += gray.at<uchar>(y, x);
+            ++cnt;
         }
-        if (vals.empty()) break;
+        const double avg = (cnt > 0) ? (static_cast<double>(sum) / cnt) : 0.0;
 
-        const size_t mid = vals.size() / 2;
-        std::nth_element(vals.begin(), vals.begin() + mid, vals.end());
-        const uchar median = vals[mid];
-
-        if (median >= whiteThr) {
-            ++whiteRun;
-            if (whiteRun >= minWhiteRun) {
-                dirtyEnd = i - minWhiteRun + 1;
-                return dirtyEnd;
+        if (avg < dirtyThr) {
+            lastDirty = i;
+            cleanRun = 0;
+        } else if (avg >= cleanThr) {
+            ++cleanRun;
+            if (lastDirty >= 0 && cleanRun >= minCleanRun) {
+                return lastDirty + 1;
             }
         } else {
-            whiteRun = 0;
-            dirtyEnd = i + 1;
+            lastDirty = i;
+            cleanRun = 0;
         }
     }
 
-    return dirtyEnd;
+    return (lastDirty < 0) ? 0 : (lastDirty + 1);
 }
 
 } // namespace
@@ -130,7 +135,7 @@ int BlackEdge::scanTop(const cv::Mat &gray, double darkThreshold,
     const double paperGray = estimatePaperGray(gray, options);
     const int maxScan = std::min(static_cast<int>(gray.rows * 0.05),
                                  static_cast<int>(gray.rows * options.maxScanRatio));
-    return countDirtyRows(gray, static_cast<int>(paperGray), true, maxScan);
+    return scanRowsByProjection(gray, static_cast<int>(paperGray), true, maxScan);
 }
 
 int BlackEdge::scanBottom(const cv::Mat &gray, double darkThreshold,
@@ -140,7 +145,7 @@ int BlackEdge::scanBottom(const cv::Mat &gray, double darkThreshold,
     const double paperGray = estimatePaperGray(gray, options);
     const int maxScan = std::min(static_cast<int>(gray.rows * 0.05),
                                  static_cast<int>(gray.rows * options.maxScanRatio));
-    return countDirtyRows(gray, static_cast<int>(paperGray), false, maxScan);
+    return scanRowsByProjection(gray, static_cast<int>(paperGray), false, maxScan);
 }
 
 int BlackEdge::scanLeft(const cv::Mat &gray, double darkThreshold,
@@ -150,7 +155,7 @@ int BlackEdge::scanLeft(const cv::Mat &gray, double darkThreshold,
     const double paperGray = estimatePaperGray(gray, options);
     const int maxScan = std::min(static_cast<int>(gray.cols * 0.05),
                                  static_cast<int>(gray.cols * options.maxScanRatio));
-    return countDirtyCols(gray, static_cast<int>(paperGray), true, maxScan);
+    return scanColsByProjection(gray, static_cast<int>(paperGray), true, maxScan);
 }
 
 int BlackEdge::scanRight(const cv::Mat &gray, double darkThreshold,
@@ -160,7 +165,7 @@ int BlackEdge::scanRight(const cv::Mat &gray, double darkThreshold,
     const double paperGray = estimatePaperGray(gray, options);
     const int maxScan = std::min(static_cast<int>(gray.cols * 0.05),
                                  static_cast<int>(gray.cols * options.maxScanRatio));
-    return countDirtyCols(gray, static_cast<int>(paperGray), false, maxScan);
+    return scanColsByProjection(gray, static_cast<int>(paperGray), false, maxScan);
 }
 
 void BlackEdge::smoothMask(cv::Mat &mask, int kernelSize)
@@ -192,12 +197,12 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
 
     const double paperGray = estimatePaperGray(gray, options);
     result.paperGray = paperGray;
-    result.darkThreshold = paperGray - 10;
+    result.darkThreshold = paperGray - 20;
 
-    int top    = scanTop(gray, paperGray - 10, options);
-    int bottom = scanBottom(gray, paperGray - 10, options);
-    int left   = scanLeft(gray, paperGray - 10, options);
-    int right  = scanRight(gray, paperGray - 10, options);
+    int top    = scanTop(gray, paperGray - 20, options);
+    int bottom = scanBottom(gray, paperGray - 20, options);
+    int left   = scanLeft(gray, paperGray - 20, options);
+    int right  = scanRight(gray, paperGray - 20, options);
 
     const int maxTopBottom = static_cast<int>(H * 0.05);
     const int maxLeftRight = static_cast<int>(W * 0.05);
