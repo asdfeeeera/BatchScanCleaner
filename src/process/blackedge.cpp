@@ -34,12 +34,47 @@ double BlackEdge::estimatePaperGray(const cv::Mat &gray,
 
 namespace {
 
+// ============================================================
+// ★ 核心：基于"局部对比度"的黑边扫描
+//   从边缘向内部扫描，每一点跟"内部参考点"的灰度比较
+//   边缘比内部暗 contrastThreshold 以上 → 判为黑边
+// ============================================================
 int scanEdgeDepth(const cv::Mat &gray, int x, int y, int dx, int dy,
-                  int maxScan, double darkThreshold,
+                  int maxScan, int contrastThreshold,
                   int whiteTolerance, int gapTolerance)
 {
     const int W = gray.cols;
     const int H = gray.rows;
+
+    // 内部参考点距离边缘 120 像素（相对页面尺寸的比例更稳）
+    int innerOffset = 120;
+
+    int refX = x + dx * innerOffset;
+    int refY = y + dy * innerOffset;
+    if (refX < 0) refX = 0;
+    if (refX >= W) refX = W - 1;
+    if (refY < 0) refY = 0;
+    if (refY >= H) refY = H - 1;
+
+    // 内部参考点的 5x5 平均灰度（避免单点噪声）
+    int paperGray = 0;
+    int cnt = 0;
+    for (int dyy = -2; dyy <= 2; ++dyy) {
+        for (int dxx = -2; dxx <= 2; ++dxx) {
+            const int px = refX + dxx;
+            const int py = refY + dyy;
+            if (px < 0 || px >= W || py < 0 || py >= H) continue;
+            paperGray += gray.at<uchar>(py, px);
+            ++cnt;
+        }
+    }
+    if (cnt == 0) return 0;
+    paperGray /= cnt;
+
+    // 局部阈值：比内部参考点暗 contrastThreshold 以上算黑边
+    const int localDark = paperGray - contrastThreshold;
+    // 兜底：绝对黑也不能太亮（防止纸张特别黑时把整页当黑边）
+    const int absoluteMax = 150;
 
     int firstDark = -1;
     int lastDark = -1;
@@ -50,7 +85,10 @@ int scanEdgeDepth(const cv::Mat &gray, int x, int y, int dx, int dy,
         const int py = y + dy * i;
         if (px < 0 || px >= W || py < 0 || py >= H) break;
 
-        if (gray.at<uchar>(py, px) < darkThreshold) {
+        const int v = gray.at<uchar>(py, px);
+        const bool isDark = (v < localDark) && (v < absoluteMax);
+
+        if (isDark) {
             if (firstDark < 0) firstDark = i;
             lastDark = i;
             whiteRun = 0;
@@ -85,12 +123,15 @@ int robustMax(std::vector<int> &v, int maxAllowed)
 int BlackEdge::scanTop(const cv::Mat &gray, double darkThreshold,
                        const BlackEdgeOptions &options)
 {
+    (void)darkThreshold;
     const int maxScan = static_cast<int>(gray.rows * options.maxScanRatio);
+    const int contrast = 60;   // ★ 局部对比度阈值
+
     std::vector<int> depths;
     depths.reserve(gray.cols);
     for (int x = 0; x < gray.cols; ++x) {
         depths.push_back(scanEdgeDepth(gray, x, 0, 0, 1, maxScan,
-                                       darkThreshold, 30, options.gapTolerance));
+                                       contrast, 30, options.gapTolerance));
     }
     const int maxAllowed = static_cast<int>(gray.rows * options.maxScanRatio * 0.8);
     return robustMax(depths, maxAllowed);
@@ -99,12 +140,15 @@ int BlackEdge::scanTop(const cv::Mat &gray, double darkThreshold,
 int BlackEdge::scanBottom(const cv::Mat &gray, double darkThreshold,
                           const BlackEdgeOptions &options)
 {
+    (void)darkThreshold;
     const int maxScan = static_cast<int>(gray.rows * options.maxScanRatio);
+    const int contrast = 60;
+
     std::vector<int> depths;
     depths.reserve(gray.cols);
     for (int x = 0; x < gray.cols; ++x) {
         depths.push_back(scanEdgeDepth(gray, x, gray.rows - 1, 0, -1, maxScan,
-                                       darkThreshold, 30, options.gapTolerance));
+                                       contrast, 30, options.gapTolerance));
     }
     const int maxAllowed = static_cast<int>(gray.rows * options.maxScanRatio * 0.8);
     return robustMax(depths, maxAllowed);
@@ -113,12 +157,15 @@ int BlackEdge::scanBottom(const cv::Mat &gray, double darkThreshold,
 int BlackEdge::scanLeft(const cv::Mat &gray, double darkThreshold,
                         const BlackEdgeOptions &options)
 {
+    (void)darkThreshold;
     const int maxScan = static_cast<int>(gray.cols * options.maxScanRatio);
+    const int contrast = 60;
+
     std::vector<int> depths;
     depths.reserve(gray.rows);
     for (int y = 0; y < gray.rows; ++y) {
         depths.push_back(scanEdgeDepth(gray, 0, y, 1, 0, maxScan,
-                                       darkThreshold, 30, options.gapTolerance));
+                                       contrast, 30, options.gapTolerance));
     }
     const int maxAllowed = static_cast<int>(gray.cols * options.maxScanRatio * 0.8);
     return robustMax(depths, maxAllowed);
@@ -127,12 +174,15 @@ int BlackEdge::scanLeft(const cv::Mat &gray, double darkThreshold,
 int BlackEdge::scanRight(const cv::Mat &gray, double darkThreshold,
                          const BlackEdgeOptions &options)
 {
+    (void)darkThreshold;
     const int maxScan = static_cast<int>(gray.cols * options.maxScanRatio);
+    const int contrast = 60;
+
     std::vector<int> depths;
     depths.reserve(gray.rows);
     for (int y = 0; y < gray.rows; ++y) {
         depths.push_back(scanEdgeDepth(gray, gray.cols - 1, y, -1, 0, maxScan,
-                                       darkThreshold, 30, options.gapTolerance));
+                                       contrast, 30, options.gapTolerance));
     }
     const int maxAllowed = static_cast<int>(gray.cols * options.maxScanRatio * 0.8);
     return robustMax(depths, maxAllowed);
@@ -167,18 +217,14 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
 
     const double paperGray = estimatePaperGray(gray, options);
     result.paperGray = paperGray;
+    result.darkThreshold = paperGray - 60;  // 仅用于日志
 
-    // ★ 黑边必须是"绝对黑"：只用 0.55，且上限 60
-    double darkThreshold = paperGray * 0.65;
-    if (darkThreshold > 120.0) darkThreshold = 120.0;
-    result.darkThreshold = darkThreshold;
+    int top    = scanTop(gray, paperGray - 60, options);
+    int bottom = scanBottom(gray, paperGray - 60, options);
+    int left   = scanLeft(gray, paperGray - 60, options);
+    int right  = scanRight(gray, paperGray - 60, options);
 
-    int top    = scanTop(gray, darkThreshold, options);
-    int bottom = scanBottom(gray, darkThreshold, options);
-    int left   = scanLeft(gray, darkThreshold, options);
-    int right  = scanRight(gray, darkThreshold, options);
-
-    // ★ 黑边不可能超过页面尺寸的 5%，超过一定是误判
+    // ★ 安全上限：超过页面尺寸 5% 判为误判
     const int maxTopBottom = static_cast<int>(H * 0.05);
     const int maxLeftRight = static_cast<int>(W * 0.05);
     if (top > maxTopBottom)       top = 0;
