@@ -35,87 +35,77 @@ double BlackEdge::estimatePaperGray(const cv::Mat &gray,
 namespace {
 
 // ============================================================
-// ★ 核心：基于"局部对比度"的黑边扫描
-//   从边缘向内部扫描，每一点跟"内部参考点"的灰度比较
-//   边缘比内部暗 contrastThreshold 以上 → 判为黑边
+// ★ 核心：基于"行/列灰度中位数"判定脏边
+//   返回：脏边的行数/列数（0 表示干净）
 // ============================================================
-int scanEdgeDepth(const cv::Mat &gray, int x, int y, int dx, int dy,
-                  int maxScan, int contrastThreshold,
-                  int whiteTolerance, int gapTolerance)
+int countDirtyLines(const cv::Mat &gray,
+                    bool fromTop, bool fromLeft,
+                    int paperGray, int maxScan)
 {
     const int W = gray.cols;
     const int H = gray.rows;
+    const int whiteThr = paperGray - 15;   // 认为"纯白"的下界
+    const int minWhiteRun = 3;             // 连续 3 行/列纯白才算"干净区开始"
 
-    // 内部参考点距离边缘 120 像素（相对页面尺寸的比例更稳）
-    int innerOffset = 120;
-
-    int refX = x + dx * innerOffset;
-    int refY = y + dy * innerOffset;
-    if (refX < 0) refX = 0;
-    if (refX >= W) refX = W - 1;
-    if (refY < 0) refY = 0;
-    if (refY >= H) refY = H - 1;
-
-    // 内部参考点的 5x5 平均灰度（避免单点噪声）
-    int paperGray = 0;
-    int cnt = 0;
-    for (int dyy = -2; dyy <= 2; ++dyy) {
-        for (int dxx = -2; dxx <= 2; ++dxx) {
-            const int px = refX + dxx;
-            const int py = refY + dyy;
-            if (px < 0 || px >= W || py < 0 || py >= H) continue;
-            paperGray += gray.at<uchar>(py, px);
-            ++cnt;
-        }
-    }
-    if (cnt == 0) return 0;
-    paperGray /= cnt;
-
-    // 局部阈值：比内部参考点暗 contrastThreshold 以上算黑边
-    const int localDark = paperGray - contrastThreshold;
-    // 兜底：绝对黑也不能太亮（防止纸张特别黑时把整页当黑边）
-    const int absoluteMax = 150;
-
-    int firstDark = -1;
-    int lastDark = -1;
     int whiteRun = 0;
+    int dirtyEnd = 0;
 
     for (int i = 0; i < maxScan; ++i) {
-        const int px = x + dx * i;
-        const int py = y + dy * i;
-        if (px < 0 || px >= W || py < 0 || py >= H) break;
+        // 采样：每 4 个像素取 1 个
+        std::vector<uchar> vals;
 
-        const int v = gray.at<uchar>(py, px);
-        const bool isDark = (v < localDark) && (v < absoluteMax);
+        if (fromTop || !fromTop) {
+            // 上下方向：按行采样
+            int y;
+            if (fromTop) y = i;
+            else         y = H - 1 - i;
+            if (y < 0 || y >= H) break;
 
-        if (isDark) {
-            if (firstDark < 0) firstDark = i;
-            lastDark = i;
-            whiteRun = 0;
-        } else {
-            ++whiteRun;
-            if (firstDark >= 0) {
-                if (whiteRun > gapTolerance) break;
-            } else {
-                if (whiteRun > whiteTolerance) break;
+            const uchar *row = gray.ptr<uchar>(y);
+            for (int x = 0; x < W; x += 4) {
+                vals.push_back(row[x]);
             }
         }
-    }
 
-    return (lastDark < 0) ? 0 : (lastDark + 1);
-}
+        if (fromLeft) {
+            // 左右方向：按列采样
+            int x = i;
+            if (x < 0 || x >= W) break;
 
-int robustMax(std::vector<int> &v, int maxAllowed)
-{
-    if (v.empty()) return 0;
-    std::sort(v.begin(), v.end());
+            for (int y = 0; y < H; y += 4) {
+                vals.push_back(gray.at<uchar>(y, x));
+            }
+        } else {
+            // 从右
+            int x = W - 1 - i;
+            if (x < 0 || x >= W) break;
 
-    for (int i = static_cast<int>(v.size()) - 1; i >= 0; --i) {
-        if (v[i] <= maxAllowed) {
-            return v[i];
+            for (int y = 0; y < H; y += 4) {
+                vals.push_back(gray.at<uchar>(y, x));
+            }
+        }
+
+        if (vals.empty()) break;
+
+        // 中位数
+        const size_t mid = vals.size() / 2;
+        std::nth_element(vals.begin(), vals.begin() + mid, vals.end());
+        const uchar median = vals[mid];
+
+        if (median >= whiteThr) {
+            ++whiteRun;
+            if (whiteRun >= minWhiteRun) {
+                // 连续 3 行/列都白 → 干净区从这里开始
+                dirtyEnd = i - minWhiteRun + 1;
+                return dirtyEnd;
+            }
+        } else {
+            whiteRun = 0;
+            dirtyEnd = i + 1;
         }
     }
-    return 0;
+
+    return dirtyEnd;
 }
 
 } // namespace
@@ -124,68 +114,40 @@ int BlackEdge::scanTop(const cv::Mat &gray, double darkThreshold,
                        const BlackEdgeOptions &options)
 {
     (void)darkThreshold;
-    const int maxScan = static_cast<int>(gray.rows * options.maxScanRatio);
-    const int contrast = 60;   // ★ 局部对比度阈值
-
-    std::vector<int> depths;
-    depths.reserve(gray.cols);
-    for (int x = 0; x < gray.cols; ++x) {
-        depths.push_back(scanEdgeDepth(gray, x, 0, 0, 1, maxScan,
-                                       contrast, 30, options.gapTolerance));
-    }
-    const int maxAllowed = static_cast<int>(gray.rows * options.maxScanRatio * 0.8);
-    return robustMax(depths, maxAllowed);
+    const double paperGray = estimatePaperGray(gray, options);
+    const int maxScan = std::min(static_cast<int>(gray.rows * 0.05),
+                                 static_cast<int>(gray.rows * options.maxScanRatio));
+    return countDirtyLines(gray, true, true, static_cast<int>(paperGray), maxScan);
 }
 
 int BlackEdge::scanBottom(const cv::Mat &gray, double darkThreshold,
                           const BlackEdgeOptions &options)
 {
     (void)darkThreshold;
-    const int maxScan = static_cast<int>(gray.rows * options.maxScanRatio);
-    const int contrast = 60;
-
-    std::vector<int> depths;
-    depths.reserve(gray.cols);
-    for (int x = 0; x < gray.cols; ++x) {
-        depths.push_back(scanEdgeDepth(gray, x, gray.rows - 1, 0, -1, maxScan,
-                                       contrast, 30, options.gapTolerance));
-    }
-    const int maxAllowed = static_cast<int>(gray.rows * options.maxScanRatio * 0.8);
-    return robustMax(depths, maxAllowed);
+    const double paperGray = estimatePaperGray(gray, options);
+    const int maxScan = std::min(static_cast<int>(gray.rows * 0.05),
+                                 static_cast<int>(gray.rows * options.maxScanRatio));
+    return countDirtyLines(gray, false, true, static_cast<int>(paperGray), maxScan);
 }
 
 int BlackEdge::scanLeft(const cv::Mat &gray, double darkThreshold,
                         const BlackEdgeOptions &options)
 {
     (void)darkThreshold;
-    const int maxScan = static_cast<int>(gray.cols * options.maxScanRatio);
-    const int contrast = 60;
-
-    std::vector<int> depths;
-    depths.reserve(gray.rows);
-    for (int y = 0; y < gray.rows; ++y) {
-        depths.push_back(scanEdgeDepth(gray, 0, y, 1, 0, maxScan,
-                                       contrast, 30, options.gapTolerance));
-    }
-    const int maxAllowed = static_cast<int>(gray.cols * options.maxScanRatio * 0.8);
-    return robustMax(depths, maxAllowed);
+    const double paperGray = estimatePaperGray(gray, options);
+    const int maxScan = std::min(static_cast<int>(gray.cols * 0.05),
+                                 static_cast<int>(gray.cols * options.maxScanRatio));
+    return countDirtyLines(gray, true, true, static_cast<int>(paperGray), maxScan);
 }
 
 int BlackEdge::scanRight(const cv::Mat &gray, double darkThreshold,
                          const BlackEdgeOptions &options)
 {
     (void)darkThreshold;
-    const int maxScan = static_cast<int>(gray.cols * options.maxScanRatio);
-    const int contrast = 60;
-
-    std::vector<int> depths;
-    depths.reserve(gray.rows);
-    for (int y = 0; y < gray.rows; ++y) {
-        depths.push_back(scanEdgeDepth(gray, gray.cols - 1, y, -1, 0, maxScan,
-                                       contrast, 30, options.gapTolerance));
-    }
-    const int maxAllowed = static_cast<int>(gray.cols * options.maxScanRatio * 0.8);
-    return robustMax(depths, maxAllowed);
+    const double paperGray = estimatePaperGray(gray, options);
+    const int maxScan = std::min(static_cast<int>(gray.cols * 0.05),
+                                 static_cast<int>(gray.cols * options.maxScanRatio));
+    return countDirtyLines(gray, true, false, static_cast<int>(paperGray), maxScan);
 }
 
 void BlackEdge::smoothMask(cv::Mat &mask, int kernelSize)
@@ -217,14 +179,14 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
 
     const double paperGray = estimatePaperGray(gray, options);
     result.paperGray = paperGray;
-    result.darkThreshold = paperGray - 60;  // 仅用于日志
+    result.darkThreshold = paperGray - 15;
 
-    int top    = scanTop(gray, paperGray - 60, options);
-    int bottom = scanBottom(gray, paperGray - 60, options);
-    int left   = scanLeft(gray, paperGray - 60, options);
-    int right  = scanRight(gray, paperGray - 60, options);
+    int top    = scanTop(gray, paperGray - 15, options);
+    int bottom = scanBottom(gray, paperGray - 15, options);
+    int left   = scanLeft(gray, paperGray - 15, options);
+    int right  = scanRight(gray, paperGray - 15, options);
 
-    // ★ 安全上限：超过页面尺寸 5% 判为误判
+    // 安全上限（5%，已在 scan 函数里限制，但再保一次）
     const int maxTopBottom = static_cast<int>(H * 0.05);
     const int maxLeftRight = static_cast<int>(W * 0.05);
     if (top > maxTopBottom)       top = 0;
