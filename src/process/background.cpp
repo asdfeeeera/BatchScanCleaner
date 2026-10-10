@@ -75,9 +75,14 @@ BackgroundResult Background::whiten(const cv::Mat &src,
 
     // Content mask: darker than paperGray * contentRatio
     const double contentThreshold = paperGray * options.contentRatio;
+    // ★ 保护浅灰内容（表格线、文字边缘、印章浅色部分）
+    //   原来的 contentRatio=0.70 会把灰度 168 以上的都涂白
+    //   把阈值降到 0.55 → 灰度 132 以上的都被保护
+    const double safeThreshold = paperGray * 0.55;
+    const double effectiveThreshold = std::min(contentThreshold, safeThreshold);
 
     cv::Mat contentMask;
-    cv::threshold(gray, contentMask, contentThreshold, 255, cv::THRESH_BINARY_INV);
+    cv::threshold(gray, contentMask, effectiveThreshold, 255, cv::THRESH_BINARY_INV);
 
     // ============================================================
     // ★ 形态学保护表格线（无论灰度多少）
