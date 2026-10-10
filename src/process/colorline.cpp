@@ -217,7 +217,7 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
 
         // ★ 判定：跨度 >= 95%（贯穿整页）
         //   故障线像素占比 >= 20%（避免空白行被误判）
-        if (ra.inkRatio >= 0.20 && ra.spanRatio >= 0.95) {
+        if (ra.inkRatio >= 0.75 && ra.spanRatio >= 0.95) {
             rowIsLine[y] = true;
             rowBias[y] = ra.inkRatio;
         }
@@ -250,7 +250,7 @@ ColorLineResult ColorLine::detect(const cv::Mat &src,
     for (int x = x0; x < x1; ++x) {
         const ColAnalysis ca = analyzeCol(ch[0], ch[1], ch[2], x, y0, y1);
 
-        if (ca.inkRatio >= 0.20 && ca.spanRatio >= 0.95) {
+        if (ca.inkRatio >= 0.75 && ca.spanRatio >= 0.95) {
             colIsLine[x] = true;
             colBias[x] = ca.inkRatio;
         }
