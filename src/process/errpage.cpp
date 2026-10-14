@@ -803,11 +803,10 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
                                double crossLineRatio)
 {
+    // ★ 只在数字框内部检测横线（不向上下扩展，避免表格线干扰）
     cv::Rect expanded = digitBox;
-    expanded.x -= 10;
-    expanded.width += 20;
-    expanded.y -= 25;
-    expanded.height += 50;
+    expanded.x -= 5;
+    expanded.width += 10;
     expanded &= cv::Rect(0, 0, gray.cols, gray.rows);
 
     if (expanded.width <= 0 || expanded.height <= 0) return false;
@@ -817,11 +816,11 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     cv::threshold(roi, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    const int yStart = 3;
-    const int yEnd = binary.rows - 2;
+    const int yStart = 1;
+    const int yEnd = binary.rows - 1;
     if (yEnd <= yStart) return false;
 
-    double ratio = 0.7;
+    double ratio = 0.8;
     if (crossLineRatio > 0.1 && crossLineRatio < 0.95) {
         ratio = crossLineRatio;
     }
@@ -829,19 +828,19 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
 
     for (int y = yStart; y < yEnd; ++y) {
         const uchar *row = binary.ptr<uchar>(y);
-        int firstX = -1;
-        int lastX = -1;
-        int count = 0;
+        // ★ 找这一行最长的连续黑色像素段
+        int maxRun = 0;
+        int run = 0;
         for (int x = 0; x < binary.cols; ++x) {
             if (row[x] > 0) {
-                if (firstX < 0) firstX = x;
-                lastX = x;
-                ++count;
+                ++run;
+                if (run > maxRun) maxRun = run;
+            } else {
+                run = 0;
             }
         }
-        if (firstX < 0) continue;
-        const int span = lastX - firstX + 1;
-        if (span >= minSpan && count >= span / 4) {
+        // 单行内有超过 minSpan 的连续黑色像素 → 是划过来的线
+        if (maxRun >= minSpan) {
             return true;
         }
     }
