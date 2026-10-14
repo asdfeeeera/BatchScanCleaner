@@ -1,4 +1,4 @@
-add_library(process STATIC
+﻿add_library(process STATIC
     deskew.h
     deskew.cpp
     blackedge.h
@@ -17,6 +17,8 @@ add_library(process STATIC
     onnx_ocr.cpp
     paddle_ocr.h
     paddle_ocr.cpp
+    yolo_detector.h
+    yolo_detector.cpp
 )
 
 target_include_directories(process PUBLIC

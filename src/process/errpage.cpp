@@ -1,6 +1,7 @@
 ﻿#include "errpage.h"
 #include "onnx_ocr.h"
 #include "paddle_ocr.h"
+#include "yolo_detector.h"
 #include <QFileInfo>
 #include <QCoreApplication>
 #include <QMutex>
@@ -105,6 +106,37 @@ static void notePaddleSuccess()
 {
     QMutexLocker locker(&g_paddleMutex);
     g_paddleFailCount = 0;
+}
+
+// ★ YOLO 页码检测器（单例，懒加载）
+static process::YoloDetector *g_yoloDetector = nullptr;
+static QMutex                 g_yoloMutex;
+
+static process::YoloDetector *getYoloDetector()
+{
+    QMutexLocker locker(&g_yoloMutex);
+
+    if (g_yoloDetector && g_yoloDetector->isReady()) {
+        return g_yoloDetector;
+    }
+    if (g_yoloDetector) {
+        delete g_yoloDetector;
+        g_yoloDetector = nullptr;
+    }
+
+    const QString onnxPath = QCoreApplication::applicationDirPath()
+        + QStringLiteral("/page_det.onnx");
+    if (!QFileInfo::exists(onnxPath)) {
+        return nullptr;
+    }
+
+    process::YoloDetector *det = new process::YoloDetector();
+    if (!det->load(onnxPath, 0.25f, 0.45f)) {
+        delete det;
+        return nullptr;
+    }
+    g_yoloDetector = det;
+    return g_yoloDetector;
 }
 
 std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
@@ -865,69 +897,123 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     std::vector<PageNumberItem> allItems;
 
-    const int minRegionH = 600;
+        // ★ 优先用 YOLO 找页码框
+    process::YoloDetector *detector = getYoloDetector();
+    if (detector) {
+        writeDiag(QString::fromUtf8("使用 YOLO 检测页码框"));
 
-    if (options.detectTopLeft) {
-        const int w = static_cast<int>(W * options.topLeftWidthRatio);
-        int h = static_cast<int>(H * options.topLeftHeightRatio);
-        if (h < minRegionH) h = std::min(minRegionH, H);
-        cv::Rect region(0, 0, w, h);
-        detectDigitsInRegion(gray, region, options, allItems);
+        cv::Mat bgr;
+        if (src.channels() == 1) {
+            cv::cvtColor(src, bgr, cv::COLOR_GRAY2BGR);
+        } else if (src.channels() == 4) {
+            cv::cvtColor(src, bgr, cv::COLOR_BGRA2BGR);
+        } else {
+            bgr = src.clone();
+        }
+
+        const std::vector<YoloBox> yoloBoxes = detector->detect(bgr);
+        writeDiag(QString::fromUtf8("YOLO 检测到 %1 个页码框")
+                      .arg(static_cast<int>(yoloBoxes.size())));
+
+        for (const auto &box : yoloBoxes) {
+            cv::Rect r = box.rect & cv::Rect(0, 0, W, H);
+            if (r.width <= 0 || r.height <= 0) continue;
+
+            cv::Rect expanded = r;
+            expanded.x -= 10;
+            expanded.y -= 10;
+            expanded.width += 20;
+            expanded.height += 20;
+            expanded &= cv::Rect(0, 0, W, H);
+            if (expanded.width <= 0 || expanded.height <= 0) continue;
+
+            PageNumberItem item;
+            item.boundingBox = r;
+            item.isCrossed = detectCrossLine(gray, r, options.crossLineRatio);
+
+            cv::Mat digitImg = gray(expanded).clone();
+            QString text;
+            double conf = 0.0;
+            const int num = recognizeWithTesseract(
+                digitImg, options.tesseractPath, text, conf);
+
+            item.recognizedNumber = num;
+            item.recognizedText = text;
+            item.confidence = conf;
+
+            writeDiag(QString::fromUtf8("  YOLO 框(%1,%2,%3x%4) 识别=%5 conf=%6")
+                          .arg(r.x).arg(r.y).arg(r.width).arg(r.height)
+                          .arg(num).arg(conf));
+
+            allItems.push_back(item);
+        }
+    } else {
+        writeDiag(QString::fromUtf8("YOLO 未加载，回退四角扫描"));
+
+        const int minRegionH = 600;
+
+        if (options.detectTopLeft) {
+            const int w = static_cast<int>(W * options.topLeftWidthRatio);
+            int h = static_cast<int>(H * options.topLeftHeightRatio);
+            if (h < minRegionH) h = std::min(minRegionH, H);
+            cv::Rect region(0, 0, w, h);
+            detectDigitsInRegion(gray, region, options, allItems);
+        }
+
+        if (options.detectTopRight) {
+            const int w = static_cast<int>(W * options.topRightWidthRatio);
+            int h = static_cast<int>(H * options.topRightHeightRatio);
+            if (h < minRegionH) h = std::min(minRegionH, H);
+            cv::Rect region(W - w, 0, w, h);
+            detectDigitsInRegion(gray, region, options, allItems);
+        }
+
+        if (options.detectBottomRight) {
+            const int w = static_cast<int>(W * options.bottomRightWidthRatio);
+            const int h = static_cast<int>(H * options.bottomRightHeightRatio);
+            cv::Rect region(W - w, H - h, w, h);
+            detectDigitsInRegion(gray, region, options, allItems);
+        }
+
+        if (options.detectBottomLeft) {
+            const int w = static_cast<int>(W * options.bottomLeftWidthRatio);
+            const int h = static_cast<int>(H * options.bottomLeftHeightRatio);
+            cv::Rect region(0, H - h, w, h);
+            detectDigitsInRegion(gray, region, options, allItems);
+        }
     }
-
-    if (options.detectTopRight) {
-        const int w = static_cast<int>(W * options.topRightWidthRatio);
-        int h = static_cast<int>(H * options.topRightHeightRatio);
-        if (h < minRegionH) h = std::min(minRegionH, H);
-        cv::Rect region(W - w, 0, w, h);
-        detectDigitsInRegion(gray, region, options, allItems);
-    }
-
-    if (options.detectBottomRight) {
-        const int w = static_cast<int>(W * options.bottomRightWidthRatio);
-        const int h = static_cast<int>(H * options.bottomRightHeightRatio);
-        cv::Rect region(W - w, H - h, w, h);
-        detectDigitsInRegion(gray, region, options, allItems);
-    }
-
-    if (options.detectBottomLeft) {
-        const int w = static_cast<int>(W * options.bottomLeftWidthRatio);
-        const int h = static_cast<int>(H * options.bottomLeftHeightRatio);
-        cv::Rect region(0, H - h, w, h);
-        detectDigitsInRegion(gray, region, options, allItems);
-    }
-
-    const double CORNER_RATIO = 0.20;
-    const double MIN_H_RATIO  = 0.013;
 
     std::vector<PageNumberItem> candidates;
     candidates.reserve(allItems.size());
 
-    for (const auto &it : allItems) {
-        const cv::Rect &b = it.boundingBox;
-        const double cx = b.x + b.width / 2.0;
-        const double cy = b.y + b.height / 2.0;
+    if (detector) {
+        candidates = allItems;
+        writeDiag(QString::fromUtf8("YOLO 候选数 %1")
+                      .arg(static_cast<int>(candidates.size())));
+    } else {
+        const double CORNER_RATIO = 0.20;
+        const double MIN_H_RATIO  = 0.013;
 
-        const bool inLeft   = (cx < W * CORNER_RATIO);
-        const bool inRight  = (cx > W * (1.0 - CORNER_RATIO));
-        const bool inTop    = (cy < H * CORNER_RATIO);
-        const bool inBottom = (cy > H * (1.0 - CORNER_RATIO));
+        for (const auto &it : allItems) {
+            const cv::Rect &b = it.boundingBox;
+            const double cx = b.x + b.width / 2.0;
+            const double cy = b.y + b.height / 2.0;
 
-        const bool inTopLeft     = (inLeft  && inTop);
-        const bool inTopRight    = (inRight && inTop);
-        const bool inBottomRight = (inRight && inBottom);
+            const bool inLeft   = (cx < W * CORNER_RATIO);
+            const bool inRight  = (cx > W * (1.0 - CORNER_RATIO));
+            const bool inTop    = (cy < H * CORNER_RATIO);
+            const bool inBottom = (cy > H * (1.0 - CORNER_RATIO));
 
-        const bool inCorner = (inTopLeft || inTopRight || inBottomRight);
-        const bool bigEnough = (b.height >= H * MIN_H_RATIO);
-        const bool keep = (inCorner && bigEnough);
+            const bool inTopLeft     = (inLeft  && inTop);
+            const bool inTopRight    = (inRight && inTop);
+            const bool inBottomRight = (inRight && inBottom);
 
-        writeDiag(QString::fromUtf8("  [过滤] bbox=(%1,%2,%3x%4) 角=%5 大=%6 → %7")
-                      .arg(b.x).arg(b.y).arg(b.width).arg(b.height)
-                      .arg(inCorner ? QStringLiteral("是") : QStringLiteral("否"))
-                      .arg(bigEnough ? QStringLiteral("是") : QStringLiteral("否"))
-                      .arg(keep ? QStringLiteral("保留") : QStringLiteral("丢弃")));
+            const bool inCorner = (inTopLeft || inTopRight || inBottomRight);
+            const bool bigEnough = (b.height >= H * MIN_H_RATIO);
+            const bool keep = (inCorner && bigEnough);
 
-        if (keep) candidates.push_back(it);
+            if (keep) candidates.push_back(it);
+        }
     }
 
     writeDiag(QString::fromUtf8("过滤后剩余 %1 个候选块")
