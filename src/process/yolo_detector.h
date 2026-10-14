@@ -2,7 +2,7 @@
 
 #include <QString>
 #include <QMutex>
-#include <opencv2/core.hpp>
+#include <opencv2/opencv.hpp>
 #include <vector>
 
 namespace process {
