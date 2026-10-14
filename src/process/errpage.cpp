@@ -812,10 +812,11 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                double crossLineRatio)
 {
     cv::Rect expanded = digitBox;
-    expanded.x -= 3;
-    expanded.width += 6;
-    expanded.y -= 5;
-    expanded.height += 5;
+    // ★ 扩大检测范围：上下各扩 25 像素
+    expanded.x -= 10;
+    expanded.width += 20;
+    expanded.y -= 25;
+    expanded.height += 50;
     expanded &= cv::Rect(0, 0, gray.cols, gray.rows);
 
     if (expanded.width <= 0 || expanded.height <= 0) return false;
@@ -1046,7 +1047,9 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         }
 
         const double kMinConf = 0.85;
-        if (item.isCrossed && item.recognizedNumber >= 10
+        const bool strongConf = (item.confidence >= 0.95);
+        if ((item.isCrossed || strongConf)
+            && item.recognizedNumber >= 10
             && item.confidence >= kMinConf) {
             eraseBlock(dst, gray, item.boundingBox, white);
             ++result.crossedRemoved;
