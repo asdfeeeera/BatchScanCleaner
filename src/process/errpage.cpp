@@ -50,7 +50,6 @@ namespace {
 static process::PaddleOcr *g_paddleOcr = nullptr;
 static QMutex             g_paddleMutex;
 
-// ★ PaddleOCR 连续失败计数器（超过阈值就永久跳过，避免反复启动浪费）
 static int                g_paddleFailCount = 0;
 static const int          kPaddleMaxFails   = 3;
 static bool               g_paddleDisabled  = false;
@@ -237,7 +236,6 @@ QString locateTesseract(const QString &hint)
     return QString();
 }
 
-// ★ 宽松匹配（末位相同 / 数字集合相同 / 前后缀包含）
 bool fuzzyMatchPage(int recognized, int correctPage)
 {
     if (recognized < 0 || correctPage < 0) return false;
@@ -246,7 +244,6 @@ bool fuzzyMatchPage(int recognized, int correctPage)
     const QString recStr = QString::number(recognized);
     const QString corrStr = QString::number(correctPage);
 
-    // 规则 2：去掉前导 0 后，数字集合相同
     {
         QString recNoZero = recStr;
         QString corrNoZero = corrStr;
@@ -266,7 +263,6 @@ bool fuzzyMatchPage(int recognized, int correctPage)
         }
     }
 
-    // 规则 3：前缀/后缀包含
     if (std::abs(recStr.length() - corrStr.length()) > 1) return false;
     if (corrStr.endsWith(recStr) || recStr.endsWith(corrStr)) return true;
     if (corrStr.startsWith(recStr) || recStr.startsWith(corrStr)) return true;
@@ -512,19 +508,6 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      double &outConfidence)
 {
     // ★ 暂时跳过 PaddleOCR（13 秒/张太慢），直接用 ONNX
-    //
-    // if (!g_paddleDisabled) {
-    //     if (process::PaddleOcr *pocr = getPaddleOcr()) {
-    //         const process::PaddleOcrResult pr = pocr->recognize(digitImage);
-    //         if (pr.ok && !pr.text.isEmpty()) {
-    //             outText = pr.text;
-    //             outConfidence = pr.confidence;
-    //             notePaddleSuccess();
-    //             return pr.number;
-    //         }
-    //         notePaddleFailure();
-    //     }
-    // }
 
     // ★ 先试 ONNX 模型
     {
@@ -799,14 +782,17 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
     }
 }
 
+// ★★★ 新增：只在数字框内部检测横线 ★★★
+//   手画删除线穿过数字中心 → 框内有横线
+//   表格线在数字框外面 → 框内无横线
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
                                double crossLineRatio)
 {
-    // ★ 只在数字框内部检测横线（不向上下扩展，避免表格线干扰）
     cv::Rect expanded = digitBox;
-    expanded.x -= 5;
-    expanded.width += 10;
+    // x 方向扩展 20%（手画线可能超出数字左右一点）
+    expanded.x -= digitBox.width / 5;
+    expanded.width += digitBox.width * 2 / 5;
     expanded &= cv::Rect(0, 0, gray.cols, gray.rows);
 
     if (expanded.width <= 0 || expanded.height <= 0) return false;
@@ -820,28 +806,25 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     const int yEnd = binary.rows - 1;
     if (yEnd <= yStart) return false;
 
-    double ratio = 0.8;
+    // 每行黑色像素占比阈值 60%
+    //   手画线穿过时占比 70~90%
+    //   数字本身笔画某行 30~50%
+    double ratio = 0.6;
     if (crossLineRatio > 0.1 && crossLineRatio < 0.95) {
         ratio = crossLineRatio;
     }
-    const int minSpan = static_cast<int>(binary.cols * ratio);
+    const int minCount = static_cast<int>(binary.cols * ratio);
 
+    int hitRows = 0;
     for (int y = yStart; y < yEnd; ++y) {
         const uchar *row = binary.ptr<uchar>(y);
-        // ★ 找这一行最长的连续黑色像素段
-        int maxRun = 0;
-        int run = 0;
+        int count = 0;
         for (int x = 0; x < binary.cols; ++x) {
-            if (row[x] > 0) {
-                ++run;
-                if (run > maxRun) maxRun = run;
-            } else {
-                run = 0;
-            }
+            if (row[x] > 0) ++count;
         }
-        // 单行内有超过 minSpan 的连续黑色像素 → 是划过来的线
-        if (maxRun >= minSpan) {
-            return true;
+        if (count >= minCount) {
+            ++hitRows;
+            if (hitRows >= 2) return true;  // 连续 2 行以上满足 → 是划线
         }
     }
     return false;
@@ -982,7 +965,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         writeDiag(QString::fromUtf8("四角扫描得到 %1 个候选")
                       .arg(static_cast<int>(cornerItems.size())));
 
-        // 合并去重
         auto rectIoU = [](const cv::Rect &a, const cv::Rect &b) -> double {
             const int x1 = std::max(a.x, b.x);
             const int y1 = std::max(a.y, b.y);
@@ -1029,7 +1011,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     std::vector<PageNumberItem> pendingItems;
 
-    // ★★★ 核心逻辑（用户要求的顺序）★★★
+    // ★★★ 核心逻辑 ★★★
     //   1. 识别必须是 3 位数（页码格式）
     //   2. 匹配正确页码 → 保留
     //   3. 不匹配 + 有划线 → 涂白
@@ -1052,7 +1034,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             continue;
         }
 
-        // OCR 失败 → 待确认
         if (ocrFailed) {
             ++result.pendingCount;
             pendingItems.push_back(item);
