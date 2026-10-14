@@ -518,21 +518,21 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      QString &outText,
                                      double &outConfidence)
 { 
-    // ★ 优先 PaddleOCR（准确率最高，失败才退 ONNX）
-    //   ★ 连续失败 3 次后永久跳过（g_paddleDisabled 为 true）
-    if (!g_paddleDisabled) {
-        if (process::PaddleOcr *pocr = getPaddleOcr()) {
-            const process::PaddleOcrResult pr = pocr->recognize(digitImage);
-            if (pr.ok && !pr.text.isEmpty()) {
-                outText = pr.text;
-                outConfidence = pr.confidence;
-                notePaddleSuccess();
-                return pr.number;
-            }
-            // 调用失败：记账
-            notePaddleFailure();
-        }
-    }
+    // ★ 暂时跳过 PaddleOCR（13 秒/张太慢），直接用 ONNX
+    //   如需启用 PaddleOCR，把下面注释取消即可
+    //
+    // if (!g_paddleDisabled) {
+    //     if (process::PaddleOcr *pocr = getPaddleOcr()) {
+    //         const process::PaddleOcrResult pr = pocr->recognize(digitImage);
+    //         if (pr.ok && !pr.text.isEmpty()) {
+    //             outText = pr.text;
+    //             outConfidence = pr.confidence;
+    //             notePaddleSuccess();
+    //             return pr.number;
+    //         }
+    //         notePaddleFailure();
+    //     }
+    // }
    
        // ★ 先试 ONNX 模型（比 Tesseract 准）
     {
