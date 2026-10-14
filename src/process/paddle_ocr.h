@@ -4,6 +4,7 @@
 #include <QProcess>
 #include <QString>
 #include <QStringList>
+#include <QMutex>
 #include <opencv2/core.hpp>
 
 namespace process {
@@ -33,6 +34,7 @@ struct PaddleOcrResult
 //   - 通过 QProcess 启动 PaddleOCR-json.exe
 //   - 使用 Base64 传图（避免中文路径问题）
 //   - 解析 JSON 结果
+//   - ★ 内部 QMutex 串行化 recognize()，防止多线程消息错乱
 // ============================================================
 class PaddleOcr : public QObject
 {
@@ -49,6 +51,7 @@ public:
     bool isReady() const { return m_ready; }
 
     // 识别一张 OpenCV Mat（BGR / 灰度都可以）
+    //   ★ 内部加锁，多线程安全
     PaddleOcrResult recognize(const cv::Mat &image);
 
     // 停止引擎
@@ -58,6 +61,7 @@ private:
     QProcess *m_process = nullptr;
     QString   m_exePath;
     bool      m_ready = false;
+    mutable QMutex m_mutex;   // ★ 新增：串行化 recognize() 调用
 
     // 等待引擎就绪
     bool waitForReady(int timeoutMs = 15000);

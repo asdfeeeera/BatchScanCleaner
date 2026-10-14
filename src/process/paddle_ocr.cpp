@@ -33,6 +33,7 @@ PaddleOcr::~PaddleOcr()
 // 启动引擎
 //   - 使用匿名管道模式（不带命令行参数启动 exe）
 //   - 启动后等待 "OCR init completed."
+//   ★ 注意：start() 内部会调用 stop()，不能加锁（避免死锁）
 // ============================================================
 bool PaddleOcr::start(const QString &exePath)
 {
@@ -103,9 +104,12 @@ bool PaddleOcr::waitForReady(int timeoutMs)
 
 // ============================================================
 // 识别一张图（Base64 传图，避开中文路径问题）
+//   ★ 内部加锁：多线程串行调用，防止消息错乱
 // ============================================================
 PaddleOcrResult PaddleOcr::recognize(const cv::Mat &image)
 {
+    QMutexLocker locker(&m_mutex);   // ★ 关键：串行化
+
     PaddleOcrResult result;
 
     if (!m_ready || !m_process) {
@@ -245,7 +249,6 @@ PaddleOcrResult PaddleOcr::parseResult(const QByteArray &jsonLine)
         // ★ 关键修复：PaddleOCR-json 用的是 "score"，不是 "confidence"
         double conf = obj.value(QStringLiteral("score")).toDouble();
         if (conf <= 0.0) {
-            // 兼容旧版本 / 其他命名
             conf = obj.value(QStringLiteral("confidence")).toDouble();
         }
         box.confidence = conf;
@@ -267,7 +270,6 @@ PaddleOcrResult PaddleOcr::parseResult(const QByteArray &jsonLine)
         result.boxes.append(box);
         allText += box.text;
 
-        // 取最小置信度作为整体置信度（只要有一个块不确定就保守处理）
         if (box.confidence > 0.0 && box.confidence < result.confidence) {
             result.confidence = box.confidence;
         }
@@ -291,9 +293,12 @@ PaddleOcrResult PaddleOcr::parseResult(const QByteArray &jsonLine)
 
 // ============================================================
 // 停止引擎
+//   ★ 加锁：确保没有 recognize() 正在使用 m_process
 // ============================================================
 void PaddleOcr::stop()
 {
+    QMutexLocker locker(&m_mutex);   // ★ 关键：与 recognize 互斥
+
     if (m_process) {
         if (m_process->state() == QProcess::Running) {
             m_process->closeWriteChannel();

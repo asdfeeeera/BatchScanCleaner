@@ -49,9 +49,18 @@ namespace {
 static process::PaddleOcr *g_paddleOcr = nullptr;
 static QMutex             g_paddleMutex;
 
+// ★ PaddleOCR 连续失败计数器（超过阈值就永久跳过，避免反复启动浪费）
+static int                g_paddleFailCount = 0;
+static const int          kPaddleMaxFails   = 3;
+static bool               g_paddleDisabled  = false;
+
 static process::PaddleOcr *getPaddleOcr()
 {
     QMutexLocker locker(&g_paddleMutex);
+
+    if (g_paddleDisabled) {
+        return nullptr;   // 已判定不可用，直接跳过
+    }
 
     if (g_paddleOcr && g_paddleOcr->isReady()) {
         return g_paddleOcr;
@@ -64,16 +73,38 @@ static process::PaddleOcr *getPaddleOcr()
     const QString exePath = QCoreApplication::applicationDirPath()
         + QStringLiteral("/PaddleOCR-json/PaddleOCR-json.exe");
     if (!QFileInfo::exists(exePath)) {
-        return nullptr;   // 没装 PaddleOCR 就跳过
+        g_paddleDisabled = true;   // 没装 PaddleOCR，永久跳过
+        return nullptr;
     }
 
     process::PaddleOcr *ocr = new process::PaddleOcr();
     if (!ocr->start(exePath)) {
         delete ocr;
+        ++g_paddleFailCount;
+        if (g_paddleFailCount >= kPaddleMaxFails) {
+            g_paddleDisabled = true;
+        }
         return nullptr;
     }
     g_paddleOcr = ocr;
     return g_paddleOcr;
+}
+
+// ★ 记录一次 PaddleOCR 调用失败；连续失败达到阈值则永久禁用
+static void notePaddleFailure()
+{
+    QMutexLocker locker(&g_paddleMutex);
+    ++g_paddleFailCount;
+    if (g_paddleFailCount >= kPaddleMaxFails) {
+        g_paddleDisabled = true;
+    }
+}
+
+// ★ 记录一次 PaddleOCR 调用成功；重置失败计数
+static void notePaddleSuccess()
+{
+    QMutexLocker locker(&g_paddleMutex);
+    g_paddleFailCount = 0;
 }
 
 std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
@@ -456,12 +487,18 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      double &outConfidence)
 { 
     // ★ 优先 PaddleOCR（准确率最高，失败才退 ONNX）
-    if (process::PaddleOcr *pocr = getPaddleOcr()) {
-        const process::PaddleOcrResult pr = pocr->recognize(digitImage);
-        if (pr.ok && !pr.text.isEmpty()) {
-            outText = pr.text;
-            outConfidence = pr.confidence;
-            return pr.number;
+    //   ★ 连续失败 3 次后永久跳过（g_paddleDisabled 为 true）
+    if (!g_paddleDisabled) {
+        if (process::PaddleOcr *pocr = getPaddleOcr()) {
+            const process::PaddleOcrResult pr = pocr->recognize(digitImage);
+            if (pr.ok && !pr.text.isEmpty()) {
+                outText = pr.text;
+                outConfidence = pr.confidence;
+                notePaddleSuccess();
+                return pr.number;
+            }
+            // 调用失败：记账
+            notePaddleFailure();
         }
     }
    
