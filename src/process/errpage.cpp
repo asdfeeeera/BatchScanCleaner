@@ -46,7 +46,6 @@ int ErrPage::parseCorrectPage(const QString &sourcePath)
 
 namespace {
 
-// ★ PaddleOCR 引擎（单例，懒加载）
 static process::PaddleOcr *g_paddleOcr = nullptr;
 static QMutex             g_paddleMutex;
 
@@ -58,13 +57,9 @@ static process::PaddleOcr *getPaddleOcr()
 {
     QMutexLocker locker(&g_paddleMutex);
 
-    if (g_paddleDisabled) {
-        return nullptr;
-    }
+    if (g_paddleDisabled) return nullptr;
 
-    if (g_paddleOcr && g_paddleOcr->isReady()) {
-        return g_paddleOcr;
-    }
+    if (g_paddleOcr && g_paddleOcr->isReady()) return g_paddleOcr;
     if (g_paddleOcr) {
         delete g_paddleOcr;
         g_paddleOcr = nullptr;
@@ -81,9 +76,7 @@ static process::PaddleOcr *getPaddleOcr()
     if (!ocr->start(exePath)) {
         delete ocr;
         ++g_paddleFailCount;
-        if (g_paddleFailCount >= kPaddleMaxFails) {
-            g_paddleDisabled = true;
-        }
+        if (g_paddleFailCount >= kPaddleMaxFails) g_paddleDisabled = true;
         return nullptr;
     }
     g_paddleOcr = ocr;
@@ -94,9 +87,7 @@ static void notePaddleFailure()
 {
     QMutexLocker locker(&g_paddleMutex);
     ++g_paddleFailCount;
-    if (g_paddleFailCount >= kPaddleMaxFails) {
-        g_paddleDisabled = true;
-    }
+    if (g_paddleFailCount >= kPaddleMaxFails) g_paddleDisabled = true;
 }
 
 static void notePaddleSuccess()
@@ -105,7 +96,6 @@ static void notePaddleSuccess()
     g_paddleFailCount = 0;
 }
 
-// ★ YOLO 页码检测器（单例，懒加载）
 static process::YoloDetector *g_yoloDetector = nullptr;
 static QMutex                 g_yoloMutex;
 
@@ -113,9 +103,7 @@ static process::YoloDetector *getYoloDetector()
 {
     QMutexLocker locker(&g_yoloMutex);
 
-    if (g_yoloDetector && g_yoloDetector->isReady()) {
-        return g_yoloDetector;
-    }
+    if (g_yoloDetector && g_yoloDetector->isReady()) return g_yoloDetector;
     if (g_yoloDetector) {
         delete g_yoloDetector;
         g_yoloDetector = nullptr;
@@ -123,9 +111,7 @@ static process::YoloDetector *getYoloDetector()
 
     const QString onnxPath = QCoreApplication::applicationDirPath()
         + QStringLiteral("/page_det.onnx");
-    if (!QFileInfo::exists(onnxPath)) {
-        return nullptr;
-    }
+    if (!QFileInfo::exists(onnxPath)) return nullptr;
 
     process::YoloDetector *det = new process::YoloDetector();
     if (!det->load(onnxPath, 0.25f, 0.45f)) {
@@ -507,9 +493,8 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      QString &outText,
                                      double &outConfidence)
 {
-    // ★ 暂时跳过 PaddleOCR（13 秒/张太慢），直接用 ONNX
+    // ★ 暂时跳过 PaddleOCR，直接用 ONNX
 
-    // ★ 先试 ONNX 模型
     {
         process::OnnxOcr &ocr = process::OnnxOcr::instance();
         process::OnnxOcr::Result r = ocr.recognize(digitImage);
@@ -782,17 +767,22 @@ void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
     }
 }
 
-// ★★★ 新增：只在数字框内部检测横线 ★★★
-//   手画删除线穿过数字中心 → 框内有横线
-//   表格线在数字框外面 → 框内无横线
+// ★★★ 用"水平跨度"区分手画线和表格线 ★★★
+//   手画线：数字宽度的 1.2 ~ 6 倍（短）
+//   表格线：> 数字宽度的 6 倍（长，横跨整页）
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
                                double crossLineRatio)
 {
+    // 左右各扩 数字宽度 × 4（覆盖最长手画线）
+    // 上下各扩 数字高度的一半
+    const int extX = digitBox.width * 4;
+    const int extY = digitBox.height / 2;
     cv::Rect expanded = digitBox;
-    // x 方向扩展 20%（手画线可能超出数字左右一点）
-    expanded.x -= digitBox.width / 5;
-    expanded.width += digitBox.width * 2 / 5;
+    expanded.x -= extX;
+    expanded.y -= extY;
+    expanded.width += extX * 2;
+    expanded.height += extY * 2;
     expanded &= cv::Rect(0, 0, gray.cols, gray.rows);
 
     if (expanded.width <= 0 || expanded.height <= 0) return false;
@@ -802,29 +792,32 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     cv::threshold(roi, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    const int yStart = 1;
-    const int yEnd = binary.rows - 1;
-    if (yEnd <= yStart) return false;
-
-    // 每行黑色像素占比阈值 60%
-    //   手画线穿过时占比 70~90%
-    //   数字本身笔画某行 30~50%
-    double ratio = 0.6;
-    if (crossLineRatio > 0.1 && crossLineRatio < 0.95) {
-        ratio = crossLineRatio;
-    }
-    const int minCount = static_cast<int>(binary.cols * ratio);
+    // 手画线的水平跨度范围（像素）
+    const int minSpan = static_cast<int>(digitBox.width * 1.2);
+    const int maxSpan = static_cast<int>(digitBox.width * 6);
 
     int hitRows = 0;
-    for (int y = yStart; y < yEnd; ++y) {
+    for (int y = 0; y < binary.rows; ++y) {
         const uchar *row = binary.ptr<uchar>(y);
+        int firstX = -1;
+        int lastX = -1;
         int count = 0;
         for (int x = 0; x < binary.cols; ++x) {
-            if (row[x] > 0) ++count;
+            if (row[x] > 0) {
+                if (firstX < 0) firstX = x;
+                lastX = x;
+                ++count;
+            }
         }
-        if (count >= minCount) {
+        if (firstX < 0) continue;
+        const int span = lastX - firstX + 1;
+        // ★ 关键判断：
+        //   跨度在 [minSpan, maxSpan] 之间（是手画线的长度）
+        //   且该行黑色像素数占跨度的 40% 以上（说明是一条线，不是零散噪点）
+        if (span >= minSpan && span <= maxSpan
+            && count >= span * 4 / 10) {
             ++hitRows;
-            if (hitRows >= 2) return true;  // 连续 2 行以上满足 → 是划线
+            if (hitRows >= 2) return true;
         }
     }
     return false;
@@ -871,7 +864,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     std::vector<PageNumberItem> allItems;
 
-    // ★ YOLO + 四角扫描 双路检测
     process::YoloDetector *detector = getYoloDetector();
 
     // ============ 1. YOLO 检测 ============
@@ -1011,11 +1003,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     std::vector<PageNumberItem> pendingItems;
 
-    // ★★★ 核心逻辑 ★★★
-    //   1. 识别必须是 3 位数（页码格式）
-    //   2. 匹配正确页码 → 保留
-    //   3. 不匹配 + 有划线 → 涂白
-    //   4. 不匹配 + 没划线 → 待确认
     for (auto &item : candidates) {
         // ★ 1. 必须 3 位数
         const int textLen = item.recognizedText.length();
