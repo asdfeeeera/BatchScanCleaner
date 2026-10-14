@@ -898,8 +898,10 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     std::vector<PageNumberItem> allItems;
 
-        // ★ 优先用 YOLO 找页码框
+    // ★ YOLO + 四角扫描 双路检测，结果合并
     process::YoloDetector *detector = getYoloDetector();
+
+    // ============ 1. YOLO 检测 ============
     if (detector) {
         writeDiag(QString::fromUtf8("使用 YOLO 检测页码框"));
 
@@ -948,17 +950,21 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
             allItems.push_back(item);
         }
-    } else {
-        writeDiag(QString::fromUtf8("YOLO 未加载，回退四角扫描"));
+    }
+
+    // ============ 2. 四角扫描（始终运行，作为兵底）============
+    {
+        writeDiag(QString::fromUtf8("同时运行四角扫描作为兵底"));
 
         const int minRegionH = 600;
+        std::vector<PageNumberItem> cornerItems;
 
         if (options.detectTopLeft) {
             const int w = static_cast<int>(W * options.topLeftWidthRatio);
             int h = static_cast<int>(H * options.topLeftHeightRatio);
             if (h < minRegionH) h = std::min(minRegionH, H);
             cv::Rect region(0, 0, w, h);
-            detectDigitsInRegion(gray, region, options, allItems);
+            detectDigitsInRegion(gray, region, options, cornerItems);
         }
 
         if (options.detectTopRight) {
@@ -966,22 +972,56 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             int h = static_cast<int>(H * options.topRightHeightRatio);
             if (h < minRegionH) h = std::min(minRegionH, H);
             cv::Rect region(W - w, 0, w, h);
-            detectDigitsInRegion(gray, region, options, allItems);
+            detectDigitsInRegion(gray, region, options, cornerItems);
         }
 
         if (options.detectBottomRight) {
             const int w = static_cast<int>(W * options.bottomRightWidthRatio);
             const int h = static_cast<int>(H * options.bottomRightHeightRatio);
             cv::Rect region(W - w, H - h, w, h);
-            detectDigitsInRegion(gray, region, options, allItems);
+            detectDigitsInRegion(gray, region, options, cornerItems);
         }
 
         if (options.detectBottomLeft) {
             const int w = static_cast<int>(W * options.bottomLeftWidthRatio);
             const int h = static_cast<int>(H * options.bottomLeftHeightRatio);
             cv::Rect region(0, H - h, w, h);
-            detectDigitsInRegion(gray, region, options, allItems);
+            detectDigitsInRegion(gray, region, options, cornerItems);
         }
+
+        writeDiag(QString::fromUtf8("四角扫描得到 %1 个候选")
+                      .arg(static_cast<int>(cornerItems.size())));
+
+        // 合并去重：如果 YOLO 框和四角框重叠，保留 YOLO 的
+        auto rectIoU = [](const cv::Rect &a, const cv::Rect &b) -> double {
+            const int x1 = std::max(a.x, b.x);
+            const int y1 = std::max(a.y, b.y);
+            const int x2 = std::min(a.x + a.width, b.x + b.width);
+            const int y2 = std::min(a.y + a.height, b.y + b.height);
+            if (x2 <= x1 || y2 <= y1) return 0.0;
+            const double inter = (x2 - x1) * (y2 - y1);
+            const double areaA = a.width * a.height;
+            const double areaB = b.width * b.height;
+            const double uni = areaA + areaB - inter;
+            if (uni <= 0.0) return 0.0;
+            return inter / uni;
+        };
+
+        for (const auto &cit : cornerItems) {
+            bool overlap = false;
+            for (const auto &yit : allItems) {
+                if (rectIoU(cit.boundingBox, yit.boundingBox) > 0.3) {
+                    overlap = true;
+                    break;
+                }
+            }
+            if (!overlap) {
+                allItems.push_back(cit);
+            }
+        }
+
+        writeDiag(QString::fromUtf8("合并后总候选数 %1")
+                      .arg(static_cast<int>(allItems.size())));
     }
 
     std::vector<PageNumberItem> candidates;
