@@ -60,7 +60,7 @@ static process::PaddleOcr *getPaddleOcr()
     QMutexLocker locker(&g_paddleMutex);
 
     if (g_paddleDisabled) {
-        return nullptr;   // 已判定不可用，直接跳过
+        return nullptr;
     }
 
     if (g_paddleOcr && g_paddleOcr->isReady()) {
@@ -74,7 +74,7 @@ static process::PaddleOcr *getPaddleOcr()
     const QString exePath = QCoreApplication::applicationDirPath()
         + QStringLiteral("/PaddleOCR-json/PaddleOCR-json.exe");
     if (!QFileInfo::exists(exePath)) {
-        g_paddleDisabled = true;   // 没装 PaddleOCR，永久跳过
+        g_paddleDisabled = true;
         return nullptr;
     }
 
@@ -91,7 +91,6 @@ static process::PaddleOcr *getPaddleOcr()
     return g_paddleOcr;
 }
 
-// ★ 记录一次 PaddleOCR 调用失败；连续失败达到阈值则永久禁用
 static void notePaddleFailure()
 {
     QMutexLocker locker(&g_paddleMutex);
@@ -101,7 +100,6 @@ static void notePaddleFailure()
     }
 }
 
-// ★ 记录一次 PaddleOCR 调用成功；重置失败计数
 static void notePaddleSuccess()
 {
     QMutexLocker locker(&g_paddleMutex);
@@ -239,7 +237,7 @@ QString locateTesseract(const QString &hint)
     return QString();
 }
 
-// ★ 修改①：宽松匹配（末位相同 / 数字集合相同 / 前后缀包含）
+// ★ 宽松匹配（末位相同 / 数字集合相同 / 前后缀包含）
 bool fuzzyMatchPage(int recognized, int correctPage)
 {
     if (recognized < 0 || correctPage < 0) return false;
@@ -248,9 +246,7 @@ bool fuzzyMatchPage(int recognized, int correctPage)
     const QString recStr = QString::number(recognized);
     const QString corrStr = QString::number(correctPage);
 
-
-    // 规则 2：去掉前导 0 后，数字集合相同 → 视为正确页码
-    //   处理 "017" vs "71" 这种位置调换
+    // 规则 2：去掉前导 0 后，数字集合相同
     {
         QString recNoZero = recStr;
         QString corrNoZero = corrStr;
@@ -493,7 +489,6 @@ void eraseBlock(cv::Mat &dst,
         const int cRight = cLeft + cWidth;
         const int cBottom = cTop + cHeight;
 
-        // ★ 整个连通域必须完全在 box 内（左右上下都检查）
         if (cLeft < boxLeft - 2) continue;
         if (cRight > boxRight + 2) continue;
         if (cTop < boxTop - 2) continue;
@@ -509,17 +504,14 @@ void eraseBlock(cv::Mat &dst,
     roiDst.setTo(white, keep);
 }
 
-    
-
 } // namespace
 
 int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
                                      QString &outText,
                                      double &outConfidence)
-{ 
+{
     // ★ 暂时跳过 PaddleOCR（13 秒/张太慢），直接用 ONNX
-    //   如需启用 PaddleOCR，把下面注释取消即可
     //
     // if (!g_paddleDisabled) {
     //     if (process::PaddleOcr *pocr = getPaddleOcr()) {
@@ -533,8 +525,8 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     //         notePaddleFailure();
     //     }
     // }
-   
-       // ★ 先试 ONNX 模型（比 Tesseract 准）
+
+    // ★ 先试 ONNX 模型
     {
         process::OnnxOcr &ocr = process::OnnxOcr::instance();
         process::OnnxOcr::Result r = ocr.recognize(digitImage);
@@ -812,7 +804,6 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                double crossLineRatio)
 {
     cv::Rect expanded = digitBox;
-    // ★ 扩大检测范围：上下各扩 25 像素
     expanded.x -= 10;
     expanded.width += 20;
     expanded.y -= 25;
@@ -898,7 +889,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     std::vector<PageNumberItem> allItems;
 
-    // ★ YOLO + 四角扫描 双路检测，结果合并
+    // ★ YOLO + 四角扫描 双路检测
     process::YoloDetector *detector = getYoloDetector();
 
     // ============ 1. YOLO 检测 ============
@@ -952,7 +943,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         }
     }
 
-    // ============ 2. 四角扫描（始终运行，作为兵底）============
+    // ============ 2. 四角扫描（作为兵底）============
     {
         writeDiag(QString::fromUtf8("同时运行四角扫描作为兵底"));
 
@@ -992,7 +983,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         writeDiag(QString::fromUtf8("四角扫描得到 %1 个候选")
                       .arg(static_cast<int>(cornerItems.size())));
 
-        // 合并去重：如果 YOLO 框和四角框重叠，保留 YOLO 的
+        // 合并去重
         auto rectIoU = [](const cv::Rect &a, const cv::Rect &b) -> double {
             const int x1 = std::max(a.x, b.x);
             const int y1 = std::max(a.y, b.y);
@@ -1024,38 +1015,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
                       .arg(static_cast<int>(allItems.size())));
     }
 
-    std::vector<PageNumberItem> candidates;
-    candidates.reserve(allItems.size());
-
-    if (detector) {
-        candidates = allItems;
-        writeDiag(QString::fromUtf8("YOLO 候选数 %1")
-                      .arg(static_cast<int>(candidates.size())));
-    } else {
-        const double CORNER_RATIO = 0.20;
-        const double MIN_H_RATIO  = 0.013;
-
-        for (const auto &it : allItems) {
-            const cv::Rect &b = it.boundingBox;
-            const double cx = b.x + b.width / 2.0;
-            const double cy = b.y + b.height / 2.0;
-
-            const bool inLeft   = (cx < W * CORNER_RATIO);
-            const bool inRight  = (cx > W * (1.0 - CORNER_RATIO));
-            const bool inTop    = (cy < H * CORNER_RATIO);
-            const bool inBottom = (cy > H * (1.0 - CORNER_RATIO));
-
-            const bool inTopLeft     = (inLeft  && inTop);
-            const bool inTopRight    = (inRight && inTop);
-            const bool inBottomRight = (inRight && inBottom);
-
-            const bool inCorner = (inTopLeft || inTopRight || inBottomRight);
-            const bool bigEnough = (b.height >= H * MIN_H_RATIO);
-            const bool keep = (inCorner && bigEnough);
-
-            if (keep) candidates.push_back(it);
-        }
-    }
+    std::vector<PageNumberItem> candidates = allItems;
 
     writeDiag(QString::fromUtf8("过滤后剩余 %1 个候选块")
                   .arg(static_cast<int>(candidates.size())));
@@ -1068,46 +1028,49 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         white = cv::Scalar(255, 255, 255);
     }
 
-    // ★ 只装真正需要待确认的项（已涂白的 / 已跳过的不入）
     std::vector<PageNumberItem> pendingItems;
 
-    // ★ 修改②：划线涂白阈值从 10 降到 1
+    // ★★★ 核心逻辑（用户要求的顺序）★★★
+    //   1. 识别必须是 3 位数（页码格式）
+    //   2. 匹配正确页码 → 保留
+    //   3. 不匹配 + 有划线 → 涂白
+    //   4. 不匹配 + 没划线 → 待确认
     for (auto &item : candidates) {
+        // ★ 1. 必须 3 位数
+        const int textLen = item.recognizedText.length();
+        if (item.recognizedNumber >= 0 && textLen != 3) {
+            writeDiag(QString::fromUtf8("  → 识别=%1 位数=%2≠3，跳过")
+                          .arg(item.recognizedNumber).arg(textLen));
+            continue;
+        }
+
         const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber,
                                                      result.correctPage);
         const bool ocrFailed = (item.recognizedNumber < 0);
 
+        // ★ 2. 匹配正确页码 → 保留
         if (matchesCorrect) {
-            continue;  // 正确页码，不入待确认
-        }
-
-        // ★ 新增过滤：识别结果位数太少（单字符误检），直接跳过
-        const int textLen = item.recognizedText.length();
-        if (item.recognizedNumber >= 0 && textLen < 2) {
-            writeDiag(QString::fromUtf8("  → 识别=%1 位数<2，跳过")
-                          .arg(item.recognizedNumber));
             continue;
         }
 
+        // OCR 失败 → 待确认
         if (ocrFailed) {
             ++result.pendingCount;
-            pendingItems.push_back(item);  // OCR 失败 → 待确认
+            pendingItems.push_back(item);
             continue;
         }
 
+        // ★ 3. 不匹配 + 有划线 → 涂白
         const double kMinConf = 0.85;
-        const bool strongConf = (item.confidence >= 0.95);
-        if ((item.isCrossed || strongConf)
-            && item.recognizedNumber >= 10
-            && item.confidence >= kMinConf) {
+        if (item.isCrossed && item.confidence >= kMinConf) {
             eraseBlock(dst, gray, item.boundingBox, white);
             ++result.crossedRemoved;
-            // ★ 已自动涂白，不入待确认
             writeDiag(QString::fromUtf8("  → 识别=%1，划线=是，涂白")
                           .arg(item.recognizedNumber));
         } else {
+            // ★ 4. 不匹配 + 没划线 → 待确认
             ++result.pendingCount;
-            pendingItems.push_back(item);  // 不满足涂白条件 → 待确认
+            pendingItems.push_back(item);
             writeDiag(QString::fromUtf8("  → 识别=%1，划线=否，加待确认")
                           .arg(item.recognizedNumber));
         }
@@ -1148,7 +1111,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     result.image = dst;
     result.markedImage = marked;
-    result.items = pendingItems;   // ★ 只返回待确认项
+    result.items = pendingItems;
     result.ok = true;
 
     if (candidates.empty()) {
