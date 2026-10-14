@@ -1080,6 +1080,15 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         if (matchesCorrect) {
             continue;  // 正确页码，不入待确认
         }
+
+        // ★ 新增过滤：识别结果位数太少（单字符误检），直接跳过
+        const int textLen = item.recognizedText.length();
+        if (item.recognizedNumber >= 0 && textLen < 2) {
+            writeDiag(QString::fromUtf8("  → 识别=%1 位数<2，跳过")
+                          .arg(item.recognizedNumber));
+            continue;
+        }
+
         if (ocrFailed) {
             ++result.pendingCount;
             pendingItems.push_back(item);  // OCR 失败 → 待确认
