@@ -43,7 +43,6 @@ int ErrPage::parseCorrectPage(const QString &sourcePath)
 
 namespace {
 
-// ============ PaddleOCR 单例 ============
 static process::PaddleOcr *g_paddleOcr = nullptr;
 static QMutex             g_paddleMutex;
 static int                g_paddleFailCount = 0;
@@ -92,9 +91,6 @@ static void notePaddleSuccess()
 }
 
 // ============ 全页数字检测（通用，不依赖训练）============
-//   1. 连通域分析，找所有黑色数字块
-//   2. 尺寸过滤
-//   3. 边缘过滤：距任一边 < 15%
 std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
 {
     std::vector<cv::Rect> result;
@@ -103,7 +99,6 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
     cv::threshold(gray, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    // 形态学膨胀，让数字笔画连成一块
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(7, 3));
     cv::Mat dilated;
     cv::dilate(binary, dilated, kernel);
@@ -124,16 +119,13 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
         const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
         const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
 
-        // 尺寸过滤：高度 15~100，宽度 20~250
         if (h < 15 || h > 100) continue;
         if (w < 20 || w > 250) continue;
         if (area < 150) continue;
 
-        // 宽高比：3 位数字一般 2:1 ~ 5:1
         const double aspect = static_cast<double>(w) / std::max(1, h);
         if (aspect < 1.2 || aspect > 6.0) continue;
 
-        // 边缘过滤：距任一边 < 15%
         const bool nearLeft   = (x < marginX);
         const bool nearRight  = (x + w > W - marginX);
         const bool nearTop    = (y < marginY);
@@ -145,7 +137,6 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
     return result;
 }
 
-// ============ 页码匹配（宽松）============
 bool fuzzyMatchPage(int recognized, int correctPage)
 {
     if (recognized < 0 || correctPage < 0) return false;
@@ -178,7 +169,6 @@ bool fuzzyMatchPage(int recognized, int correctPage)
     return false;
 }
 
-// ============ 去除横线（用于 OCR 前预处理）============
 cv::Mat removeHorizontalLinesByMask(const cv::Mat &gray)
 {
     cv::Mat binary;
@@ -200,7 +190,6 @@ cv::Mat removeHorizontalLinesByMask(const cv::Mat &gray)
     return result;
 }
 
-// ============ Tesseract 识别辅助 ============
 QString locateTesseract(const QString &hint)
 {
     if (!hint.isEmpty() && QFile::exists(hint)) return hint;
@@ -281,7 +270,6 @@ OcrAttempt tryTesseract(const cv::Mat &image, const QString &tessExe,
     return result;
 }
 
-// ============ 涂白 ============
 void eraseBlock(cv::Mat &dst,
                 const cv::Mat &srcGray,
                 const cv::Rect &box,
@@ -337,7 +325,6 @@ void eraseBlock(cv::Mat &dst,
 
 } // namespace
 
-// ============ 三层 OCR：ONNX -> PaddleOCR -> Tesseract ============
 int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
                                      QString &outText,
@@ -349,7 +336,6 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         return -1;
     }
 
-    // 1. ONNX 优先
     {
         process::OnnxOcr &ocr = process::OnnxOcr::instance();
         process::OnnxOcr::Result r = ocr.recognize(digitImage);
@@ -360,7 +346,6 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         }
     }
 
-    // 2. PaddleOCR 兜底
     if (!g_paddleDisabled) {
         if (process::PaddleOcr *pocr = getPaddleOcr()) {
             const process::PaddleOcrResult pr = pocr->recognize(digitImage);
@@ -374,7 +359,6 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         }
     }
 
-    // 3. Tesseract 兜底
     const QString tessExe = locateTesseract(tesseractPath);
     if (tessExe.isEmpty()) {
         outText.clear();
@@ -431,17 +415,19 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     return -1;
 }
 
-// ============ 检测"划线"：数字框内部看有没有横穿线 ============
+// ============ 划线检测：用"行黑色像素数"区分手画线和表格线 ============
+//   手画线：黑色像素数在 [数字宽度 × 1.2, 数字宽度 × 5] 之间（短）
+//   表格线：黑色像素数 > 数字宽度 × 5（长，横跨整页）
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
                                double crossLineRatio)
 {
-    // 上下扩 15 像素，左右扩 20%
+    // 上下各扩 10 像素（刚好覆盖手画线穿过数字边缘的情况）
     cv::Rect expanded = digitBox;
-    expanded.y -= 15;
-    expanded.height += 30;
-    expanded.x -= digitBox.width / 5;
-    expanded.width += digitBox.width * 2 / 5;
+    expanded.y -= 10;
+    expanded.height += 20;
+    expanded.x -= digitBox.width / 4;
+    expanded.width += digitBox.width / 2;
     expanded &= cv::Rect(0, 0, gray.cols, gray.rows);
 
     if (expanded.width <= 0 || expanded.height <= 0) return false;
@@ -451,11 +437,9 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     cv::threshold(roi, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    double ratio = 0.6;
-    if (crossLineRatio > 0.1 && crossLineRatio < 0.95) {
-        ratio = crossLineRatio;
-    }
-    const int minCount = static_cast<int>(binary.cols * ratio);
+    const int digitW = digitBox.width;
+    const int minCount = digitW * 6 / 5;   // 数字宽度 × 1.2
+    const int maxCount = digitW * 5;        // 数字宽度 × 5
 
     int hitRows = 0;
     for (int y = 0; y < binary.rows; ++y) {
@@ -464,7 +448,7 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
         for (int x = 0; x < binary.cols; ++x) {
             if (row[x] > 0) ++count;
         }
-        if (count >= minCount) {
+        if (count >= minCount && count <= maxCount) {
             ++hitRows;
             if (hitRows >= 2) return true;
         }
@@ -472,7 +456,6 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     return false;
 }
 
-// ============ 主处理流程 ============
 ErrPageResult ErrPage::process(const cv::Mat &src,
                                 const QString &sourcePath,
                                 const ErrPageOptions &options)
@@ -512,7 +495,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         gray = src.clone();
     }
 
-    // ★ 全页扫描 + 边缘过滤
     std::vector<cv::Rect> boxes = detectAllDigits(gray);
     writeDiag(QString::fromUtf8("全页扫描得到 %1 个边缘候选")
                   .arg(static_cast<int>(boxes.size())));
@@ -562,7 +544,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     std::vector<PageNumberItem> pendingItems;
 
-    // ★ 核心：3 位数字过滤 + 匹配 + 划线涂白
     for (auto &item : candidates) {
         const int textLen = item.recognizedText.length();
         if (item.recognizedNumber >= 0 && textLen != 3) {
