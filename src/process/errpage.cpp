@@ -10,14 +10,11 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
-#include <QFileInfo>
-#include <QRegularExpression>
 #include <QDir>
 #include <QFile>
 #include <QTextStream>
 #include <QImage>
 #include <QProcess>
-#include <QCoreApplication>
 #include <QTemporaryDir>
 #include <QStandardPaths>
 #include <algorithm>
@@ -46,9 +43,9 @@ int ErrPage::parseCorrectPage(const QString &sourcePath)
 
 namespace {
 
+// ============ PaddleOCR 单例 ============
 static process::PaddleOcr *g_paddleOcr = nullptr;
 static QMutex             g_paddleMutex;
-
 static int                g_paddleFailCount = 0;
 static const int          kPaddleMaxFails   = 3;
 static bool               g_paddleDisabled  = false;
@@ -56,9 +53,7 @@ static bool               g_paddleDisabled  = false;
 static process::PaddleOcr *getPaddleOcr()
 {
     QMutexLocker locker(&g_paddleMutex);
-
     if (g_paddleDisabled) return nullptr;
-
     if (g_paddleOcr && g_paddleOcr->isReady()) return g_paddleOcr;
     if (g_paddleOcr) {
         delete g_paddleOcr;
@@ -96,38 +91,20 @@ static void notePaddleSuccess()
     g_paddleFailCount = 0;
 }
 
-static process::YoloDetector *g_yoloDetector = nullptr;
-static QMutex                 g_yoloMutex;
-
-static process::YoloDetector *getYoloDetector()
-{
-    QMutexLocker locker(&g_yoloMutex);
-
-    if (g_yoloDetector && g_yoloDetector->isReady()) return g_yoloDetector;
-    if (g_yoloDetector) {
-        delete g_yoloDetector;
-        g_yoloDetector = nullptr;
-    }
-
-    const QString onnxPath = QCoreApplication::applicationDirPath()
-        + QStringLiteral("/page_det.onnx");
-    if (!QFileInfo::exists(onnxPath)) return nullptr;
-
-    process::YoloDetector *det = new process::YoloDetector();
-    if (!det->load(onnxPath, 0.25f, 0.45f)) {
-        delete det;
-        return nullptr;
-    }
-    g_yoloDetector = det;
-    return g_yoloDetector;
-}
-
-std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
-                                      const ErrPageOptions &options)
+// ============ 全页数字检测（通用，不依赖训练）============
+//   1. 连通域分析，找所有黑色数字块
+//   2. 尺寸过滤
+//   3. 边缘过滤：距任一边 < 15%
+std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
 {
     std::vector<cv::Rect> result;
 
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 3));
+    cv::Mat binary;
+    cv::threshold(gray, binary, 0, 255,
+                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+
+    // 形态学膨胀，让数字笔画连成一块
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(7, 3));
     cv::Mat dilated;
     cv::dilate(binary, dilated, kernel);
 
@@ -135,93 +112,40 @@ std::vector<cv::Rect> findDigitBoxes(const cv::Mat &binary,
     const int nLabels = cv::connectedComponentsWithStats(
         dilated, labels, stats, centroids, 8, CV_32S);
 
+    const int W = gray.cols;
+    const int H = gray.rows;
+    const int marginX = static_cast<int>(W * 0.15);
+    const int marginY = static_cast<int>(H * 0.15);
+
     for (int i = 1; i < nLabels; ++i) {
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
+        const int x = stats.at<int>(i, cv::CC_STAT_LEFT);
+        const int y = stats.at<int>(i, cv::CC_STAT_TOP);
         const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
         const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
 
-        if (h < 15 || h > 180) continue;
-        if (w < 8 || w > 300) continue;
-        if (area < 40) continue;
+        // 尺寸过滤：高度 15~100，宽度 20~250
+        if (h < 15 || h > 100) continue;
+        if (w < 20 || w > 250) continue;
+        if (area < 150) continue;
 
-        const double aspect = static_cast<double>(h) / std::max(1, w);
-        if (aspect < 0.1) continue;
-        if (aspect > 6.0) continue;
+        // 宽高比：3 位数字一般 2:1 ~ 5:1
+        const double aspect = static_cast<double>(w) / std::max(1, h);
+        if (aspect < 1.2 || aspect > 6.0) continue;
 
-        const double fillRatio = static_cast<double>(area) /
-                                  std::max(1, w * h);
-        if (fillRatio > 0.7) continue;
+        // 边缘过滤：距任一边 < 15%
+        const bool nearLeft   = (x < marginX);
+        const bool nearRight  = (x + w > W - marginX);
+        const bool nearTop    = (y < marginY);
+        const bool nearBottom = (y + h > H - marginY);
+        if (!(nearLeft || nearRight || nearTop || nearBottom)) continue;
 
-        cv::Rect r(stats.at<int>(i, cv::CC_STAT_LEFT),
-                   stats.at<int>(i, cv::CC_STAT_TOP),
-                   w, h);
-        result.push_back(r);
+        result.push_back(cv::Rect(x, y, w, h));
     }
     return result;
 }
 
-double verticalOverlap(const cv::Rect &a, const cv::Rect &b)
-{
-    const int top = std::max(a.y, b.y);
-    const int bot = std::min(a.y + a.height, b.y + b.height);
-    if (bot <= top) return 0.0;
-    const int minH = std::min(a.height, b.height);
-    if (minH <= 0) return 0.0;
-    return static_cast<double>(bot - top) / minH;
-}
-
-std::vector<cv::Rect> mergeAdjacentDigits(std::vector<cv::Rect> boxes)
-{
-    if (boxes.size() < 2) return boxes;
-
-    std::sort(boxes.begin(), boxes.end(),
-              [](const cv::Rect &a, const cv::Rect &b) {
-                  if (std::abs(a.y - b.y) < a.height / 2) return a.x < b.x;
-                  return a.y < b.y;
-              });
-
-    std::vector<cv::Rect> merged;
-    cv::Rect current = boxes[0];
-
-    for (size_t i = 1; i < boxes.size(); ++i) {
-        const cv::Rect &next = boxes[i];
-
-        const double vOverlap = verticalOverlap(current, next);
-        const int gap = next.x - (current.x + current.width);
-        const bool closeGap = gap >= 0 && gap < current.height * 0.25;
-
-        if (vOverlap >= 0.6 && closeGap) {
-            const int x1 = std::min(current.x, next.x);
-            const int y1 = std::min(current.y, next.y);
-            const int x2 = std::max(current.x + current.width,
-                                     next.x + next.width);
-            const int y2 = std::max(current.y + current.height,
-                                     next.y + next.height);
-            current = cv::Rect(x1, y1, x2 - x1, y2 - y1);
-        } else {
-            merged.push_back(current);
-            current = next;
-        }
-    }
-    merged.push_back(current);
-    return merged;
-}
-
-QString locateTesseract(const QString &hint)
-{
-    if (!hint.isEmpty() && QFile::exists(hint)) return hint;
-
-    const QString appDir = QCoreApplication::applicationDirPath();
-    const QString c1 = appDir + QStringLiteral("/tesseract/tesseract.exe");
-    if (QFile::exists(c1)) return c1;
-    const QString c2 = appDir + QStringLiteral("/tesseract.exe");
-    if (QFile::exists(c2)) return c2;
-
-    const QString inPath = QStandardPaths::findExecutable(QStringLiteral("tesseract"));
-    if (!inPath.isEmpty()) return inPath;
-    return QString();
-}
-
+// ============ 页码匹配（宽松）============
 bool fuzzyMatchPage(int recognized, int correctPage)
 {
     if (recognized < 0 || correctPage < 0) return false;
@@ -239,23 +163,22 @@ bool fuzzyMatchPage(int recognized, int correctPage)
         while (corrNoZero.startsWith(QLatin1Char('0')) && corrNoZero.length() > 1) {
             corrNoZero.remove(0, 1);
         }
-
         if (recNoZero.length() == corrNoZero.length()) {
-            QString recSorted = recNoZero;
-            QString corrSorted = corrNoZero;
-            std::sort(recSorted.begin(), recSorted.end());
-            std::sort(corrSorted.begin(), corrSorted.end());
-            if (recSorted == corrSorted) return true;
+            QString a = recNoZero;
+            QString b = corrNoZero;
+            std::sort(a.begin(), a.end());
+            std::sort(b.begin(), b.end());
+            if (a == b) return true;
         }
     }
 
     if (std::abs(recStr.length() - corrStr.length()) > 1) return false;
     if (corrStr.endsWith(recStr) || recStr.endsWith(corrStr)) return true;
     if (corrStr.startsWith(recStr) || recStr.startsWith(corrStr)) return true;
-
     return false;
 }
 
+// ============ 去除横线（用于 OCR 前预处理）============
 cv::Mat removeHorizontalLinesByMask(const cv::Mat &gray)
 {
     cv::Mat binary;
@@ -268,8 +191,7 @@ cv::Mat removeHorizontalLinesByMask(const cv::Mat &gray)
     cv::Mat hLines;
     cv::morphologyEx(binary, hLines, cv::MORPH_OPEN, hKernel);
 
-    cv::Mat dKernel = cv::getStructuringElement(
-        cv::MORPH_RECT, cv::Size(3, 1));
+    cv::Mat dKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 1));
     cv::Mat hLinesDilated;
     cv::dilate(hLines, hLinesDilated, dKernel);
 
@@ -278,49 +200,29 @@ cv::Mat removeHorizontalLinesByMask(const cv::Mat &gray)
     return result;
 }
 
-std::vector<cv::Rect> splitByVerticalProjection(const cv::Mat &binary)
+// ============ Tesseract 识别辅助 ============
+QString locateTesseract(const QString &hint)
 {
-    std::vector<cv::Rect> boxes;
-    if (binary.empty()) return boxes;
+    if (!hint.isEmpty() && QFile::exists(hint)) return hint;
 
-    cv::Mat proj;
-    cv::reduce(binary, proj, 0, cv::REDUCE_SUM, CV_32S);
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QString c1 = appDir + QStringLiteral("/tesseract/tesseract.exe");
+    if (QFile::exists(c1)) return c1;
+    const QString c2 = appDir + QStringLiteral("/tesseract.exe");
+    if (QFile::exists(c2)) return c2;
 
-    int maxSum = 0;
-    for (int x = 0; x < binary.cols; ++x) {
-        const int s = proj.at<int>(0, x);
-        if (s > maxSum) maxSum = s;
-    }
-    const int threshold = std::max(1, maxSum / 20);
-
-    bool inChar = false;
-    int start = 0;
-    for (int x = 0; x < binary.cols; ++x) {
-        const int colSum = proj.at<int>(0, x);
-        if (!inChar && colSum > threshold) {
-            inChar = true;
-            start = x;
-        } else if (inChar && colSum <= threshold) {
-            inChar = false;
-            if (x - start >= 3) {
-                boxes.push_back(cv::Rect(start, 0, x - start, binary.rows));
-            }
-        }
-    }
-    if (inChar && binary.cols - start >= 3) {
-        boxes.push_back(cv::Rect(start, 0, binary.cols - start, binary.rows));
-    }
-    return boxes;
+    const QString inPath = QStandardPaths::findExecutable(QStringLiteral("tesseract"));
+    if (!inPath.isEmpty()) return inPath;
+    return QString();
 }
 
 struct OcrAttempt
 {
     int number = -1;
     QString text;
-    QString psmUsed;
 };
 
-OcrAttempt tryRecognize(const cv::Mat &image, const QString &tessExe,
+OcrAttempt tryTesseract(const cv::Mat &image, const QString &tessExe,
                          const QString &tessdataDir, const QString &psmMode)
 {
     OcrAttempt result;
@@ -368,7 +270,6 @@ OcrAttempt tryRecognize(const cv::Mat &image, const QString &tessExe,
     for (const QChar &c : rawText) {
         if (c.isDigit()) digitsOnly += c;
     }
-
     if (digitsOnly.isEmpty()) return result;
 
     bool ok = false;
@@ -377,62 +278,10 @@ OcrAttempt tryRecognize(const cv::Mat &image, const QString &tessExe,
 
     result.number = num;
     result.text = digitsOnly;
-    result.psmUsed = psmMode;
     return result;
 }
 
-bool recognizeSingleChar(const cv::Mat &charImage,
-                          const QString &tessExe,
-                          const QString &tessdataDir,
-                          int &outDigit)
-{
-    if (charImage.empty()) return false;
-
-    cv::Mat gray;
-    if (charImage.channels() == 3) {
-        cv::cvtColor(charImage, gray, cv::COLOR_BGR2GRAY);
-    } else {
-        gray = charImage.clone();
-    }
-
-    cv::Mat binary;
-    cv::threshold(gray, binary, 0, 255,
-                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
-
-    const double ratios[] = { 0.15, 0.25, 0.35 };
-
-    for (double ratio : ratios) {
-        const int vH = std::max(3, static_cast<int>(binary.rows * ratio));
-        cv::Mat vKernel = cv::getStructuringElement(
-            cv::MORPH_RECT, cv::Size(1, vH));
-        cv::Mat repaired1;
-        cv::morphologyEx(binary, repaired1, cv::MORPH_CLOSE, vKernel);
-
-        cv::Mat k3 = cv::getStructuringElement(
-            cv::MORPH_RECT, cv::Size(3, 3));
-        cv::Mat repaired2;
-        cv::morphologyEx(repaired1, repaired2, cv::MORPH_CLOSE, k3);
-
-        cv::Mat out;
-        cv::bitwise_not(repaired2, out);
-
-        const QStringList modes = {
-            QStringLiteral("10"),
-            QStringLiteral("8"),
-            QStringLiteral("7")
-        };
-
-        for (const QString &m : modes) {
-            OcrAttempt r = tryRecognize(out, tessExe, tessdataDir, m);
-            if (r.number >= 0 && r.text.length() == 1) {
-                outDigit = r.number;
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
+// ============ 涂白 ============
 void eraseBlock(cv::Mat &dst,
                 const cv::Mat &srcGray,
                 const cv::Rect &box,
@@ -488,57 +337,48 @@ void eraseBlock(cv::Mat &dst,
 
 } // namespace
 
+// ============ 三层 OCR：ONNX -> PaddleOCR -> Tesseract ============
 int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
                                      QString &outText,
                                      double &outConfidence)
 {
-    // ★ 暂时跳过 PaddleOCR，直接用 ONNX
+    if (digitImage.empty()) {
+        outText = QString::fromUtf8("空图");
+        outConfidence = 0.0;
+        return -1;
+    }
 
+    // 1. ONNX 优先
     {
         process::OnnxOcr &ocr = process::OnnxOcr::instance();
         process::OnnxOcr::Result r = ocr.recognize(digitImage);
-        if (r.ok) {
+        if (r.ok && r.confidence >= 0.85) {
             outText = r.text;
             outConfidence = r.confidence;
             return r.number;
         }
     }
 
-    outText.clear();
-    outConfidence = 0.0;
-
-    const QString diagPath = QDir::homePath() +
-                             QStringLiteral("/Desktop/ocr_debug.txt");
-    QFile diagFile(diagPath);
-    diagFile.open(QIODevice::Append | QIODevice::Text);
-    QTextStream diag(&diagFile);
-    diag.setCodec("UTF-8");
-    auto writeDiag = [&](const QString &msg) {
-        if (diagFile.isOpen()) {
-            diag << msg << "\n";
-            diag.flush();
+    // 2. PaddleOCR 兜底
+    if (!g_paddleDisabled) {
+        if (process::PaddleOcr *pocr = getPaddleOcr()) {
+            const process::PaddleOcrResult pr = pocr->recognize(digitImage);
+            if (pr.ok && !pr.text.isEmpty()) {
+                outText = pr.text;
+                outConfidence = pr.confidence;
+                notePaddleSuccess();
+                return pr.number;
+            }
+            notePaddleFailure();
         }
-    };
-
-    static int callIndex = 0;
-    const int myIndex = ++callIndex;
-    writeDiag(QString::fromUtf8("========== 第 %1 次调用 ==========").arg(myIndex));
-
-    if (digitImage.empty()) {
-        writeDiag(QString::fromUtf8("错误：输入图像为空"));
-        outText = QString::fromUtf8("空图");
-        diagFile.close();
-        return -1;
     }
-    writeDiag(QString::fromUtf8("输入尺寸：%1 x %2，通道 %3")
-                  .arg(digitImage.cols).arg(digitImage.rows).arg(digitImage.channels()));
 
+    // 3. Tesseract 兜底
     const QString tessExe = locateTesseract(tesseractPath);
     if (tessExe.isEmpty()) {
-        writeDiag(QString::fromUtf8("错误：未找到 tesseract.exe"));
-        outText = QString::fromUtf8("未找到tesseract");
-        diagFile.close();
+        outText.clear();
+        outConfidence = 0.0;
         return -1;
     }
 
@@ -553,236 +393,55 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     }
 
     cv::Mat noLinesGray = removeHorizontalLinesByMask(grayOrig);
-
     cv::Mat cleaned;
     cv::threshold(noLinesGray, cleaned, 0, 255,
                   cv::THRESH_BINARY | cv::THRESH_OTSU);
 
-    cv::Mat cleanedBinary;
-    cv::threshold(noLinesGray, cleanedBinary, 0, 255,
-                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
-
-    {
-        OcrAttempt r = tryRecognize(digitImage, tessExe, tessdataDir,
-                                     QStringLiteral("7"));
-        writeDiag(QString::fromUtf8("原图+psm7：") +
-                  (r.number >= 0 ? QString::fromUtf8("成功 %1").arg(r.number)
-                                  : QString::fromUtf8("失败")));
-        if (r.number >= 0) {
-            outText = r.text;
-            outConfidence = 0.95;
-            writeDiag(QString::fromUtf8("→ 采用原图识别结果"));
-            diagFile.close();
-            return r.number;
-        }
-    }
-
-    {
-        const QString dbgPath = QDir::homePath() +
-            QStringLiteral("/Desktop/ocr_debug_input.png");
-        cv::imwrite(dbgPath.toStdString(), cleaned);
-    }
+    const QStringList psmModes = {
+        QStringLiteral("7"),
+        QStringLiteral("8"),
+        QStringLiteral("13"),
+        QStringLiteral("6")
+    };
 
     int bestNumber = -1;
     QString bestText;
     int bestDigits = 0;
 
-    {
-        const QStringList psmModes = {
-            QStringLiteral("7"),
-            QStringLiteral("8"),
-            QStringLiteral("13"),
-            QStringLiteral("6")
-        };
-
-        for (const QString &psm : psmModes) {
-            OcrAttempt r = tryRecognize(cleaned, tessExe, tessdataDir, psm);
-            if (r.number >= 0) {
-                writeDiag(QString::fromUtf8("预处理+psm%1：成功 %2")
-                              .arg(psm).arg(r.text));
-                const int d = r.text.length();
-                if (d > bestDigits) {
-                    bestNumber = r.number;
-                    bestText = r.text;
-                    bestDigits = d;
-                }
-            } else {
-                writeDiag(QString::fromUtf8("预处理+psm%1：失败").arg(psm));
-            }
-        }
-    }
-
-    {
-        std::vector<cv::Rect> charBoxes = splitByVerticalProjection(cleanedBinary);
-        const int rawCount = static_cast<int>(charBoxes.size());
-
-        writeDiag(QString::fromUtf8("分割得到 %1 个块").arg(rawCount));
-
-        {
-            cv::Mat dbg;
-            cv::cvtColor(cleaned, dbg, cv::COLOR_GRAY2BGR);
-            for (size_t i = 0; i < charBoxes.size(); ++i) {
-                cv::rectangle(dbg, charBoxes[i], cv::Scalar(0, 0, 255), 1);
-            }
-            const QString dbgPath = QDir::homePath() +
-                QStringLiteral("/Desktop/ocr_debug_split.png");
-            cv::imwrite(dbgPath.toStdString(), dbg);
-        }
-
-        if (charBoxes.size() >= 2 && charBoxes.size() <= 6) {
-            QString combined;
-            bool allOk = true;
-
-            for (size_t i = 0; i < charBoxes.size(); ++i) {
-                cv::Rect safe = charBoxes[i] &
-                    cv::Rect(0, 0, cleaned.cols, cleaned.rows);
-                if (safe.width <= 0 || safe.height <= 0) {
-                    allOk = false;
-                    break;
-                }
-
-                cv::Mat cbCleaned = cleaned(safe).clone();
-                cv::Mat cbOrig = grayOrig(safe).clone();
-
-                int digit = -1;
-                bool ok = false;
-
-                if (recognizeSingleChar(cbCleaned, tessExe, tessdataDir, digit)) {
-                    ok = true;
-                    writeDiag(QString::fromUtf8("  字符%1：成功 %2（涂白图）")
-                                  .arg(static_cast<int>(i)).arg(digit));
-                }
-                else if (recognizeSingleChar(cbOrig, tessExe, tessdataDir, digit)) {
-                    ok = true;
-                    writeDiag(QString::fromUtf8("  字符%1：成功 %2（原图）")
-                                  .arg(static_cast<int>(i)).arg(digit));
-                }
-
-                if (ok) {
-                    combined += QString::number(digit);
-                } else {
-                    allOk = false;
-                    writeDiag(QString::fromUtf8("  字符%1：失败")
-                                  .arg(static_cast<int>(i)));
-                    break;
-                }
-            }
-
-            if (allOk && !combined.isEmpty()) {
-                const int d = combined.length();
-                if (d > bestDigits) {
-                    bool ok = false;
-                    const int num = combined.toInt(&ok);
-                    if (ok) {
-                        bestNumber = num;
-                        bestText = combined;
-                        bestDigits = d;
-                        writeDiag(QString::fromUtf8(
-                            "→ 分割识别胜出：%1").arg(combined));
-                    }
-                }
+    for (const QString &psm : psmModes) {
+        OcrAttempt r = tryTesseract(cleaned, tessExe, tessdataDir, psm);
+        if (r.number >= 0) {
+            const int d = r.text.length();
+            if (d > bestDigits) {
+                bestNumber = r.number;
+                bestText = r.text;
+                bestDigits = d;
             }
         }
     }
 
     if (bestNumber >= 0) {
         outText = bestText;
-        outConfidence = 0.9;
-        writeDiag(QString::fromUtf8("最终采用：%1（位数 %2）")
-                      .arg(bestText).arg(bestDigits));
-        diagFile.close();
+        outConfidence = 0.85;
         return bestNumber;
     }
 
-    writeDiag(QString::fromUtf8("所有方案均失败"));
-    outText = QString::fromUtf8("无数字");
-    diagFile.close();
+    outText.clear();
+    outConfidence = 0.0;
     return -1;
 }
 
-void ErrPage::detectDigitsInRegion(const cv::Mat &gray,
-                                    const cv::Rect &region,
-                                    const ErrPageOptions &options,
-                                    std::vector<PageNumberItem> &outItems)
-{
-    cv::Rect r = region & cv::Rect(0, 0, gray.cols, gray.rows);
-    if (r.width <= 0 || r.height <= 0) return;
-
-    cv::Mat roi = gray(r);
-
-    cv::Mat binary;
-    cv::threshold(roi, binary, 0, 255,
-                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
-
-    std::vector<cv::Rect> digitBoxes = findDigitBoxes(binary, options);
-    std::vector<cv::Rect> pageBoxes = mergeAdjacentDigits(digitBoxes);
-
-    {
-        cv::Mat dbg;
-        cv::cvtColor(roi, dbg, cv::COLOR_GRAY2BGR);
-        for (const auto &b : digitBoxes) {
-            cv::rectangle(dbg, b, cv::Scalar(255, 0, 0), 1);
-        }
-        for (const auto &b : pageBoxes) {
-            cv::rectangle(dbg, b, cv::Scalar(0, 0, 255), 1);
-        }
-        static int regionIdx = 0;
-        const int idxMod = regionIdx % 4;
-        ++regionIdx;
-        const QString dbgPath = QDir::homePath() +
-            QStringLiteral("/Desktop/ocr_debug_candidates_%1.png").arg(idxMod);
-        cv::imwrite(dbgPath.toStdString(), dbg);
-    }
-
-    for (const auto &box : pageBoxes) {
-        cv::Rect expandedBox = box;
-        expandedBox.y -= 8;
-        expandedBox.height += 16;
-        expandedBox &= cv::Rect(0, 0, roi.cols, roi.rows);
-
-        const cv::Rect globalBox(expandedBox.x + r.x, expandedBox.y + r.y,
-                                  expandedBox.width, expandedBox.height);
-
-        PageNumberItem item;
-        item.boundingBox = cv::Rect(box.x + r.x, box.y + r.y,
-                                     box.width, box.height);
-        item.isCrossed = detectCrossLine(gray, item.boundingBox,
-                                          options.crossLineRatio);
-
-        cv::Rect safeBox = expandedBox & cv::Rect(0, 0, roi.cols, roi.rows);
-        if (safeBox.width > 0 && safeBox.height > 0) {
-            cv::Mat digitImg = roi(safeBox).clone();
-
-            QString text;
-            double conf = 0.0;
-            const int num = recognizeWithTesseract(
-                digitImg, options.tesseractPath, text, conf);
-
-            item.recognizedNumber = num;
-            item.recognizedText = text;
-            item.confidence = conf;
-        }
-
-        outItems.push_back(item);
-    }
-}
-
-// ★★★ 用"水平跨度"区分手画线和表格线 ★★★
-//   手画线：数字宽度的 1.2 ~ 6 倍（短）
-//   表格线：> 数字宽度的 6 倍（长，横跨整页）
+// ============ 检测"划线"：数字框内部看有没有横穿线 ============
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
                                double crossLineRatio)
 {
-    // 左右各扩 数字宽度 × 4（覆盖最长手画线）
-    // 上下各扩 数字高度的一半
-    const int extX = digitBox.width * 4;
-    const int extY = digitBox.height / 2;
+    // 上下扩 15 像素，左右扩 20%
     cv::Rect expanded = digitBox;
-    expanded.x -= extX;
-    expanded.y -= extY;
-    expanded.width += extX * 2;
-    expanded.height += extY * 2;
+    expanded.y -= 15;
+    expanded.height += 30;
+    expanded.x -= digitBox.width / 5;
+    expanded.width += digitBox.width * 2 / 5;
     expanded &= cv::Rect(0, 0, gray.cols, gray.rows);
 
     if (expanded.width <= 0 || expanded.height <= 0) return false;
@@ -792,30 +451,20 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     cv::threshold(roi, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    // 手画线的水平跨度范围（像素）
-    const int minSpan = static_cast<int>(digitBox.width * 1.2);
-    const int maxSpan = static_cast<int>(digitBox.width * 6);
+    double ratio = 0.6;
+    if (crossLineRatio > 0.1 && crossLineRatio < 0.95) {
+        ratio = crossLineRatio;
+    }
+    const int minCount = static_cast<int>(binary.cols * ratio);
 
     int hitRows = 0;
     for (int y = 0; y < binary.rows; ++y) {
         const uchar *row = binary.ptr<uchar>(y);
-        int firstX = -1;
-        int lastX = -1;
         int count = 0;
         for (int x = 0; x < binary.cols; ++x) {
-            if (row[x] > 0) {
-                if (firstX < 0) firstX = x;
-                lastX = x;
-                ++count;
-            }
+            if (row[x] > 0) ++count;
         }
-        if (firstX < 0) continue;
-        const int span = lastX - firstX + 1;
-        // ★ 关键判断：
-        //   跨度在 [minSpan, maxSpan] 之间（是手画线的长度）
-        //   且该行黑色像素数占跨度的 40% 以上（说明是一条线，不是零散噪点）
-        if (span >= minSpan && span <= maxSpan
-            && count >= span * 4 / 10) {
+        if (count >= minCount) {
             ++hitRows;
             if (hitRows >= 2) return true;
         }
@@ -823,6 +472,7 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     return false;
 }
 
+// ============ 主处理流程 ============
 ErrPageResult ErrPage::process(const cv::Mat &src,
                                 const QString &sourcePath,
                                 const ErrPageOptions &options)
@@ -862,136 +512,45 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         gray = src.clone();
     }
 
+    // ★ 全页扫描 + 边缘过滤
+    std::vector<cv::Rect> boxes = detectAllDigits(gray);
+    writeDiag(QString::fromUtf8("全页扫描得到 %1 个边缘候选")
+                  .arg(static_cast<int>(boxes.size())));
+
     std::vector<PageNumberItem> allItems;
 
-    process::YoloDetector *detector = getYoloDetector();
+    for (const auto &r : boxes) {
+        cv::Rect expanded = r;
+        expanded.x -= 10;
+        expanded.y -= 10;
+        expanded.width += 20;
+        expanded.height += 20;
+        expanded &= cv::Rect(0, 0, W, H);
+        if (expanded.width <= 0 || expanded.height <= 0) continue;
 
-    // ============ 1. YOLO 检测 ============
-    if (detector) {
-        writeDiag(QString::fromUtf8("使用 YOLO 检测页码框"));
+        PageNumberItem item;
+        item.boundingBox = r;
+        item.isCrossed = detectCrossLine(gray, r, options.crossLineRatio);
 
-        cv::Mat bgr;
-        if (src.channels() == 1) {
-            cv::cvtColor(src, bgr, cv::COLOR_GRAY2BGR);
-        } else if (src.channels() == 4) {
-            cv::cvtColor(src, bgr, cv::COLOR_BGRA2BGR);
-        } else {
-            bgr = src.clone();
-        }
+        cv::Mat digitImg = gray(expanded).clone();
+        QString text;
+        double conf = 0.0;
+        const int num = recognizeWithTesseract(
+            digitImg, options.tesseractPath, text, conf);
 
-        const std::vector<YoloBox> yoloBoxes = detector->detect(bgr);
-        writeDiag(QString::fromUtf8("YOLO 检测到 %1 个页码框")
-                      .arg(static_cast<int>(yoloBoxes.size())));
+        item.recognizedNumber = num;
+        item.recognizedText = text;
+        item.confidence = conf;
 
-        for (const auto &box : yoloBoxes) {
-            cv::Rect r = box.rect & cv::Rect(0, 0, W, H);
-            if (r.width <= 0 || r.height <= 0) continue;
+        writeDiag(QString::fromUtf8("  候选(%1,%2,%3x%4) 识别=%5 conf=%6 划线=%7")
+                      .arg(r.x).arg(r.y).arg(r.width).arg(r.height)
+                      .arg(num).arg(conf)
+                      .arg(item.isCrossed ? QStringLiteral("是") : QStringLiteral("否")));
 
-            cv::Rect expanded = r;
-            expanded.x -= 10;
-            expanded.y -= 10;
-            expanded.width += 20;
-            expanded.height += 20;
-            expanded &= cv::Rect(0, 0, W, H);
-            if (expanded.width <= 0 || expanded.height <= 0) continue;
-
-            PageNumberItem item;
-            item.boundingBox = r;
-            item.isCrossed = detectCrossLine(gray, r, options.crossLineRatio);
-
-            cv::Mat digitImg = gray(expanded).clone();
-            QString text;
-            double conf = 0.0;
-            const int num = recognizeWithTesseract(
-                digitImg, options.tesseractPath, text, conf);
-
-            item.recognizedNumber = num;
-            item.recognizedText = text;
-            item.confidence = conf;
-
-            writeDiag(QString::fromUtf8("  YOLO 框(%1,%2,%3x%4) 识别=%5 conf=%6")
-                          .arg(r.x).arg(r.y).arg(r.width).arg(r.height)
-                          .arg(num).arg(conf));
-
-            allItems.push_back(item);
-        }
-    }
-
-    // ============ 2. 四角扫描（作为兵底）============
-    {
-        writeDiag(QString::fromUtf8("同时运行四角扫描作为兵底"));
-
-        const int minRegionH = 600;
-        std::vector<PageNumberItem> cornerItems;
-
-        if (options.detectTopLeft) {
-            const int w = static_cast<int>(W * options.topLeftWidthRatio);
-            int h = static_cast<int>(H * options.topLeftHeightRatio);
-            if (h < minRegionH) h = std::min(minRegionH, H);
-            cv::Rect region(0, 0, w, h);
-            detectDigitsInRegion(gray, region, options, cornerItems);
-        }
-
-        if (options.detectTopRight) {
-            const int w = static_cast<int>(W * options.topRightWidthRatio);
-            int h = static_cast<int>(H * options.topRightHeightRatio);
-            if (h < minRegionH) h = std::min(minRegionH, H);
-            cv::Rect region(W - w, 0, w, h);
-            detectDigitsInRegion(gray, region, options, cornerItems);
-        }
-
-        if (options.detectBottomRight) {
-            const int w = static_cast<int>(W * options.bottomRightWidthRatio);
-            const int h = static_cast<int>(H * options.bottomRightHeightRatio);
-            cv::Rect region(W - w, H - h, w, h);
-            detectDigitsInRegion(gray, region, options, cornerItems);
-        }
-
-        if (options.detectBottomLeft) {
-            const int w = static_cast<int>(W * options.bottomLeftWidthRatio);
-            const int h = static_cast<int>(H * options.bottomLeftHeightRatio);
-            cv::Rect region(0, H - h, w, h);
-            detectDigitsInRegion(gray, region, options, cornerItems);
-        }
-
-        writeDiag(QString::fromUtf8("四角扫描得到 %1 个候选")
-                      .arg(static_cast<int>(cornerItems.size())));
-
-        auto rectIoU = [](const cv::Rect &a, const cv::Rect &b) -> double {
-            const int x1 = std::max(a.x, b.x);
-            const int y1 = std::max(a.y, b.y);
-            const int x2 = std::min(a.x + a.width, b.x + b.width);
-            const int y2 = std::min(a.y + a.height, b.y + b.height);
-            if (x2 <= x1 || y2 <= y1) return 0.0;
-            const double inter = (x2 - x1) * (y2 - y1);
-            const double areaA = a.width * a.height;
-            const double areaB = b.width * b.height;
-            const double uni = areaA + areaB - inter;
-            if (uni <= 0.0) return 0.0;
-            return inter / uni;
-        };
-
-        for (const auto &cit : cornerItems) {
-            bool overlap = false;
-            for (const auto &yit : allItems) {
-                if (rectIoU(cit.boundingBox, yit.boundingBox) > 0.3) {
-                    overlap = true;
-                    break;
-                }
-            }
-            if (!overlap) {
-                allItems.push_back(cit);
-            }
-        }
-
-        writeDiag(QString::fromUtf8("合并后总候选数 %1")
-                      .arg(static_cast<int>(allItems.size())));
+        allItems.push_back(item);
     }
 
     std::vector<PageNumberItem> candidates = allItems;
-
-    writeDiag(QString::fromUtf8("过滤后剩余 %1 个候选块")
-                  .arg(static_cast<int>(candidates.size())));
 
     cv::Mat dst = src.clone();
     cv::Scalar white;
@@ -1003,8 +562,8 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
 
     std::vector<PageNumberItem> pendingItems;
 
+    // ★ 核心：3 位数字过滤 + 匹配 + 划线涂白
     for (auto &item : candidates) {
-        // ★ 1. 必须 3 位数
         const int textLen = item.recognizedText.length();
         if (item.recognizedNumber >= 0 && textLen != 3) {
             writeDiag(QString::fromUtf8("  → 识别=%1 位数=%2≠3，跳过")
@@ -1016,10 +575,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
                                                      result.correctPage);
         const bool ocrFailed = (item.recognizedNumber < 0);
 
-        // ★ 2. 匹配正确页码 → 保留
-        if (matchesCorrect) {
-            continue;
-        }
+        if (matchesCorrect) continue;
 
         if (ocrFailed) {
             ++result.pendingCount;
@@ -1027,7 +583,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             continue;
         }
 
-        // ★ 3. 不匹配 + 有划线 → 涂白
         const double kMinConf = 0.85;
         if (item.isCrossed && item.confidence >= kMinConf) {
             eraseBlock(dst, gray, item.boundingBox, white);
@@ -1035,7 +590,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             writeDiag(QString::fromUtf8("  → 识别=%1，划线=是，涂白")
                           .arg(item.recognizedNumber));
         } else {
-            // ★ 4. 不匹配 + 没划线 → 待确认
             ++result.pendingCount;
             pendingItems.push_back(item);
             writeDiag(QString::fromUtf8("  → 识别=%1，划线=否，加待确认")
