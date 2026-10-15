@@ -90,7 +90,6 @@ static void notePaddleSuccess()
     g_paddleFailCount = 0;
 }
 
-// ============ 全页数字检测（通用，不依赖训练）============
 std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
 {
     std::vector<cv::Rect> result;
@@ -415,19 +414,19 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     return -1;
 }
 
-// ============ 划线检测：用"行黑色像素数"区分手画线和表格线 ============
-//   手画线：黑色像素数在 [数字宽度 × 1.2, 数字宽度 × 5] 之间（短）
-//   表格线：黑色像素数 > 数字宽度 × 5（长，横跨整页）
+// ============ 划线检测 ============
+//   手画线穿过数字 → 那一行黑色像素数在 [数字宽度 × 0.5, 数字宽度 × 1.2]
+//   表格线穿过 → 那一行黑色像素数 > 数字宽度 × 1.2（满行）
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
                                double crossLineRatio)
 {
-    // 上下各扩 10 像素（刚好覆盖手画线穿过数字边缘的情况）
+    // 上下各扩 15 像素（手画线可能穿过数字边缘之外一点）
     cv::Rect expanded = digitBox;
-    expanded.y -= 10;
-    expanded.height += 20;
-    expanded.x -= digitBox.width / 4;
-    expanded.width += digitBox.width / 2;
+    expanded.y -= 15;
+    expanded.height += 30;
+    expanded.x -= 5;
+    expanded.width += 10;
     expanded &= cv::Rect(0, 0, gray.cols, gray.rows);
 
     if (expanded.width <= 0 || expanded.height <= 0) return false;
@@ -437,9 +436,10 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     cv::threshold(roi, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
+    // ★ 手画线的黑色像素数范围（数字宽度为基准）
     const int digitW = digitBox.width;
-    const int minCount = digitW * 6 / 5;   // 数字宽度 × 1.2
-    const int maxCount = digitW * 5;        // 数字宽度 × 5
+    const int minCount = digitW * 5 / 10;    // 数字宽度 × 0.5
+    const int maxCount = digitW * 12 / 10;   // 数字宽度 × 1.2
 
     int hitRows = 0;
     for (int y = 0; y < binary.rows; ++y) {
@@ -448,6 +448,7 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
         for (int x = 0; x < binary.cols; ++x) {
             if (row[x] > 0) ++count;
         }
+        // ★ 手画线特征：不是满行，也不是空白
         if (count >= minCount && count <= maxCount) {
             ++hitRows;
             if (hitRows >= 2) return true;
