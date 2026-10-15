@@ -338,7 +338,7 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
     {
         process::OnnxOcr &ocr = process::OnnxOcr::instance();
         process::OnnxOcr::Result r = ocr.recognize(digitImage);
-        if (r.ok && r.confidence >= 0.85) {
+        if (r.ok && r.confidence >= 0.5) {
             outText = r.text;
             outConfidence = r.confidence;
             return r.number;
