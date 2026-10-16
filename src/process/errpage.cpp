@@ -125,12 +125,12 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
         const double aspect = static_cast<double>(w) / std::max(1, h);
         if (aspect < 1.2 || aspect > 6.0) continue;
 
-        const bool nearLeft   = (x < marginX);
-        const bool nearRight  = (x + w > W - marginX);
-        const bool nearTop    = (y < marginY);
-        const bool nearBottom = (y + h > H - marginY);
-        if (!(nearLeft || nearRight || nearTop || nearBottom)) continue;
-
+        // ★ 只检测 4 个角（不检测边的中间，避免误删标题）
+        const bool inTopLeft     = (x < marginX)           && (y < marginY);
+        const bool inTopRight    = (x + w > W - marginX)   && (y < marginY);
+        const bool inBottomLeft  = (x < marginX)           && (y + h > H - marginY);
+        const bool inBottomRight = (x + w > W - marginX)   && (y + h > H - marginY);
+        if (!(inTopLeft || inTopRight || inBottomLeft || inBottomRight)) continue;
         result.push_back(cv::Rect(x, y, w, h));
     }
     return result;
