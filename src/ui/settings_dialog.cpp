@@ -49,6 +49,8 @@ AppSettings AppSettings::load()
     s.errPageBottomRight    = ini.value(QStringLiteral("bottomRight"), true).toBool();
     s.errPageMinDigitHeight = ini.value(QStringLiteral("minDigitHeight"), 20).toInt();
     s.errPageMaxDigitHeight = ini.value(QStringLiteral("maxDigitHeight"), 100).toInt();
+    // ★ 新增：PaddleOCR 精识别
+    s.enablePaddleOcr       = ini.value(QStringLiteral("enablePaddleOcr"), false).toBool();
     ini.endGroup();
 
     ini.beginGroup(QStringLiteral("Batch"));
@@ -58,7 +60,6 @@ AppSettings AppSettings::load()
     s.reportDir          = ini.value(QStringLiteral("reportDir")).toString();
     ini.endGroup();
 
-    // ★ 备份（与 batch_dialog.cpp 里读的键名保持一致）
     ini.beginGroup(QStringLiteral("Backup"));
     s.backupDir     = ini.value(QStringLiteral("backupDir")).toString();
     s.backupEnabled = ini.value(QStringLiteral("backupEnabled"), false).toBool();
@@ -86,6 +87,8 @@ void AppSettings::save() const
     ini.setValue(QStringLiteral("bottomRight"),    errPageBottomRight);
     ini.setValue(QStringLiteral("minDigitHeight"), errPageMinDigitHeight);
     ini.setValue(QStringLiteral("maxDigitHeight"), errPageMaxDigitHeight);
+    // ★ 新增：PaddleOCR 精识别
+    ini.setValue(QStringLiteral("enablePaddleOcr"), enablePaddleOcr);
     ini.endGroup();
 
     ini.beginGroup(QStringLiteral("Batch"));
@@ -95,7 +98,6 @@ void AppSettings::save() const
     ini.setValue(QStringLiteral("reportDir"),   reportDir);
     ini.endGroup();
 
-    // ★ 备份
     ini.beginGroup(QStringLiteral("Backup"));
     ini.setValue(QStringLiteral("backupDir"),     backupDir);
     ini.setValue(QStringLiteral("backupEnabled"), backupEnabled);
@@ -109,7 +111,7 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     : QDialog(parent)
 {
     setWindowTitle(QString::fromUtf8("设置"));
-    resize(660, 860);
+    resize(660, 900);
     setupUi();
     loadToUi();
 }
@@ -194,10 +196,17 @@ void SettingsDialog::setupUi()
     digitLayout->addWidget(m_maxDigitHeightSpin);
     digitLayout->addStretch();
 
+    // ★ 新增：PaddleOCR 精识别勾选框
+    m_paddleOcrCheck = new QCheckBox(
+        QString::fromUtf8("开启 PaddleOCR 精识别（慢但准，推荐：识别印章覆盖页码）"),
+        tessGroup);
+    m_paddleOcrCheck->setChecked(false);
+
     QFormLayout *tessForm = new QFormLayout(tessGroup);
     tessForm->addRow(QString::fromUtf8("tesseract 路径："), tessLayout);
     tessForm->addRow(QString::fromUtf8("检测区域："), cornerLayout);
     tessForm->addRow(QString::fromUtf8("数字高度（像素）："), digitLayout);
+    tessForm->addRow(QString::fromUtf8("精识别："), m_paddleOcrCheck);
 
     // ---------- ③ 批处理 ----------
     QGroupBox *batchGroup = new QGroupBox(QString::fromUtf8("批处理"), this);
@@ -254,7 +263,7 @@ void SettingsDialog::setupUi()
     batchForm->addRow(QString::fromUtf8("默认分片："), shardLayout);
     batchForm->addRow(QString::fromUtf8("报告目录："), reportDirLayout);
 
-    // ---------- ★ ④ 备份 ----------
+    // ---------- ④ 备份 ----------
     QGroupBox *backupGroup = new QGroupBox(
         QString::fromUtf8("备份（处理前把原图复制到备份目录）"), this);
 
@@ -336,6 +345,8 @@ void SettingsDialog::loadToUi()
     m_bottomRightCheck->setChecked(s.errPageBottomRight);
     m_minDigitHeightSpin->setValue(qBound(1, s.errPageMinDigitHeight, 9999));
     m_maxDigitHeightSpin->setValue(qBound(1, s.errPageMaxDigitHeight, 9999));
+    // ★ 新增：PaddleOCR 精识别
+    m_paddleOcrCheck->setChecked(s.enablePaddleOcr);
 
     m_extraDirsList->clear();
     for (const QString &d : s.defaultExtraDirs) {
@@ -347,7 +358,6 @@ void SettingsDialog::loadToUi()
     m_totalShardsSpin->setValue(qBound(1, s.defaultTotalShards, 64));
     m_reportDirEdit->setText(s.reportDir);
 
-    // ★ 备份
     m_backupEnabledCheck->setChecked(s.backupEnabled);
     m_backupDirEdit->setText(s.backupDir);
 }
@@ -365,6 +375,8 @@ void SettingsDialog::uiToSettings(AppSettings &s) const
     s.errPageBottomRight    = m_bottomRightCheck->isChecked();
     s.errPageMinDigitHeight = m_minDigitHeightSpin->value();
     s.errPageMaxDigitHeight = m_maxDigitHeightSpin->value();
+    // ★ 新增：PaddleOCR 精识别
+    s.enablePaddleOcr       = m_paddleOcrCheck->isChecked();
 
     s.defaultExtraDirs.clear();
     for (int i = 0; i < m_extraDirsList->count(); ++i) {
@@ -375,7 +387,6 @@ void SettingsDialog::uiToSettings(AppSettings &s) const
     s.defaultTotalShards = m_totalShardsSpin->value();
     s.reportDir          = m_reportDirEdit->text().trimmed();
 
-    // ★ 备份
     s.backupEnabled = m_backupEnabledCheck->isChecked();
     s.backupDir     = m_backupDirEdit->text().trimmed();
 }
@@ -419,7 +430,6 @@ void SettingsDialog::onBrowseReportDir()
     if (!dir.isEmpty()) m_reportDirEdit->setText(dir);
 }
 
-// ★ 备份目录选择
 void SettingsDialog::onBrowseBackupDir()
 {
     const QString dir = QFileDialog::getExistingDirectory(
@@ -470,13 +480,14 @@ void SettingsDialog::onResetDefaults()
     m_bottomRightCheck->setChecked(true);
     m_minDigitHeightSpin->setValue(20);
     m_maxDigitHeightSpin->setValue(100);
+    // ★ 新增：PaddleOCR 精识别恢复默认
+    m_paddleOcrCheck->setChecked(false);
 
     m_extraDirsList->clear();
     m_shardIndexSpin->setValue(0);
     m_totalShardsSpin->setValue(1);
     m_reportDirEdit->clear();
 
-    // ★ 备份
     m_backupEnabledCheck->setChecked(false);
     m_backupDirEdit->clear();
 }

@@ -945,6 +945,7 @@ void MainWindow::onOneClickProcess()
         opt.crossLineRatio         = 0.5;
         opt.fillWhite              = true;
         opt.tesseractPath          = QString();
+        opt.enablePaddleOcr = ui::AppSettings::load().enablePaddleOcr;
 
         const process::ErrPageResult r =
             process::ErrPage::process(m_currentMat, m_currentImagePath, opt);
@@ -1168,6 +1169,7 @@ void MainWindow::onProcessErrPage()
     options.crossLineRatio         = 0.5;
     options.fillWhite              = true;
     options.tesseractPath          = QString();
+    options.enablePaddleOcr = ui::AppSettings::load().enablePaddleOcr;
 
     const cv::Mat srcForThumb = m_currentMat.clone();
 

@@ -324,10 +324,16 @@ void eraseBlock(cv::Mat &dst,
 
 } // namespace
 
+// ============ 三层 OCR ============
+//   新逻辑（用户指定）：
+//     1. ONNX 置信度 ≥ 0.9 → 直接用
+//     2. ONNX < 0.9 且 enablePaddleOcr=true → 走 PaddleOCR
+//     3. ONNX < 0.9 且 enablePaddleOcr=false → 返回 -1（加入待确认）
 int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
                                      QString &outText,
-                                     double &outConfidence)
+                                     double &outConfidence,
+                                     bool enablePaddleOcr)
 {
     if (digitImage.empty()) {
         outText = QString::fromUtf8("空图");
@@ -335,97 +341,44 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         return -1;
     }
 
+    // 1. ONNX 识别
     {
         process::OnnxOcr &ocr = process::OnnxOcr::instance();
         process::OnnxOcr::Result r = ocr.recognize(digitImage);
-        if (r.ok && r.confidence >= 0.5) {
+
+        // ★ ONNX 高置信度 → 直接用
+        if (r.ok && r.confidence >= 0.9) {
             outText = r.text;
             outConfidence = r.confidence;
             return r.number;
         }
-    }
 
-        // ★ PaddleOCR 暂时禁用（13 秒/次太慢，优先用 Tesseract 兜底）
-    //   如果以后需要，取消注释下面的代码
-    /*
-    if (!g_paddleDisabled) {
-        if (process::PaddleOcr *pocr = getPaddleOcr()) {
-            const process::PaddleOcrResult pr = pocr->recognize(digitImage);
-            if (pr.ok && !pr.text.isEmpty()) {
-                outText = pr.text;
-                outConfidence = pr.confidence;
-                notePaddleSuccess();
-                return pr.number;
+        // ★ 用户开启 PaddleOCR 精识别 → 走 PaddleOCR（慢但准）
+        if (enablePaddleOcr && !g_paddleDisabled) {
+            if (process::PaddleOcr *pocr = getPaddleOcr()) {
+                const process::PaddleOcrResult pr = pocr->recognize(digitImage);
+                if (pr.ok && !pr.text.isEmpty()) {
+                    outText = pr.text;
+                    outConfidence = pr.confidence;
+                    notePaddleSuccess();
+                    return pr.number;
+                }
+                notePaddleFailure();
             }
-            notePaddleFailure();
         }
-    }
-    */
 
-    const QString tessExe = locateTesseract(tesseractPath);
-    if (tessExe.isEmpty()) {
+        // ★ ONNX 低置信度 且 未开启 PaddleOCR → 返回 -1（加入待确认）
         outText.clear();
         outConfidence = 0.0;
         return -1;
     }
-
-    const QString tessDir = QFileInfo(tessExe).absolutePath();
-    const QString tessdataDir = tessDir + QStringLiteral("/tessdata");
-
-    cv::Mat grayOrig;
-    if (digitImage.channels() == 3) {
-        cv::cvtColor(digitImage, grayOrig, cv::COLOR_BGR2GRAY);
-    } else {
-        grayOrig = digitImage.clone();
-    }
-
-    cv::Mat noLinesGray = removeHorizontalLinesByMask(grayOrig);
-    cv::Mat cleaned;
-    cv::threshold(noLinesGray, cleaned, 0, 255,
-                  cv::THRESH_BINARY | cv::THRESH_OTSU);
-
-    const QStringList psmModes = {
-        QStringLiteral("7"),
-        QStringLiteral("8"),
-        QStringLiteral("13"),
-        QStringLiteral("6")
-    };
-
-    int bestNumber = -1;
-    QString bestText;
-    int bestDigits = 0;
-
-    for (const QString &psm : psmModes) {
-        OcrAttempt r = tryTesseract(cleaned, tessExe, tessdataDir, psm);
-        if (r.number >= 0) {
-            const int d = r.text.length();
-            if (d > bestDigits) {
-                bestNumber = r.number;
-                bestText = r.text;
-                bestDigits = d;
-            }
-        }
-    }
-
-    if (bestNumber >= 0) {
-        outText = bestText;
-        outConfidence = 0.85;
-        return bestNumber;
-    }
-
-    outText.clear();
-    outConfidence = 0.0;
-    return -1;
 }
 
 // ============ 划线检测 ============
-//   手画线穿过数字 → 那一行黑色像素数在 [数字宽度 × 0.5, 数字宽度 × 1.2]
-//   表格线穿过 → 那一行黑色像素数 > 数字宽度 × 1.2（满行）
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
                                double crossLineRatio)
 {
-    // 上下各扩 15 像素（手画线可能穿过数字边缘之外一点）
     cv::Rect expanded = digitBox;
     expanded.y -= 15;
     expanded.height += 30;
@@ -440,10 +393,9 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
     cv::threshold(roi, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    // ★ 手画线的黑色像素数范围（数字宽度为基准）
     const int digitW = digitBox.width;
-    const int minCount = digitW * 5 / 10;    // 数字宽度 × 0.5
-    const int maxCount = digitW * 12 / 10;   // 数字宽度 × 1.2
+    const int minCount = digitW * 5 / 10;
+    const int maxCount = digitW * 12 / 10;
 
     int hitRows = 0;
     for (int y = 0; y < binary.rows; ++y) {
@@ -452,7 +404,6 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
         for (int x = 0; x < binary.cols; ++x) {
             if (row[x] > 0) ++count;
         }
-        // ★ 手画线特征：不是满行，也不是空白
         if (count >= minCount && count <= maxCount) {
             ++hitRows;
             if (hitRows >= 2) return true;
@@ -490,6 +441,8 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
     writeDiag(QString::fromUtf8("文件名：%1").arg(sourcePath));
     writeDiag(QString::fromUtf8("正确页码：%1").arg(result.correctPage));
     writeDiag(QString::fromUtf8("页面尺寸：%1 x %2").arg(W).arg(H));
+    writeDiag(QString::fromUtf8("PaddleOCR 精识别：%1")
+                  .arg(options.enablePaddleOcr ? QStringLiteral("开") : QStringLiteral("关")));
 
     cv::Mat gray;
     if (src.channels() == 3) {
@@ -523,7 +476,8 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         QString text;
         double conf = 0.0;
         const int num = recognizeWithTesseract(
-            digitImg, options.tesseractPath, text, conf);
+            digitImg, options.tesseractPath, text, conf,
+            options.enablePaddleOcr);
 
         item.recognizedNumber = num;
         item.recognizedText = text;
@@ -566,6 +520,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
         if (ocrFailed) {
             ++result.pendingCount;
             pendingItems.push_back(item);
+            writeDiag(QString::fromUtf8("  → OCR 失败，加待确认"));
             continue;
         }
 

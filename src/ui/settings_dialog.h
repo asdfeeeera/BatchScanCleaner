@@ -34,13 +34,16 @@ struct AppSettings
     int     errPageMinDigitHeight = 20;
     int     errPageMaxDigitHeight = 100;
 
+    // ★ 新增：PaddleOCR 精识别（慢但准，默认关闭）
+    bool    enablePaddleOcr = false;
+
     // ③ 批处理
     QStringList defaultExtraDirs;
     int     defaultShardIndex = 0;
     int     defaultTotalShards = 1;
     QString reportDir;
 
-    // ★ ④ 备份（新增）
+    // ④ 备份
     QString backupDir;
     bool    backupEnabled = false;
 
@@ -67,7 +70,6 @@ private slots:
     void onBrowseReportDir();
     void onAddExtraDir();
     void onRemoveExtraDir();
-    // ★ 新增：备份目录选择
     void onBrowseBackupDir();
     void onResetDefaults();
     void onOk();
@@ -94,6 +96,8 @@ private:
     QCheckBox   *m_bottomRightCheck = nullptr;
     QSpinBox    *m_minDigitHeightSpin = nullptr;
     QSpinBox    *m_maxDigitHeightSpin = nullptr;
+    // ★ 新增：PaddleOCR 精识别勾选框
+    QCheckBox   *m_paddleOcrCheck = nullptr;
 
     // 批处理
     QListWidget *m_extraDirsList     = nullptr;
@@ -104,7 +108,7 @@ private:
     QLineEdit   *m_reportDirEdit     = nullptr;
     QPushButton *m_reportDirBtn      = nullptr;
 
-    // ★ 备份（新增）
+    // 备份
     QCheckBox   *m_backupEnabledCheck = nullptr;
     QLineEdit   *m_backupDirEdit      = nullptr;
     QPushButton *m_backupDirBtn       = nullptr;

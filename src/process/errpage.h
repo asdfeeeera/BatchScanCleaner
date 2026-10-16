@@ -58,6 +58,9 @@ struct ErrPageOptions
     double crossLineRatio = 0.5;
     bool fillWhite = true;
     QString tesseractPath;
+
+    // ★ 新增：开启 PaddleOCR 精识别（慢但准，默认关闭）
+    bool enablePaddleOcr = false;
 };
 
 class ErrPage
@@ -72,7 +75,8 @@ public:
     static int recognizeWithTesseract(const cv::Mat &digitImage,
                                        const QString &tesseractPath,
                                        QString &outText,
-                                       double &outConfidence);
+                                       double &outConfidence,
+                                       bool enablePaddleOcr = false);
 
 private:
     static void detectDigitsInRegion(const cv::Mat &gray,
