@@ -156,6 +156,9 @@ std::pair<double, bool> detectAngleByHough(const cv::Mat &gray)
 
         double ang = std::atan2(dy, dx) * 180.0 / CV_PI;
 
+        // ★ 只保留"接近水平"的线（排除竖直线误判）
+        if (std::abs(dy) > std::abs(dx) * 0.5) continue;
+
         // 归一化到 [-45, 45]（水平线的倾角）
         while (ang >  45.0) ang -= 90.0;
         while (ang < -45.0) ang += 90.0;
@@ -174,7 +177,7 @@ std::pair<double, bool> detectAngleByHough(const cv::Mat &gray)
     std::sort(angles.begin(), angles.end());
     const double median = angles[angles.size() / 2];
 
-    return { median, true };  // Hough 检测到的角度
+    return { -median, true };  // Hough 检测到的角度
 }
 
 } // namespace
