@@ -345,6 +345,9 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         }
     }
 
+        // ★ PaddleOCR 暂时禁用（13 秒/次太慢，优先用 Tesseract 兜底）
+    //   如果以后需要，取消注释下面的代码
+    /*
     if (!g_paddleDisabled) {
         if (process::PaddleOcr *pocr = getPaddleOcr()) {
             const process::PaddleOcrResult pr = pocr->recognize(digitImage);
@@ -357,6 +360,7 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
             notePaddleFailure();
         }
     }
+    */
 
     const QString tessExe = locateTesseract(tesseractPath);
     if (tessExe.isEmpty()) {
