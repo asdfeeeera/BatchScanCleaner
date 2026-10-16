@@ -174,7 +174,7 @@ std::pair<double, bool> detectAngleByHough(const cv::Mat &gray)
     std::sort(angles.begin(), angles.end());
     const double median = angles[angles.size() / 2];
 
-    return { -median, true };  // Hough 角度方向跟图像旋转方向相反
+    return { median, true };  // Hough 检测到的角度
 }
 
 } // namespace
