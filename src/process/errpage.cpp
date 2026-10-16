@@ -90,6 +90,11 @@ static void notePaddleSuccess()
     g_paddleFailCount = 0;
 }
 
+// ============================================================
+// ★ 全页数字检测 + 边缘过滤（4 个角）
+//   ★ 本次修改：marginX 15% -> 10%，marginY 15% -> 8%
+//     （避免检测到页眉，只保留真正的页码位置）
+// ============================================================
 std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
 {
     std::vector<cv::Rect> result;
@@ -108,8 +113,9 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
 
     const int W = gray.cols;
     const int H = gray.rows;
-    const int marginX = static_cast<int>(W * 0.15);
-    const int marginY = static_cast<int>(H * 0.15);
+    // ★ 修改：marginX 15% -> 10%，marginY 15% -> 8%
+    const int marginX = static_cast<int>(W * 0.10);
+    const int marginY = static_cast<int>(H * 0.08);
 
     for (int i = 1; i < nLabels; ++i) {
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
@@ -125,12 +131,13 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
         const double aspect = static_cast<double>(w) / std::max(1, h);
         if (aspect < 1.2 || aspect > 6.0) continue;
 
-        // ★ 只检测 4 个角（不检测边的中间，避免误删标题）
+        // ★ 只检测 4 个角
         const bool inTopLeft     = (x < marginX)           && (y < marginY);
         const bool inTopRight    = (x + w > W - marginX)   && (y < marginY);
         const bool inBottomLeft  = (x < marginX)           && (y + h > H - marginY);
         const bool inBottomRight = (x + w > W - marginX)   && (y + h > H - marginY);
         if (!(inTopLeft || inTopRight || inBottomLeft || inBottomRight)) continue;
+
         result.push_back(cv::Rect(x, y, w, h));
     }
     return result;
@@ -324,11 +331,6 @@ void eraseBlock(cv::Mat &dst,
 
 } // namespace
 
-// ============ 三层 OCR ============
-//   新逻辑（用户指定）：
-//     1. ONNX 置信度 ≥ 0.9 → 直接用
-//     2. ONNX < 0.9 且 enablePaddleOcr=true → 走 PaddleOCR
-//     3. ONNX < 0.9 且 enablePaddleOcr=false → 返回 -1（加入待确认）
 int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
                                      const QString &tesseractPath,
                                      QString &outText,
@@ -346,14 +348,12 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         process::OnnxOcr &ocr = process::OnnxOcr::instance();
         process::OnnxOcr::Result r = ocr.recognize(digitImage);
 
-        // ★ ONNX 高置信度 → 直接用
         if (r.ok && r.confidence >= 0.9) {
             outText = r.text;
             outConfidence = r.confidence;
             return r.number;
         }
 
-        // ★ 用户开启 PaddleOCR 精识别 → 走 PaddleOCR（慢但准）
         if (enablePaddleOcr && !g_paddleDisabled) {
             if (process::PaddleOcr *pocr = getPaddleOcr()) {
                 const process::PaddleOcrResult pr = pocr->recognize(digitImage);
@@ -367,14 +367,12 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
             }
         }
 
-        // ★ ONNX 低置信度 且 未开启 PaddleOCR → 返回 -1（加入待确认）
         outText.clear();
         outConfidence = 0.0;
         return -1;
     }
 }
 
-// ============ 划线检测 ============
 bool ErrPage::detectCrossLine(const cv::Mat &gray,
                                const cv::Rect &digitBox,
                                double crossLineRatio)

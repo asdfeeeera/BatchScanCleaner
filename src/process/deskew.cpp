@@ -123,7 +123,7 @@ cv::Mat roughCropEdges(const cv::Mat &binary)
 }
 
 // ============================================================
-// ★ 新增：Hough 直线检测（识别文档边框的角度）
+// ★ 改进：Hough 直线检测（参数放宽）
 //   适用：合格证、身份证、发票等有明确边框的图
 // ============================================================
 std::pair<double, bool> detectAngleByHough(const cv::Mat &gray)
@@ -132,20 +132,20 @@ std::pair<double, bool> detectAngleByHough(const cv::Mat &gray)
     const int H = gray.rows;
     if (W < 100 || H < 100) return { 0.0, false };
 
-    // 1. Canny 边缘检测
+    // 1. Canny 边缘检测（★ 阈值从 50/150 放宽到 30/100）
     cv::Mat edges;
-    cv::Canny(gray, edges, 50, 150, 3);
+    cv::Canny(gray, edges, 30, 100, 3);
 
-    // 2. 概率 Hough 变换（检测线段）
+    // 2. 概率 Hough 变换（★ 参数放宽）
     std::vector<cv::Vec4i> lines;
-    const int minLineLen = std::max(50, static_cast<int>(std::min(W, H) * 0.25));
-    const int maxLineGap = 20;
+    const int minLineLen = std::max(30, static_cast<int>(std::min(W, H) * 0.15));
+    const int maxLineGap = 30;
     cv::HoughLinesP(edges, lines, 1, CV_PI / 180.0,
-                    80,          // 累加器阈值
-                    minLineLen,  // 最小线段长度
-                    maxLineGap); // 最大间隙
+                    50,          // ★ 累加器阈值 80 -> 50
+                    minLineLen,
+                    maxLineGap);
 
-    if (lines.size() < 3) return { 0.0, false };
+    if (lines.size() < 2) return { 0.0, false };   // ★ 从 3 改成 2
 
     // 3. 统计接近水平/垂直的线的角度
     std::vector<double> angles;
@@ -154,10 +154,10 @@ std::pair<double, bool> detectAngleByHough(const cv::Mat &gray)
         const double dy = static_cast<double>(l[3] - l[1]);
         if (std::abs(dx) < 1.0 && std::abs(dy) < 1.0) continue;
 
-        double ang = std::atan2(dy, dx) * 180.0 / CV_PI;
-
         // ★ 只保留"接近水平"的线（排除竖直线误判）
         if (std::abs(dy) > std::abs(dx) * 0.5) continue;
+
+        double ang = std::atan2(dy, dx) * 180.0 / CV_PI;
 
         // 归一化到 [-45, 45]（水平线的倾角）
         while (ang >  45.0) ang -= 90.0;
@@ -170,14 +170,14 @@ std::pair<double, bool> detectAngleByHough(const cv::Mat &gray)
         angles.push_back(ang);
     }
 
-    // 4. 至少 3 条倾斜线才算有效
-    if (angles.size() < 3) return { 0.0, false };
+    // 4. ★ 至少 2 条倾斜线才算有效（从 3 改成 2）
+    if (angles.size() < 2) return { 0.0, false };
 
-    // 5. 取中位数（比平均值更稳，不受异常值影响）
+    // 5. 取中位数
     std::sort(angles.begin(), angles.end());
     const double median = angles[angles.size() / 2];
 
-    return { -median, true };  // Hough 检测到的角度
+    return { -median, true };
 }
 
 } // namespace
@@ -197,7 +197,7 @@ double Deskew::detectAngle(const cv::Mat &src)
         gray = src.clone();
     }
 
-    // ★ 缩放（加速处理）
+    // 缩放（加速处理）
     cv::Mat smallGray;
     const int maxDim = std::max(gray.cols, gray.rows);
     if (maxDim > 800) {
@@ -208,7 +208,7 @@ double Deskew::detectAngle(const cv::Mat &src)
     }
 
     // ============================================================
-    // 第 1 层：Hough 直线检测（适用于有边框的文档）
+    // 第 1 层：Hough 直线检测（有边框的图）
     // ============================================================
     auto hough = detectAngleByHough(smallGray);
     if (hough.second) {
@@ -216,7 +216,7 @@ double Deskew::detectAngle(const cv::Mat &src)
     }
 
     // ============================================================
-    // 第 2 层：投影法（适用于文字为主的文档）
+    // 第 2 层：投影法（文字为主的图）
     // ============================================================
     const int W = smallGray.cols;
     const int H = smallGray.rows;
@@ -231,7 +231,6 @@ double Deskew::detectAngle(const cv::Mat &src)
     cv::threshold(center, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    // 粗到细搜索
     auto coarse = searchAngleByProjection(binary, -45.0, 45.0, 1.0);
     const double coarseAngle = coarse.first;
 
@@ -300,6 +299,7 @@ DeskewResult Deskew::autoDeskew(const cv::Mat &src)
 
     const double angle = detectAngle(src);
 
+    // ★ 角度阈值 0.2 -> 1.5（避免对正向图做微小旋转）
     if (std::abs(angle) < 1.5) {
         result.image = src.clone();
         result.angle = 0.0;

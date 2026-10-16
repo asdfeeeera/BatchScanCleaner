@@ -7,7 +7,7 @@
 namespace process {
 
 // ============================================================
-// Estimate paper gray (relative to whole image)
+// 估算纸底灰度
 // ============================================================
 double Background::estimatePaperGray(const cv::Mat &gray,
                                       const BackgroundOptions &options)
@@ -39,7 +39,57 @@ double Background::estimatePaperGray(const cv::Mat &gray,
 }
 
 // ============================================================
-// Main whitening
+// ★ 新增：判断这张图是否值得做"白纸泛黄"底色处理
+//   是 → 返回 true
+//   否（彩色证件/照片/彩色文档）→ 返回 false，跳过处理
+// ============================================================
+static bool isYellowishPaper(const cv::Mat &bgr)
+{
+    if (bgr.empty() || bgr.channels() < 3) return true;  // 灰度图默认处理
+
+    // 缩到 200 宽，加速
+    cv::Mat small;
+    const int maxDim = std::max(bgr.cols, bgr.rows);
+    if (maxDim > 200) {
+        const double scale = 200.0 / maxDim;
+        cv::resize(bgr, small, cv::Size(), scale, scale, cv::INTER_AREA);
+    } else {
+        small = bgr;
+    }
+
+    // 1. 平均 BGR
+    cv::Scalar meanBGR = cv::mean(small);
+    const double meanB = meanBGR[0];
+    const double meanG = meanBGR[1];
+    const double meanR = meanBGR[2];
+
+    // 2. 平均饱和度
+    cv::Mat hsv;
+    cv::cvtColor(small, hsv, cv::COLOR_BGR2HSV);
+    cv::Scalar meanHSV = cv::mean(hsv);
+    const double meanSat = meanHSV[1];
+    const double meanVal = meanHSV[2];
+
+    // 3. 判断
+    //   彩色（饱和度 > 25）→ 不处理
+    if (meanSat > 25.0) return false;
+
+    //   整体太暗（V < 180）→ 不处理（可能是照片/深色纸）
+    if (meanVal < 180.0) return false;
+
+    //   "偏黄"特征：R > G > B 且 R - B >= 3
+    //   如果 R <= B 或者差值很小 → 不是泛黄 → 不处理
+    const double rbDiff = meanR - meanB;
+    if (rbDiff < 3.0) return false;
+
+    //   如果 R - B > 40 → 太黄了（可能是彩色纸）→ 不处理
+    if (rbDiff > 40.0) return false;
+
+    return true;
+}
+
+// ============================================================
+// 主处理
 // ============================================================
 BackgroundResult Background::whiten(const cv::Mat &src,
                                      const BackgroundOptions &options)
@@ -51,7 +101,24 @@ BackgroundResult Background::whiten(const cv::Mat &src,
     const int H = src.rows;
     const int channels = src.channels();
 
-    // Convert to gray
+    // ★ 新增：先判断是否是"白纸泛黄"场景
+    {
+        cv::Mat bgr;
+        if (channels == 4) {
+            cv::cvtColor(src, bgr, cv::COLOR_BGRA2BGR);
+        } else if (channels == 3) {
+            bgr = src;
+        }
+        if (!isYellowishPaper(bgr)) {
+            // 彩色/照片 → 跳过底色处理
+            result.image = src.clone();
+            result.skipped = true;
+            result.ok = true;
+            return result;
+        }
+    }
+
+    // 灰度转换
     cv::Mat gray;
     if (channels == 3) {
         cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
@@ -61,11 +128,10 @@ BackgroundResult Background::whiten(const cv::Mat &src,
         gray = src.clone();
     }
 
-    // Estimate paper gray
     const double paperGray = estimatePaperGray(gray, options);
     result.paperGray = paperGray;
 
-    // Paper already very white -> skip
+    // 纸已经足够白 → 跳过
     if (paperGray >= 254.5) {
         result.image = src.clone();
         result.skipped = true;
@@ -73,63 +139,45 @@ BackgroundResult Background::whiten(const cv::Mat &src,
         return result;
     }
 
-    // Content mask: darker than paperGray * contentRatio
     const double contentThreshold = paperGray * options.contentRatio;
-    // ★ 保护浅灰内容（表格线、文字边缘、印章浅色部分）
-    //   原来的 contentRatio=0.70 会把灰度 168 以上的都涂白
-    //   把阈值降到 0.55 → 灰度 132 以上的都被保护
     const double safeThreshold = paperGray * 0.55;
     const double effectiveThreshold = std::min(contentThreshold, safeThreshold);
 
     cv::Mat contentMask;
     cv::threshold(gray, contentMask, effectiveThreshold, 255, cv::THRESH_BINARY_INV);
 
-    // ============================================================
-    // ★ 形态学保护表格线（无论灰度多少）
-    //   思路：
-    //   1. 二值化（灰度 < paperGray*0.9 算候选）
-    //   2. 闭运算连接断线
-    //   3. 用 (40,1) 检测横线、(1,40) 检测竖线
-    //   4. 膨胀 3 像素保护线边缘
-    //   5. 加入 contentMask → 保护
-    // ============================================================
+    // 形态学保护表格线
     {
         cv::Mat darkBin;
         const double darkThr = paperGray * 0.9;
         cv::threshold(gray, darkBin, darkThr, 255, cv::THRESH_BINARY_INV);
 
-        // 闭运算连接断线（防扫描/压缩导致线断开）
         cv::Mat closeKernel = cv::getStructuringElement(
             cv::MORPH_RECT, cv::Size(5, 5));
         cv::Mat connected;
         cv::morphologyEx(darkBin, connected, cv::MORPH_CLOSE, closeKernel);
 
-        // 检测横线（宽度 >= 40 像素）
         cv::Mat hKernel = cv::getStructuringElement(
             cv::MORPH_RECT, cv::Size(40, 1));
         cv::Mat hLines;
         cv::morphologyEx(connected, hLines, cv::MORPH_OPEN, hKernel);
 
-        // 检测竖线（高度 >= 40 像素）
         cv::Mat vKernel = cv::getStructuringElement(
             cv::MORPH_RECT, cv::Size(1, 40));
         cv::Mat vLines;
         cv::morphologyEx(connected, vLines, cv::MORPH_OPEN, vKernel);
 
-        // 合并横竖线
         cv::Mat linesMask;
         cv::bitwise_or(hLines, vLines, linesMask);
 
-        // 膨胀 3 像素保护线边缘
         cv::Mat dilateKernel = cv::getStructuringElement(
             cv::MORPH_RECT, cv::Size(3, 3));
         cv::dilate(linesMask, linesMask, dilateKernel);
 
-        // 加入 contentMask（保护）
         cv::bitwise_or(contentMask, linesMask, contentMask);
     }
 
-    // Protect colored content (red stamps, blue signatures)
+    // 保护彩色内容（红章、蓝签）
     if (options.protectColor && channels >= 3) {
         cv::Mat bgr;
         if (channels == 4) {
@@ -156,7 +204,7 @@ BackgroundResult Background::whiten(const cv::Mat &src,
         cv::bitwise_or(contentMask, colorMask, contentMask);
     }
 
-    // External protect mask (stamp/signature)
+    // 外部保护掩膜
     if (!options.protectMask.empty()) {
         cv::Mat ext = options.protectMask;
         if (ext.size() != gray.size()) {
@@ -172,11 +220,9 @@ BackgroundResult Background::whiten(const cv::Mat &src,
         cv::bitwise_or(contentMask, ext, contentMask);
     }
 
-    // Background mask = NOT content
     cv::Mat bgMask;
     cv::bitwise_not(contentMask, bgMask);
 
-    // Whitening
     cv::Mat dst = src.clone();
     cv::Scalar white;
     const int tg = options.targetPaperGray;
