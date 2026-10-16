@@ -300,7 +300,7 @@ DeskewResult Deskew::autoDeskew(const cv::Mat &src)
 
     const double angle = detectAngle(src);
 
-    if (std::abs(angle) < 0.2) {
+    if (std::abs(angle) < 1.5) {
         result.image = src.clone();
         result.angle = 0.0;
         result.ok = true;
