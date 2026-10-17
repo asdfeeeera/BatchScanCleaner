@@ -8,8 +8,8 @@ namespace process {
 
 namespace {
 
-// 辅助：估算纸张灰度（取中间区域的高分位数）
-double estimatePaperGray(const cv::Mat &gray)
+// ★ 辅助函数改名：calcPaperGray，避免和类内部的 estimatePaperGray 冲突
+double calcPaperGray(const cv::Mat &gray)
 {
     const int W = gray.cols;
     const int H = gray.rows;
@@ -70,7 +70,7 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
     else if (src.channels() == 4) cv::cvtColor(src, gray, cv::COLOR_BGRA2GRAY);
     else gray = src.clone();
 
-    const double paperGray = estimatePaperGray(gray);
+    const double paperGray = calcPaperGray(gray);
     result.paperGray = paperGray;
 
     // 黑度阈值 = 纸张灰度 * darkRatio (默认0.75)
