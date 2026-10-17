@@ -281,7 +281,7 @@ void MainWindow::populateTreeItem(QTreeWidgetItem *item, const QString &path)
 {
     if (!item) return;
 
-    // ★ 修复判断：如果子节点有文字，说明已经加载过真实的文件夹了，直接跳过
+    // 如果子节点有文字，说明已经加载过真实的文件夹了，直接跳过
     if (item->childCount() > 0 && !item->child(0)->text(0).isEmpty()) {
         return; 
     }

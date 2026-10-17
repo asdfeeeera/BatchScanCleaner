@@ -18,6 +18,7 @@ class QCheckBox;
 class QToolButton;
 class QModelIndex;
 class QVBoxLayout;
+class QTreeWidgetItem; // ★ 前置声明
 
 namespace batch { class BatchDialog; }
 namespace ui { class SettingsDialog; }
