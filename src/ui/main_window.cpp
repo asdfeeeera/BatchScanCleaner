@@ -183,6 +183,7 @@ void MainWindow::setupCentralWidget()
     desktopItem->setText(0, QString::fromUtf8("桌面"));
     desktopItem->setIcon(0, iconDesktop);
     desktopItem->setData(0, Qt::UserRole, QStandardPaths::writableLocation(QStandardPaths::DesktopLocation));
+    new QTreeWidgetItem(desktopItem); // ★ 添加占位符，显示箭头
 
     QTreeWidgetItem *computerItem = new QTreeWidgetItem(m_folderTree);
     computerItem->setText(0, QString::fromUtf8("此电脑"));
@@ -202,6 +203,7 @@ void MainWindow::setupCentralWidget()
     networkItem->setText(0, QString::fromUtf8("网络"));
     networkItem->setIcon(0, iconNetwork);
     networkItem->setData(0, Qt::UserRole, "NETWORK");
+    new QTreeWidgetItem(networkItem); // ★ 添加占位符，显示箭头
 
     computerItem->setExpanded(true);
 
@@ -552,7 +554,7 @@ void MainWindow::onDenoise()
     if (!m_hasImage || m_currentMat.empty()) return;
     process::DenoiseOptions options;
     protect::StampProtectOptions protectOpt;
-    const protect::StampProtectResult pr = protect::StampProtect::detect(m_currentMat, protectOpt); // ★ 已修正为 protect::
+    const protect::StampProtectResult pr = protect::StampProtect::detect(m_currentMat, protectOpt);
     if (pr.ok) options.protectMask = pr.mask;
     const process::DenoiseResult result = process::Denoise::removeSpots(m_currentMat, options);
     if (result.ok) {
@@ -577,7 +579,7 @@ void MainWindow::onBackground()
     if (!m_hasImage || m_currentMat.empty()) return;
     process::BackgroundOptions options;
     protect::StampProtectOptions protectOpt;
-    const protect::StampProtectResult pr = protect::StampProtect::detect(m_currentMat, protectOpt); // ★ 已修正为 protect::
+    const protect::StampProtectResult pr = protect::StampProtect::detect(m_currentMat, protectOpt);
     if (pr.ok) options.protectMask = pr.mask;
     const process::BackgroundResult result = process::Background::whiten(m_currentMat, options);
     if (result.ok) {
