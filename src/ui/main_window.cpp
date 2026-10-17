@@ -205,7 +205,6 @@ void MainWindow::setupCentralWidget()
 
     computerItem->setExpanded(true);
 
-    // ★ 改回单击触发文件夹加载
     connect(m_folderTree, &QTreeWidget::itemClicked, this, &MainWindow::onFolderTreeClicked);
     connect(m_folderTree, &QTreeWidget::itemExpanded, this, &MainWindow::onFolderTreeExpanded);
 
@@ -213,13 +212,10 @@ void MainWindow::setupCentralWidget()
     
     m_fileList = new QListView(leftWidget);
     m_fileList->setModel(m_fileModel);
-    
-    // ★ 改成清爽的文字列表模式，去掉网格和图片
     m_fileList->setViewMode(QListView::ListMode); 
     m_fileList->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_fileList->setUniformItemSizes(true); // 提升滚动性能
+    m_fileList->setUniformItemSizes(true);
     
-    // ★ 改回单击立刻预览图片
     connect(m_fileList, &QListView::clicked, this, &MainWindow::onFileClicked);
 
     leftLayout->addWidget(m_folderTree);
@@ -327,7 +323,6 @@ void MainWindow::onFolderTreeExpanded(QTreeWidgetItem *item)
     populateTreeItem(item, path);
 }
 
-// ★ 名字从 DoubleClicked 改成了 Clicked
 void MainWindow::onFolderTreeClicked(QTreeWidgetItem *item, int column)
 {
     Q_UNUSED(column);
@@ -482,7 +477,6 @@ void MainWindow::onAddFolder()
     fillFileTable(files);
 }
 
-// ★ 删除了所有读取图片和加载缩略图的代码，瞬间加载文件名
 void MainWindow::fillFileTable(const QStringList &files)
 {
     m_fileModel->removeRows(0, m_fileModel->rowCount());
@@ -497,7 +491,6 @@ void MainWindow::fillFileTable(const QStringList &files)
     }
 }
 
-// ★ 名字改成了 Clicked
 void MainWindow::onFileClicked(const QModelIndex &index)
 {
     if (!index.isValid()) return;
@@ -559,7 +552,7 @@ void MainWindow::onDenoise()
     if (!m_hasImage || m_currentMat.empty()) return;
     process::DenoiseOptions options;
     protect::StampProtectOptions protectOpt;
-    const process::StampProtectResult pr = protect::StampProtect::detect(m_currentMat, protectOpt);
+    const protect::StampProtectResult pr = protect::StampProtect::detect(m_currentMat, protectOpt); // ★ 已修正为 protect::
     if (pr.ok) options.protectMask = pr.mask;
     const process::DenoiseResult result = process::Denoise::removeSpots(m_currentMat, options);
     if (result.ok) {
@@ -584,7 +577,7 @@ void MainWindow::onBackground()
     if (!m_hasImage || m_currentMat.empty()) return;
     process::BackgroundOptions options;
     protect::StampProtectOptions protectOpt;
-    const protect::StampProtectResult pr = protect::StampProtect::detect(m_currentMat, protectOpt);
+    const protect::StampProtectResult pr = protect::StampProtect::detect(m_currentMat, protectOpt); // ★ 已修正为 protect::
     if (pr.ok) options.protectMask = pr.mask;
     const process::BackgroundResult result = process::Background::whiten(m_currentMat, options);
     if (result.ok) {
