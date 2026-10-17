@@ -1020,8 +1020,19 @@ void MainWindow::applyAcceptedYellowBlobs()
         if (item.decision != analyze::PendingDecision::Accepted) continue;
         if (item.sourceImagePath != m_currentImagePath) continue;
         if (item.type != analyze::PendingType::YellowBlob && item.type != analyze::PendingType::WrongPageNumber) continue;
-        cv::Rect r = item.boundingBox & cv::Rect(0, 0, m_currentMat.cols, m_currentMat.rows);
+        cv::Rect r = item.boundingBox;
+
+        // ★ 新增：如果是错误页码，强制左右各扩 40 像素，上下各扩 20 像素，防止漏掉旁边的数字
+        if (item.type == analyze::PendingType::WrongPageNumber) {
+            r.x -= 40;
+            r.y -= 20;
+            r.width += 80;
+            r.height += 40;
+        }
+
+        r &= cv::Rect(0, 0, m_currentMat.cols, m_currentMat.rows);
         if (r.width <= 0 || r.height <= 0) continue;
+
         cv::rectangle(m_currentMat, r, white, cv::FILLED);
         ++applied;
     }

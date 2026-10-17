@@ -141,8 +141,8 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
         // 水平间距
         const int gap = next.x - (current.x + current.width);
 
-        // 如果垂直方向高度重合，且水平距离近，则合并
-        if (vOverlap >= 0.5 && gap >= -5 && gap < current.height * 0.5) {
+        // ★ 放宽合并条件，确保 28 和 7 能合并到一起
+        if (vOverlap >= 0.3 && gap >= -10 && gap < current.height * 1.0) {
             const int x1 = std::min(current.x, next.x);
             const int y1 = std::min(current.y, next.y);
             const int x2 = std::max(current.x + current.width, next.x + next.width);
