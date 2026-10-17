@@ -94,88 +94,85 @@ static void notePaddleSuccess()
 std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
 {
     std::vector<cv::Rect> result;
-
-    cv::Mat binary;
-    cv::threshold(gray, binary, 0, 255,
-                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
-
-    // 1. 寻找所有独立的字符块（不膨胀）
-    cv::Mat labels, stats, centroids;
-    const int nLabels = cv::connectedComponentsWithStats(
-        binary, labels, stats, centroids, 8, CV_32S);
-
-    std::vector<cv::Rect> rawBoxes;
-    for (int i = 1; i < nLabels; ++i) {
-        const int area = stats.at<int>(i, cv::CC_STAT_AREA);
-        const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
-        const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
-
-        // 过滤极小噪点
-        if (area < 20 || h < 10) continue;
-
-        rawBoxes.push_back(cv::Rect(stats.at<int>(i, cv::CC_STAT_LEFT),
-                                    stats.at<int>(i, cv::CC_STAT_TOP),
-                                    w, h));
-    }
-
-    // 2. 智能合并相邻的数字（把 3,0,8 连成 308）
-    std::sort(rawBoxes.begin(), rawBoxes.end(),
-              [](const cv::Rect &a, const cv::Rect &b) {
-                  if (std::abs(a.y - b.y) < a.height / 2) return a.x < b.x;
-                  return a.y < b.y;
-              });
-
-    std::vector<cv::Rect> mergedBoxes;
-    if (rawBoxes.empty()) return result;
-
-    cv::Rect current = rawBoxes[0];
-    for (size_t i = 1; i < rawBoxes.size(); ++i) {
-        const cv::Rect &next = rawBoxes[i];
-
-        // 计算垂直重叠度
-        const int top = std::max(current.y, next.y);
-        const int bot = std::min(current.y + current.height, next.y + next.height);
-        const int minH = std::min(current.height, next.height);
-        const double vOverlap = (minH <= 0) ? 0.0 : static_cast<double>(bot - top) / minH;
-        
-        // 水平间距
-        const int gap = next.x - (current.x + current.width);
-
-        // ★ 放宽合并条件，确保 28 和 7 能合并到一起
-        if (vOverlap >= 0.3 && gap >= -10 && gap < current.height * 1.0) {
-            const int x1 = std::min(current.x, next.x);
-            const int y1 = std::min(current.y, next.y);
-            const int x2 = std::max(current.x + current.width, next.x + next.width);
-            const int y2 = std::max(current.y + current.height, next.y + next.height);
-            current = cv::Rect(x1, y1, x2 - x1, y2 - y1);
-        } else {
-            mergedBoxes.push_back(current);
-            current = next;
-        }
-    }
-    mergedBoxes.push_back(current);
-
-    // 3. 过滤并筛选出真正的页码（限制在四个角）
     const int W = gray.cols;
     const int H = gray.rows;
-    const int marginX = static_cast<int>(W * 0.12);
-    const int marginY = static_cast<int>(H * 0.12);
 
-    for (const auto &r : mergedBoxes) {
-        // 合并后的尺寸检查
-        if (r.height < 15 || r.height > 200) continue;
-        if (r.width < 20 || r.width > 400) continue;
+    // 只在右上角和左上角查找，范围严格限制（宽 20%，高 15%）
+    const int marginX = static_cast<int>(W * 0.20);
+    const int marginY = static_cast<int>(H * 0.15);
 
-        const double aspect = static_cast<double>(r.width) / std::max(1, r.height);
-        if (aspect < 1.0 || aspect > 10.0) continue;
+    std::vector<cv::Rect> rois;
+    rois.push_back(cv::Rect(W - marginX, 0, marginX, marginY)); // 右上
+    rois.push_back(cv::Rect(0, 0, marginX, marginY));           // 左上
 
-        const bool inTopLeft     = (r.x < marginX)           && (r.y < marginY);
-        const bool inTopRight    = (r.x + r.width > W - marginX)   && (r.y < marginY);
-        const bool inBottomLeft  = (r.x < marginX)           && (r.y + r.height > H - marginY);
-        const bool inBottomRight = (r.x + r.width > W - marginX)   && (r.y + r.height > H - marginY);
-        if (!(inTopLeft || inTopRight || inBottomLeft || inBottomRight)) continue;
+    for (const auto &roi : rois) {
+        cv::Rect safeRoi = roi & cv::Rect(0, 0, W, H);
+        if (safeRoi.width <= 0 || safeRoi.height <= 0) continue;
 
-        result.push_back(r);
+        cv::Mat roiImg = gray(safeRoi);
+        cv::Mat binary;
+        cv::threshold(roiImg, binary, 0, 255, cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+
+        // 仅用非常轻微的闭运算连接笔画，绝不横向膨胀
+        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
+        cv::Mat closed;
+        cv::morphologyEx(binary, closed, cv::MORPH_CLOSE, kernel);
+
+        cv::Mat labels, stats, centroids;
+        const int nLabels = cv::connectedComponentsWithStats(closed, labels, stats, centroids, 8, CV_32S);
+
+        // 收集候选框
+        std::vector<cv::Rect> boxes;
+        for (int i = 1; i < nLabels; ++i) {
+            const int area = stats.at<int>(i, cv::CC_STAT_AREA);
+            const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
+            const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
+
+            // 过滤明显的噪点，但允许数字笔画较小
+            if (h < 10 || h > 120) continue;
+            if (w < 5 || w > 250) continue;
+            if (area < 30) continue;
+
+            boxes.push_back(cv::Rect(
+                safeRoi.x + stats.at<int>(i, cv::CC_STAT_LEFT),
+                safeRoi.y + stats.at<int>(i, cv::CC_STAT_TOP),
+                w, h));
+        }
+
+        if (boxes.empty()) continue;
+
+        // 排序并合并
+        std::sort(boxes.begin(), boxes.end(), [](const cv::Rect &a, const cv::Rect &b) {
+            if (std::abs(a.y - b.y) < a.height / 2) return a.x < b.x;
+            return a.y < b.y;
+        });
+
+        cv::Rect current = boxes[0];
+        for (size_t i = 1; i < boxes.size(); ++i) {
+            const cv::Rect &next = boxes[i];
+            
+            // 计算垂直重叠度
+            const int top = std::max(current.y, next.y);
+            const int bot = std::min(current.y + current.height, next.y + next.height);
+            const int minH = std::min(current.height, next.height);
+            const double vOverlap = (minH <= 0) ? 0.0 : static_cast<double>(bot - top) / minH;
+            
+            // 间距
+            const int gap = next.x - (current.x + current.width);
+
+            // 合并逻辑：同一行，且间距小于当前字高（太远的绝不合并）
+            if (vOverlap > 0.5 && gap >= -5 && gap < current.height) {
+                current = cv::Rect(
+                    std::min(current.x, next.x), std::min(current.y, next.y),
+                    std::max(current.x + current.width, next.x + next.width) - std::min(current.x, next.x),
+                    std::max(current.y + current.height, next.y + next.height) - std::min(current.y, next.y)
+                );
+            } else {
+                result.push_back(current);
+                current = next;
+            }
+        }
+        result.push_back(current);
     }
 
     return result;
@@ -542,6 +539,7 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
     std::vector<PageNumberItem> pendingItems;
 
     for (auto &item : candidates) {
+        // 1. 必须识别为 3 位数字
         const int textLen = item.recognizedText.length();
         if (item.recognizedNumber >= 0 && textLen != 3) {
             writeDiag(QString::fromUtf8("  → 识别=%1 位数=%2≠3，跳过")
@@ -549,12 +547,15 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             continue;
         }
 
-        const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber,
-                                                     result.correctPage);
+        const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber, result.correctPage);
         const bool ocrFailed = (item.recognizedNumber < 0);
 
-        if (matchesCorrect) continue;
+        // 2. 是正确页码，直接跳过保留
+        if (matchesCorrect) {
+            continue;
+        }
 
+        // 3. 识别失败，加入待确认
         if (ocrFailed) {
             ++result.pendingCount;
             pendingItems.push_back(item);
@@ -562,13 +563,13 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             continue;
         }
 
-        // ★ 核心修改：涂白阈值从 0.85 降到 0.5
-        // 只要认出是错的，且置信度 > 50%，有划线就直接涂白！
+        // 4. ★ 绝对安全机制：必须在数字中间检测到“手画线”，才自动涂白！
+        //   如果没画线，哪怕认成了别的数字，也绝不自动删，统统扔进待确认中心！
         const double kMinConf = 0.5;
         if (item.isCrossed && item.confidence >= kMinConf) {
             eraseBlock(dst, gray, item.boundingBox, white);
             ++result.crossedRemoved;
-            writeDiag(QString::fromUtf8("  → 识别=%1，划线=是，涂白")
+            writeDiag(QString::fromUtf8("  → 识别=%1，划线=是，自动涂白")
                           .arg(item.recognizedNumber));
         } else {
             ++result.pendingCount;
@@ -577,9 +578,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
                           .arg(item.recognizedNumber));
         }
     }
-
-    {
-        const QString dbgPath = QDir::homePath() +
             QStringLiteral("/Desktop/ocr_debug_dst.png");
         cv::imwrite(dbgPath.toStdString(), dst);
     }
