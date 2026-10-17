@@ -3,7 +3,7 @@
 #include <QMainWindow>
 #include <QStringList>
 #include <opencv2/core.hpp>
-#include <QTreeWidget>        // ★ 改用 QTreeWidget 手工建树
+#include <QTreeWidget>
 
 class QTableView;
 class QListView;
@@ -59,10 +59,8 @@ private slots:
     void onBackground();
     void onOneClickProcess();
     
-    // ★ 树节点双击加载图片
     void onFolderTreeDoubleClicked(QTreeWidgetItem *item, int column);
     void onFolderTreeExpanded(QTreeWidgetItem *item);
-    
     void onFileDoubleClicked(const QModelIndex &index);
 
 private:
@@ -78,11 +76,8 @@ private:
     
     void buildEnhancePanel(QVBoxLayout *paramLayout);
     process::EnhanceOptions currentEnhanceOptions() const;
-    
-    // ★ 辅助：构建子节点（实现懒加载）
     void populateTreeItem(QTreeWidgetItem *item, const QString &path);
 
-    // 文件与图像状态
     QStringList m_currentFiles;
     QString m_currentFolder;
     QString m_currentImagePath;
@@ -93,15 +88,13 @@ private:
     cv::Mat m_enhancePreviewBase;
     cv::Mat m_colorLineSource;
 
-    // 核心控件
-    QTreeWidget *m_folderTree = nullptr;     // ★ 改为 QTreeWidget
+    QTreeWidget *m_folderTree = nullptr;
     QStandardItemModel *m_fileModel = nullptr;
     QListView *m_fileList = nullptr;   
     
     QGraphicsView *m_previewView = nullptr;
     QGraphicsScene *m_previewScene = nullptr;
 
-    // 增强参数控件
     QSlider *m_enhanceStrengthSlider = nullptr;
     QSpinBox *m_enhanceStrengthSpin = nullptr;
     QSlider *m_enhanceColorSatSlider = nullptr;
@@ -111,7 +104,6 @@ private:
     QSlider *m_enhancePaperTargetSlider = nullptr;
     QSpinBox *m_enhancePaperTargetSpin = nullptr;
 
-    // 一键处理参数
     QCheckBox *m_oneClickDeskewCheck = nullptr;
     QCheckBox *m_oneClickBlackEdgeCheck = nullptr;
     QCheckBox *m_oneClickDenoiseCheck = nullptr;
@@ -120,7 +112,6 @@ private:
     QCheckBox *m_oneClickBackgroundCheck = nullptr;
     QCheckBox *m_oneClickColorLineCheck = nullptr;
 
-    // 其他窗口
     batch::BatchDialog *m_batchDialog = nullptr;
     ui::SettingsDialog *m_settingsDialog = nullptr;
     backup::BackupDialog *m_backupDialog = nullptr;
