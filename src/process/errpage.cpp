@@ -90,14 +90,14 @@ static void notePaddleSuccess()
     g_paddleFailCount = 0;
 }
 
-// ★ 放宽尺寸限制，避免 215 和 264 连在一起时被当成异常块过滤
+// ★★★ 新检测逻辑：只找四角，轻量级闭运算，按间距合并 ★★★
 std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
 {
     std::vector<cv::Rect> result;
     const int W = gray.cols;
     const int H = gray.rows;
 
-    // 只在右上角和左上角查找，范围严格限制（宽 20%，高 15%）
+    // 只在右上角和左上角查找（宽 20%，高 15%）
     const int marginX = static_cast<int>(W * 0.20);
     const int marginY = static_cast<int>(H * 0.15);
 
@@ -113,7 +113,7 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
         cv::Mat binary;
         cv::threshold(roiImg, binary, 0, 255, cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-        // 仅用非常轻微的闭运算连接笔画，绝不横向膨胀
+        // 仅用轻微闭运算，绝不横向暴力膨胀
         cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
         cv::Mat closed;
         cv::morphologyEx(binary, closed, cv::MORPH_CLOSE, kernel);
@@ -121,14 +121,12 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
         cv::Mat labels, stats, centroids;
         const int nLabels = cv::connectedComponentsWithStats(closed, labels, stats, centroids, 8, CV_32S);
 
-        // 收集候选框
         std::vector<cv::Rect> boxes;
         for (int i = 1; i < nLabels; ++i) {
             const int area = stats.at<int>(i, cv::CC_STAT_AREA);
             const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
             const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
 
-            // 过滤明显的噪点，但允许数字笔画较小
             if (h < 10 || h > 120) continue;
             if (w < 5 || w > 250) continue;
             if (area < 30) continue;
@@ -141,7 +139,7 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
 
         if (boxes.empty()) continue;
 
-        // 排序并合并
+        // 排序
         std::sort(boxes.begin(), boxes.end(), [](const cv::Rect &a, const cv::Rect &b) {
             if (std::abs(a.y - b.y) < a.height / 2) return a.x < b.x;
             return a.y < b.y;
@@ -151,16 +149,13 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
         for (size_t i = 1; i < boxes.size(); ++i) {
             const cv::Rect &next = boxes[i];
             
-            // 计算垂直重叠度
             const int top = std::max(current.y, next.y);
             const int bot = std::min(current.y + current.height, next.y + next.height);
             const int minH = std::min(current.height, next.height);
             const double vOverlap = (minH <= 0) ? 0.0 : static_cast<double>(bot - top) / minH;
-            
-            // 间距
             const int gap = next.x - (current.x + current.width);
 
-            // 合并逻辑：同一行，且间距小于当前字高（太远的绝不合并）
+            // 合并间距小于自身高度的
             if (vOverlap > 0.5 && gap >= -5 && gap < current.height) {
                 current = cv::Rect(
                     std::min(current.x, next.x), std::min(current.y, next.y),
@@ -383,7 +378,6 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         process::OnnxOcr &ocr = process::OnnxOcr::instance();
         process::OnnxOcr::Result r = ocr.recognize(digitImage);
 
-        // 只要 ONNX 有结果就返回（不再强求 >= 0.9）
         if (r.ok) {
             outText = r.text;
             outConfidence = r.confidence;
@@ -539,7 +533,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
     std::vector<PageNumberItem> pendingItems;
 
     for (auto &item : candidates) {
-        // 1. 必须识别为 3 位数字
         const int textLen = item.recognizedText.length();
         if (item.recognizedNumber >= 0 && textLen != 3) {
             writeDiag(QString::fromUtf8("  → 识别=%1 位数=%2≠3，跳过")
@@ -547,15 +540,12 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             continue;
         }
 
-        const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber, result.correctPage);
+        const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber,
+                                                     result.correctPage);
         const bool ocrFailed = (item.recognizedNumber < 0);
 
-        // 2. 是正确页码，直接跳过保留
-        if (matchesCorrect) {
-            continue;
-        }
+        if (matchesCorrect) continue;
 
-        // 3. 识别失败，加入待确认
         if (ocrFailed) {
             ++result.pendingCount;
             pendingItems.push_back(item);
@@ -563,8 +553,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             continue;
         }
 
-        // 4. ★ 绝对安全机制：必须在数字中间检测到“手画线”，才自动涂白！
-        //   如果没画线，哪怕认成了别的数字，也绝不自动删，统统扔进待确认中心！
         const double kMinConf = 0.5;
         if (item.isCrossed && item.confidence >= kMinConf) {
             eraseBlock(dst, gray, item.boundingBox, white);
@@ -578,6 +566,9 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
                           .arg(item.recognizedNumber));
         }
     }
+
+    {
+        const QString dbgPath = QDir::homePath() +
             QStringLiteral("/Desktop/ocr_debug_dst.png");
         cv::imwrite(dbgPath.toStdString(), dst);
     }
