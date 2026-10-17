@@ -173,11 +173,15 @@ void MainWindow::setupCentralWidget()
     leftLayout->setContentsMargins(0, 0, 0, 0);
 
     m_dirModel = new QFileSystemModel(this);
-    m_dirModel->setRootPath(""); 
     m_dirModel->setFilter(QDir::AllDirs | QDir::NoDotAndDotDot); 
+    
+    // ★ 关键修改：把根节点设为 Administrator 目录，这样就会显示“桌面”
+    QString homePath = QDir::homePath();
+    m_dirModel->setRootPath(homePath);
 
     m_folderTree = new QTreeView(leftWidget);
     m_folderTree->setModel(m_dirModel);
+    m_folderTree->setRootIndex(m_dirModel->index(homePath)); // ★ 让视图只显示用户目录
     m_folderTree->setHeaderHidden(true);
     for (int i = 1; i < m_dirModel->columnCount(); ++i) {
         m_folderTree->hideColumn(i);
