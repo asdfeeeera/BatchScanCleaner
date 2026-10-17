@@ -9,6 +9,7 @@
 
 #include <opencv2/imgproc.hpp>
 
+#include "../ui/settings_dialog.h"
 #include "../analyze/pending_center.h"
 
 namespace batch {
