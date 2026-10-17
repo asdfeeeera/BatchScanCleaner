@@ -3,182 +3,61 @@
 #include <opencv2/imgproc.hpp>
 #include <vector>
 #include <algorithm>
-#include <cmath>
 
 namespace process {
 
-double BlackEdge::estimatePaperGray(const cv::Mat &gray,
-                                     const BlackEdgeOptions &options)
+namespace {
+
+// 辅助：估算纸张灰度（取中间区域的高分位数）
+double estimatePaperGray(const cv::Mat &gray)
 {
     const int W = gray.cols;
     const int H = gray.rows;
-    const int mx = static_cast<int>(W * 0.25);
-    const int my = static_cast<int>(H * 0.25);
+    const int mx = static_cast<int>(W * 0.2);
+    const int my = static_cast<int>(H * 0.2);
 
     std::vector<uchar> pixels;
-    pixels.reserve(static_cast<size_t>(W) * H / 8);
+    pixels.reserve(static_cast<size_t>(W) * H / 10);
+
     for (int y = my; y < H - my; y += 2) {
         const uchar *row = gray.ptr<uchar>(y);
         for (int x = mx; x < W - mx; x += 2) {
             pixels.push_back(row[x]);
         }
     }
-    if (pixels.empty()) {
-        cv::Scalar m = cv::mean(gray);
-        return m[0];
-    }
-    const size_t idx = pixels.size() * 9 / 10;
+
+    if (pixels.empty()) return 255.0;
+
+    const size_t idx = static_cast<size_t>(pixels.size() * 0.9);
     std::nth_element(pixels.begin(), pixels.begin() + idx, pixels.end());
     return static_cast<double>(pixels[idx]);
 }
 
-namespace {
-
-// ============================================================
-// ★ 投影法：按行算"平均灰度"，找"脏 → 干净"的跳变点
-// ============================================================
-int scanRowsByProjection(const cv::Mat &gray, int paperGray,
-                         bool fromTop, int maxScan)
+// 辅助：从一端向另一端扫描，容忍断点
+// 返回需要被切掉的像素数量
+int scanLineForEdge(const uchar *data, int length, double darkThr, int maxGap, int maxScan)
 {
-    const int W = gray.cols;
-    const int H = gray.rows;
-    const int step = 4;
-    const int dirtyThr = paperGray - 20;    // 低于 = 脏
-    const int cleanThr = paperGray - 8;     // 高于 = 干净
-    const int minCleanRun = 3;
+    int cutLength = 0;
+    int whiteRun = 0;
 
-    int lastDirty = -1;
-    int cleanRun = 0;
-
-    for (int i = 0; i < maxScan; ++i) {
-        int y;
-        if (fromTop) y = i;
-        else         y = H - 1 - i;
-        if (y < 0 || y >= H) break;
-
-        const uchar *row = gray.ptr<uchar>(y);
-        long sum = 0;
-        int cnt = 0;
-        for (int x = 0; x < W; x += step) {
-            sum += row[x];
-            ++cnt;
-        }
-        const double avg = (cnt > 0) ? (static_cast<double>(sum) / cnt) : 0.0;
-
-        if (avg < dirtyThr) {
-            lastDirty = i;
-            cleanRun = 0;
-        } else if (avg >= cleanThr) {
-            ++cleanRun;
-            if (lastDirty >= 0 && cleanRun >= minCleanRun) {
-                return lastDirty + 1;
-            }
+    for (int i = 0; i < length && i < maxScan; ++i) {
+        if (data[i] < darkThr) {
+            cutLength = i + 1;
+            whiteRun = 0; // 遇到黑色，重置白色连续计数
         } else {
-            lastDirty = i;
-            cleanRun = 0;
+            whiteRun++;
+            if (whiteRun > maxGap) {
+                // 连续白了超过 maxGap 个像素，认定黑边结束
+                break;
+            }
         }
     }
-
-    return (lastDirty < 0) ? 0 : (lastDirty + 1);
-}
-
-int scanColsByProjection(const cv::Mat &gray, int paperGray,
-                         bool fromLeft, int maxScan)
-{
-    const int W = gray.cols;
-    const int H = gray.rows;
-    const int step = 4;
-    const int dirtyThr = paperGray - 20;
-    const int cleanThr = paperGray - 8;
-    const int minCleanRun = 3;
-
-    int lastDirty = -1;
-    int cleanRun = 0;
-
-    for (int i = 0; i < maxScan; ++i) {
-        int x;
-        if (fromLeft) x = i;
-        else          x = W - 1 - i;
-        if (x < 0 || x >= W) break;
-
-        long sum = 0;
-        int cnt = 0;
-        for (int y = 0; y < H; y += step) {
-            sum += gray.at<uchar>(y, x);
-            ++cnt;
-        }
-        const double avg = (cnt > 0) ? (static_cast<double>(sum) / cnt) : 0.0;
-
-        if (avg < dirtyThr) {
-            lastDirty = i;
-            cleanRun = 0;
-        } else if (avg >= cleanThr) {
-            ++cleanRun;
-            if (lastDirty >= 0 && cleanRun >= minCleanRun) {
-                return lastDirty + 1;
-            }
-        } else {
-            lastDirty = i;
-            cleanRun = 0;
-        }
-    }
-
-    return (lastDirty < 0) ? 0 : (lastDirty + 1);
+    return cutLength;
 }
 
 } // namespace
 
-int BlackEdge::scanTop(const cv::Mat &gray, double darkThreshold,
-                       const BlackEdgeOptions &options)
-{
-    (void)darkThreshold;
-    const double paperGray = estimatePaperGray(gray, options);
-    const int maxScan = std::min(static_cast<int>(gray.rows * 0.05),
-                                 static_cast<int>(gray.rows * options.maxScanRatio));
-    return scanRowsByProjection(gray, static_cast<int>(paperGray), true, maxScan);
-}
-
-int BlackEdge::scanBottom(const cv::Mat &gray, double darkThreshold,
-                          const BlackEdgeOptions &options)
-{
-    (void)darkThreshold;
-    const double paperGray = estimatePaperGray(gray, options);
-    const int maxScan = std::min(static_cast<int>(gray.rows * 0.05),
-                                 static_cast<int>(gray.rows * options.maxScanRatio));
-    return scanRowsByProjection(gray, static_cast<int>(paperGray), false, maxScan);
-}
-
-int BlackEdge::scanLeft(const cv::Mat &gray, double darkThreshold,
-                        const BlackEdgeOptions &options)
-{
-    (void)darkThreshold;
-    const double paperGray = estimatePaperGray(gray, options);
-    const int maxScan = std::min(static_cast<int>(gray.cols * 0.05),
-                                 static_cast<int>(gray.cols * options.maxScanRatio));
-    return scanColsByProjection(gray, static_cast<int>(paperGray), true, maxScan);
-}
-
-int BlackEdge::scanRight(const cv::Mat &gray, double darkThreshold,
-                         const BlackEdgeOptions &options)
-{
-    (void)darkThreshold;
-    const double paperGray = estimatePaperGray(gray, options);
-    const int maxScan = std::min(static_cast<int>(gray.cols * 0.05),
-                                 static_cast<int>(gray.cols * options.maxScanRatio));
-    return scanColsByProjection(gray, static_cast<int>(paperGray), false, maxScan);
-}
-
-void BlackEdge::smoothMask(cv::Mat &mask, int kernelSize)
-{
-    if (kernelSize <= 1) return;
-    if (kernelSize % 2 == 0) kernelSize += 1;
-    cv::Mat kernel = cv::getStructuringElement(
-        cv::MORPH_RECT, cv::Size(kernelSize, kernelSize));
-    cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
-}
-
-BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
-                                            const BlackEdgeOptions &options)
+BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOptions &options)
 {
     BlackEdgeResult result;
     if (src.empty()) return result;
@@ -187,75 +66,104 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src,
     const int H = src.rows;
 
     cv::Mat gray;
-    if (src.channels() == 3) {
-        cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
-    } else if (src.channels() == 4) {
-        cv::cvtColor(src, gray, cv::COLOR_BGRA2GRAY);
-    } else {
-        gray = src.clone();
+    if (src.channels() == 3) cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
+    else if (src.channels() == 4) cv::cvtColor(src, gray, cv::COLOR_BGRA2GRAY);
+    else gray = src.clone();
+
+    const double paperGray = estimatePaperGray(gray);
+    result.paperGray = paperGray;
+
+    // 黑度阈值 = 纸张灰度 * darkRatio (默认0.75)
+    const double darkThr = paperGray * options.darkRatio;
+    result.darkThreshold = darkThr;
+
+    // 最大扫描深度 = 页面宽高的 maxScanRatio (默认30%)
+    const int maxScanY = static_cast<int>(H * options.maxScanRatio);
+    const int maxScanX = static_cast<int>(W * options.maxScanRatio);
+
+    // 容差（允许连续白点不视为断开）
+    // 选用页面宽高的 2% 作为容差，至少 20 像素
+    const int maxGapY = std::max(20, static_cast<int>(H * 0.02));
+    const int maxGapX = std::max(20, static_cast<int>(W * 0.02));
+
+    // 1. 扫描上边缘
+    int topCut = 0;
+    for (int x = 0; x < W; ++x) {
+        const int cut = scanLineForEdge(gray.ptr<uchar>(0) + x, H, darkThr, maxGapY, maxScanY);
+        if (cut > topCut) topCut = cut;
+    }
+    
+    // 2. 扫描下边缘
+    int bottomCut = 0;
+    for (int x = 0; x < W; ++x) {
+        std::vector<uchar> col(H);
+        for (int y = 0; y < H; ++y) col[y] = gray.at<uchar>(H - 1 - y, x);
+        const int cut = scanLineForEdge(col.data(), H, darkThr, maxGapY, maxScanY);
+        if (cut > bottomCut) bottomCut = cut;
     }
 
-    const double paperGray = estimatePaperGray(gray, options);
-    result.paperGray = paperGray;
-    result.darkThreshold = paperGray - 20;
+    // 3. 扫描左边缘
+    int leftCut = 0;
+    for (int y = 0; y < H; ++y) {
+        const int cut = scanLineForEdge(gray.ptr<uchar>(y), W, darkThr, maxGapX, maxScanX);
+        if (cut > leftCut) leftCut = cut;
+    }
 
-    int top    = scanTop(gray, paperGray - 20, options);
-    int bottom = scanBottom(gray, paperGray - 20, options);
-    int left   = scanLeft(gray, paperGray - 20, options);
-    int right  = scanRight(gray, paperGray - 20, options);
+    // 4. 扫描右边缘
+    int rightCut = 0;
+    for (int y = 0; y < H; ++y) {
+        std::vector<uchar> row(W);
+        for (int x = 0; x < W; ++x) row[x] = gray.at<uchar>(y, W - 1 - x);
+        const int cut = scanLineForEdge(row.data(), W, darkThr, maxGapX, maxScanX);
+        if (cut > rightCut) rightCut = cut;
+    }
 
-    const int maxTopBottom = static_cast<int>(H * 0.05);
-    const int maxLeftRight = static_cast<int>(W * 0.05);
-    if (top > maxTopBottom)       top = 0;
-    if (bottom > maxTopBottom)    bottom = 0;
-    if (left > maxLeftRight)      left = 0;
-    if (right > maxLeftRight)     right = 0;
+    // 增加一点扩张像素，确保切干净
+    topCut = std::min(H, topCut + options.expandPixels);
+    bottomCut = std::min(H, bottomCut + options.expandPixels);
+    leftCut = std::min(W, leftCut + options.expandPixels);
+    rightCut = std::min(W, rightCut + options.expandPixels);
 
-    result.topPixels = top;
-    result.bottomPixels = bottom;
-    result.leftPixels = left;
-    result.rightPixels = right;
-
-    const int minEdge = 3;
-    if (top <= minEdge && bottom <= minEdge &&
-        left <= minEdge && right <= minEdge) {
+    // 判断是否真的需要切
+    if (topCut <= options.expandPixels && 
+        bottomCut <= options.expandPixels &&
+        leftCut <= options.expandPixels && 
+        rightCut <= options.expandPixels) {
         result.image = src.clone();
-        result.ok = true;
         result.skipped = true;
+        result.ok = true;
         return result;
     }
 
-    cv::Mat mask = cv::Mat::zeros(H, W, CV_8UC1);
+    result.topPixels = topCut;
+    result.bottomPixels = bottomCut;
+    result.leftPixels = leftCut;
+    result.rightPixels = rightCut;
 
-    if (top > 0) {
-        cv::rectangle(mask, cv::Rect(0, 0, W, top),
-                      cv::Scalar(255), cv::FILLED);
-    }
-    if (bottom > 0) {
-        cv::rectangle(mask, cv::Rect(0, H - bottom, W, bottom),
-                      cv::Scalar(255), cv::FILLED);
-    }
-    if (left > 0) {
-        cv::rectangle(mask, cv::Rect(0, 0, left, H),
-                      cv::Scalar(255), cv::FILLED);
-    }
-    if (right > 0) {
-        cv::rectangle(mask, cv::Rect(W - right, 0, right, H),
-                      cv::Scalar(255), cv::FILLED);
+    // 开始裁剪并涂白
+    cv::Rect roi(leftCut, topCut, W - leftCut - rightCut, H - topCut - bottomCut);
+    if (roi.width <= 0 || roi.height <= 0) {
+        result.image = src.clone();
+        result.ok = false;
+        return result;
     }
 
-    if (options.smoothKernelSize > 1) {
-        smoothMask(mask, options.smoothKernelSize);
+    cv::Mat cropped = src(roi);
+    
+    if (options.fillWhite) {
+        result.image = cv::Mat::zeros(cropped.size(), cropped.type());
+        if (src.channels() == 4) {
+            result.image.setTo(cv::Scalar(255, 255, 255, 255));
+        } else if (src.channels() == 3) {
+            result.image.setTo(cv::Scalar(255, 255, 255));
+        } else {
+            result.image.setTo(cv::Scalar(255));
+        }
+        cropped.copyTo(result.image);
+    } else {
+        result.image = cropped.clone();
     }
 
-    cv::Mat dst = src.clone();
-    cv::Scalar white = (dst.channels() == 4)
-                           ? cv::Scalar(255, 255, 255, 255)
-                           : cv::Scalar(255, 255, 255);
-    dst.setTo(white, mask);
-
-    result.filledPixels = cv::countNonZero(mask);
-    result.image = dst;
     result.ok = true;
     return result;
 }
