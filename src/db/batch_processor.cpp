@@ -523,11 +523,21 @@ bool BatchProcessor::runEnhance(cv::Mat &img)
 
 bool BatchProcessor::runErrPage(cv::Mat &img, const QString &sourcePath)
 {
+    // ★ 核心修改：不再盲信外面传进来的 m_options，而是强制读取最新设置
+    process::ErrPageOptions opt = m_options.errPageOpt;
+    
+    // 强制从设置里读取最新开关（这就和单张处理同频了）
+    opt.enablePaddleOcr = ui::AppSettings::load().enablePaddleOcr;
+    
+    // 强制统一其他关键的过滤参数（防止外面的 UI 没有传默认值）
+    opt.fillWhite = true;
+    opt.tesseractPath = QString();
+    
     const process::ErrPageResult r =
-        process::ErrPage::process(img, sourcePath, m_options.errPageOpt);
+        process::ErrPage::process(img, sourcePath, opt);
 
     if (r.ok && !r.image.empty()) {
-        // ★ 新增：把待确认项存入单例
+        // 存入待确认中心
         const QFileInfo fi(sourcePath);
         for (const auto &it : r.items) {
             analyze::PendingItem p;
