@@ -37,6 +37,7 @@
 #include <QPushButton>
 #include <QApplication>
 #include <QStandardPaths>
+#include <QStyle> // ★ 用于调用系统标准图标
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -173,24 +174,35 @@ void MainWindow::setupCentralWidget()
     m_folderTree->setHeaderHidden(true);
     m_folderTree->setIconSize(QSize(18, 18));
 
+    // 获取系统标准图标
+    QIcon iconDesktop = QApplication::style()->standardIcon(QStyle::SP_DesktopIcon);
+    QIcon iconComputer = QApplication::style()->standardIcon(QStyle::SP_ComputerIcon);
+    QIcon iconDrive = QApplication::style()->standardIcon(QStyle::SP_DriveHDIcon);
+    QIcon iconNetwork = QApplication::style()->standardIcon(QStyle::SP_DriveNetIcon);
+    QIcon iconFolder = QApplication::style()->standardIcon(QStyle::SP_DirIcon);
+
     QTreeWidgetItem *desktopItem = new QTreeWidgetItem(m_folderTree);
     desktopItem->setText(0, QString::fromUtf8("桌面"));
+    desktopItem->setIcon(0, iconDesktop); // ★ 桌面图标
     desktopItem->setData(0, Qt::UserRole, QStandardPaths::writableLocation(QStandardPaths::DesktopLocation));
 
     QTreeWidgetItem *computerItem = new QTreeWidgetItem(m_folderTree);
     computerItem->setText(0, QString::fromUtf8("此电脑"));
+    computerItem->setIcon(0, iconComputer); // ★ 电脑图标
     computerItem->setData(0, Qt::UserRole, "COMPUTER");
     
     QFileInfoList drives = QDir::drives();
     for (const QFileInfo &drive : drives) {
         QTreeWidgetItem *driveItem = new QTreeWidgetItem(computerItem);
         driveItem->setText(0, drive.filePath());
+        driveItem->setIcon(0, iconDrive); // ★ 硬盘图标
         driveItem->setData(0, Qt::UserRole, drive.filePath());
         new QTreeWidgetItem(driveItem); 
     }
 
     QTreeWidgetItem *networkItem = new QTreeWidgetItem(m_folderTree);
     networkItem->setText(0, QString::fromUtf8("网络"));
+    networkItem->setIcon(0, iconNetwork); // ★ 网络图标
     networkItem->setData(0, Qt::UserRole, "NETWORK");
 
     computerItem->setExpanded(true);
@@ -288,6 +300,8 @@ void MainWindow::populateTreeItem(QTreeWidgetItem *item, const QString &path)
     
     item->takeChildren(); 
 
+    QIcon iconFolder = QApplication::style()->standardIcon(QStyle::SP_DirIcon); // 文件夹图标
+
     QDir dir(path);
     dir.setFilter(QDir::Dirs | QDir::NoDotAndDotDot);
     QFileInfoList list = dir.entryInfoList();
@@ -295,6 +309,7 @@ void MainWindow::populateTreeItem(QTreeWidgetItem *item, const QString &path)
     for (const QFileInfo &info : list) {
         QTreeWidgetItem *child = new QTreeWidgetItem(item);
         child->setText(0, info.fileName());
+        child->setIcon(0, iconFolder); // ★ 子文件夹加上图标
         child->setData(0, Qt::UserRole, info.absoluteFilePath());
         
         QDir childDir(info.absoluteFilePath());
