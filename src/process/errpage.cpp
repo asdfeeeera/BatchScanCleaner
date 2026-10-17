@@ -343,6 +343,19 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         return -1;
     }
 
+    // 提前打开日志
+    const QString diagPath = QDir::homePath() + QStringLiteral("/Desktop/ocr_debug.txt");
+    QFile diagFile(diagPath);
+    diagFile.open(QIODevice::Append | QIODevice::Text);
+    QTextStream diag(&diagFile);
+    diag.setCodec("UTF-8");
+    auto writeDiag = [&](const QString &msg) {
+        if (diagFile.isOpen()) {
+            diag << msg << "\n";
+            diag.flush();
+        }
+    };
+
     // 1. ONNX 识别
     {
         process::OnnxOcr &ocr = process::OnnxOcr::instance();
@@ -351,24 +364,37 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         if (r.ok && r.confidence >= 0.9) {
             outText = r.text;
             outConfidence = r.confidence;
+            diagFile.close();
             return r.number;
         }
+        
+        writeDiag(QString::fromUtf8("    ONNX 失败(ok=%1 conf=%2)，尝试 PaddleOCR")
+                  .arg(r.ok).arg(r.confidence));
 
         if (enablePaddleOcr && !g_paddleDisabled) {
             if (process::PaddleOcr *pocr = getPaddleOcr()) {
+                writeDiag(QString::fromUtf8("    调用 PaddleOCR ..."));
                 const process::PaddleOcrResult pr = pocr->recognize(digitImage);
                 if (pr.ok && !pr.text.isEmpty()) {
                     outText = pr.text;
                     outConfidence = pr.confidence;
                     notePaddleSuccess();
+                    writeDiag(QString::fromUtf8("    PaddleOCR 成功: %1").arg(pr.text));
+                    diagFile.close();
                     return pr.number;
                 }
+                writeDiag(QString::fromUtf8("    PaddleOCR 失败: %1").arg(pr.errorMsg));
                 notePaddleFailure();
+            } else {
+                writeDiag(QString::fromUtf8("    getPaddleOcr 返回空指针"));
             }
+        } else {
+             writeDiag(QString::fromUtf8("    PaddleOCR 未启用或已禁用"));
         }
 
         outText.clear();
         outConfidence = 0.0;
+        diagFile.close();
         return -1;
     }
 }
