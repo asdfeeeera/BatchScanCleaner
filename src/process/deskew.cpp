@@ -122,73 +122,26 @@ cv::Mat roughCropEdges(const cv::Mat &binary)
     return binary(roi).clone();
 }
 
-// ★★★ 新增：最大轮廓最小外接矩形法（适用于证件、照片、书本） ★★★
-std::pair<double, bool> detectAngleByContour(const cv::Mat &gray)
-{
-    // 1. 二值化
-    cv::Mat binary;
-    cv::threshold(gray, binary, 0, 255,
-                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
-
-    // 2. 形态学闭运算，把断裂的边缘连起来
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(15, 15));
-    cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, kernel);
-
-    // 3. 寻找轮廓
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-
-    if (contours.empty()) return { 0.0, false };
-
-    // 4. 找面积最大的轮廓
-    double maxArea = 0;
-    int maxIdx = -1;
-    for (size_t i = 0; i < contours.size(); ++i) {
-        double area = cv::contourArea(contours[i]);
-        if (area > maxArea) {
-            maxArea = area;
-            maxIdx = static_cast<int>(i);
-        }
-    }
-
-    if (maxIdx < 0) return { 0.0, false };
-
-    // 面积必须占全图的 10% 以上
-    double imgArea = gray.cols * gray.rows;
-    if (maxArea < imgArea * 0.10) return { 0.0, false };
-
-    // 5. 计算最小外接矩形
-    cv::RotatedRect minRect = cv::minAreaRect(contours[maxIdx]);
-    double angle = minRect.angle;
-
-    // 6. 归一化到 [-45, 45]
-    if (angle > 45.0) angle -= 90.0;
-    if (angle < -45.0) angle += 90.0;
-
-    // 如果矩形太窄，说明可能是干扰
-    if (minRect.size.width < 50 || minRect.size.height < 50) {
-        return { 0.0, false };
-    }
-
-    // 符号判断：根据实测，getRotationMatrix2D 的正角度是逆时针旋转
-    // 如果图像是顺时针倾斜，minRect 可能是负角度，需要反一下。
-    return { -angle, true };
-}
-
-// Hough 直线检测（备选）
+// ★ 最强的边缘直线检测（只检测长直线，专门抓纸张边框）
 std::pair<double, bool> detectAngleByHough(const cv::Mat &gray)
 {
     const int W = gray.cols;
     const int H = gray.rows;
     if (W < 100 || H < 100) return { 0.0, false };
 
-    cv::Mat edges;
-    cv::Canny(gray, edges, 30, 100, 3);
+    // 先高斯模糊，去掉噪点
+    cv::Mat blurred;
+    cv::GaussianBlur(gray, blurred, cv::Size(5, 5), 0);
 
+    // 边缘检测
+    cv::Mat edges;
+    cv::Canny(blurred, edges, 50, 150, 3);
+
+    // 概率霍夫变换，只找长线（长度占页面宽度的 30% 以上）
     std::vector<cv::Vec4i> lines;
-    const int minLineLen = std::max(30, static_cast<int>(std::min(W, H) * 0.15));
-    const int maxLineGap = 30;
-    cv::HoughLinesP(edges, lines, 1, CV_PI / 180.0, 50, minLineLen, maxLineGap);
+    const int minLineLen = std::max(100, static_cast<int>(std::min(W, H) * 0.3));
+    const int maxLineGap = 50;
+    cv::HoughLinesP(edges, lines, 1, CV_PI / 180.0, 80, minLineLen, maxLineGap);
 
     if (lines.size() < 2) return { 0.0, false };
 
@@ -198,14 +151,16 @@ std::pair<double, bool> detectAngleByHough(const cv::Mat &gray)
         const double dy = static_cast<double>(l[3] - l[1]);
         if (std::abs(dx) < 1.0 && std::abs(dy) < 1.0) continue;
 
-        if (std::abs(dy) > std::abs(dx) * 0.5) continue; // 只保留水平线
-
         double ang = std::atan2(dy, dx) * 180.0 / CV_PI;
+
+        // 归一化到 [-45, 45]
         while (ang >  45.0) ang -= 90.0;
         while (ang < -45.0) ang += 90.0;
 
+        // 过滤掉那种歪得特别厉害（比如 > 40度）的干扰线
         if (std::abs(ang) < 0.1) continue;
         if (std::abs(ang) > 40.0) continue;
+        
         angles.push_back(ang);
     }
 
@@ -242,19 +197,13 @@ double Deskew::detectAngle(const cv::Mat &src)
         smallGray = gray;
     }
 
-    // ★ 第 1 优先级：轮廓外接矩形（证件、照片）
-    auto contourRes = detectAngleByContour(smallGray);
-    if (contourRes.second) {
-        return contourRes.first;
-    }
-
-    // ★ 第 2 优先级：Hough 直线（表格、文档）
+    // ★ 第 1 优先级：Hough 直线检测（抓纸张边缘和表格长线）
     auto hough = detectAngleByHough(smallGray);
     if (hough.second) {
         return hough.first;
     }
 
-    // ★ 第 3 优先级：投影法（纯文字）
+    // ★ 第 2 优先级：投影法（纯文字）
     const int W = smallGray.cols;
     const int H = smallGray.rows;
     const int mx = static_cast<int>(W * 0.15);
