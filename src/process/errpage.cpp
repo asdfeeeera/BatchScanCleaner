@@ -99,8 +99,8 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
     cv::threshold(gray, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    // 膨胀核稍微改大一点，让 215 和 264 尽量连在一起（方便后续整体识别）
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(10, 5));
+    // ★ 用更温和的 3x3 核，减少相邻数字被过度粘成一大块
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
     cv::Mat dilated;
     cv::dilate(binary, dilated, kernel);
 
@@ -110,8 +110,9 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
 
     const int W = gray.cols;
     const int H = gray.rows;
+    // 扩大一点点边缘范围（12%），确保角落里的数字能进来
     const int marginX = static_cast<int>(W * 0.12);
-    const int marginY = static_cast<int>(H * 0.10);
+    const int marginY = static_cast<int>(H * 0.12);
 
     for (int i = 1; i < nLabels; ++i) {
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
@@ -120,16 +121,16 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
         const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
         const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
 
-        // ★ 放宽尺寸限制
-        if (h < 10 || h > 150) continue;
-        if (w < 15 || w > 350) continue;
-        if (area < 100) continue;
+        // ★ 极限放宽尺寸限制（哪怕两个数字粘在一起成一个大块，也放进来）
+        if (h < 10 || h > 300) continue;
+        if (w < 10 || w > 500) continue;
+        if (area < 80) continue;
 
-        // ★ 放宽宽高比限制
+        // ★ 极限放宽长宽比（不管横的竖的，都有可能是页码）
         const double aspect = static_cast<double>(w) / std::max(1, h);
-        if (aspect < 0.8 || aspect > 8.0) continue;
+        if (aspect < 0.2 || aspect > 15.0) continue;
 
-        // 只检测 4 个角
+        // ★ 只检测 4 个角，只要挨着边就算
         const bool inTopLeft     = (x < marginX)           && (y < marginY);
         const bool inTopRight    = (x + w > W - marginX)   && (y < marginY);
         const bool inBottomLeft  = (x < marginX)           && (y + h > H - marginY);
