@@ -18,7 +18,7 @@ class QCheckBox;
 class QToolButton;
 class QModelIndex;
 class QVBoxLayout;
-class QTreeWidgetItem; // ★ 前置声明
+class QTreeWidgetItem;
 
 namespace batch { class BatchDialog; }
 namespace ui { class SettingsDialog; }
@@ -60,9 +60,10 @@ private slots:
     void onBackground();
     void onOneClickProcess();
     
-    void onFolderTreeDoubleClicked(QTreeWidgetItem *item, int column);
+    // ★ 改为单击触发
+    void onFolderTreeClicked(QTreeWidgetItem *item, int column);
     void onFolderTreeExpanded(QTreeWidgetItem *item);
-    void onFileDoubleClicked(const QModelIndex &index);
+    void onFileClicked(const QModelIndex &index); 
 
 private:
     void setupMenuBar();

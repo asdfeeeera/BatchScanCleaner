@@ -37,7 +37,7 @@
 #include <QPushButton>
 #include <QApplication>
 #include <QStandardPaths>
-#include <QStyle> // ★ 用于调用系统标准图标
+#include <QStyle>
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -174,53 +174,53 @@ void MainWindow::setupCentralWidget()
     m_folderTree->setHeaderHidden(true);
     m_folderTree->setIconSize(QSize(18, 18));
 
-    // 获取系统标准图标
     QIcon iconDesktop = QApplication::style()->standardIcon(QStyle::SP_DesktopIcon);
     QIcon iconComputer = QApplication::style()->standardIcon(QStyle::SP_ComputerIcon);
     QIcon iconDrive = QApplication::style()->standardIcon(QStyle::SP_DriveHDIcon);
     QIcon iconNetwork = QApplication::style()->standardIcon(QStyle::SP_DriveNetIcon);
-    QIcon iconFolder = QApplication::style()->standardIcon(QStyle::SP_DirIcon);
 
     QTreeWidgetItem *desktopItem = new QTreeWidgetItem(m_folderTree);
     desktopItem->setText(0, QString::fromUtf8("桌面"));
-    desktopItem->setIcon(0, iconDesktop); // ★ 桌面图标
+    desktopItem->setIcon(0, iconDesktop);
     desktopItem->setData(0, Qt::UserRole, QStandardPaths::writableLocation(QStandardPaths::DesktopLocation));
 
     QTreeWidgetItem *computerItem = new QTreeWidgetItem(m_folderTree);
     computerItem->setText(0, QString::fromUtf8("此电脑"));
-    computerItem->setIcon(0, iconComputer); // ★ 电脑图标
+    computerItem->setIcon(0, iconComputer);
     computerItem->setData(0, Qt::UserRole, "COMPUTER");
     
     QFileInfoList drives = QDir::drives();
     for (const QFileInfo &drive : drives) {
         QTreeWidgetItem *driveItem = new QTreeWidgetItem(computerItem);
         driveItem->setText(0, drive.filePath());
-        driveItem->setIcon(0, iconDrive); // ★ 硬盘图标
+        driveItem->setIcon(0, iconDrive);
         driveItem->setData(0, Qt::UserRole, drive.filePath());
         new QTreeWidgetItem(driveItem); 
     }
 
     QTreeWidgetItem *networkItem = new QTreeWidgetItem(m_folderTree);
     networkItem->setText(0, QString::fromUtf8("网络"));
-    networkItem->setIcon(0, iconNetwork); // ★ 网络图标
+    networkItem->setIcon(0, iconNetwork);
     networkItem->setData(0, Qt::UserRole, "NETWORK");
 
     computerItem->setExpanded(true);
 
-    connect(m_folderTree, &QTreeWidget::itemDoubleClicked, this, &MainWindow::onFolderTreeDoubleClicked);
+    // ★ 改回单击触发文件夹加载
+    connect(m_folderTree, &QTreeWidget::itemClicked, this, &MainWindow::onFolderTreeClicked);
     connect(m_folderTree, &QTreeWidget::itemExpanded, this, &MainWindow::onFolderTreeExpanded);
 
     m_fileModel = new QStandardItemModel(this);
     
     m_fileList = new QListView(leftWidget);
     m_fileList->setModel(m_fileModel);
-    m_fileList->setViewMode(QListView::IconMode); 
-    m_fileList->setIconSize(QSize(100, 100));       
-    m_fileList->setGridSize(QSize(120, 140));      
-    m_fileList->setResizeMode(QListView::Adjust);
+    
+    // ★ 改成清爽的文字列表模式，去掉网格和图片
+    m_fileList->setViewMode(QListView::ListMode); 
     m_fileList->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_fileList->setSpacing(5);
-    connect(m_fileList, &QListView::doubleClicked, this, &MainWindow::onFileDoubleClicked);
+    m_fileList->setUniformItemSizes(true); // 提升滚动性能
+    
+    // ★ 改回单击立刻预览图片
+    connect(m_fileList, &QListView::clicked, this, &MainWindow::onFileClicked);
 
     leftLayout->addWidget(m_folderTree);
     leftLayout->addWidget(m_fileList, 1);
@@ -293,14 +293,13 @@ void MainWindow::populateTreeItem(QTreeWidgetItem *item, const QString &path)
 {
     if (!item) return;
 
-    // 如果子节点有文字，说明已经加载过真实的文件夹了，直接跳过
     if (item->childCount() > 0 && !item->child(0)->text(0).isEmpty()) {
         return; 
     }
     
     item->takeChildren(); 
 
-    QIcon iconFolder = QApplication::style()->standardIcon(QStyle::SP_DirIcon); // 文件夹图标
+    QIcon iconFolder = QApplication::style()->standardIcon(QStyle::SP_DirIcon);
 
     QDir dir(path);
     dir.setFilter(QDir::Dirs | QDir::NoDotAndDotDot);
@@ -309,7 +308,7 @@ void MainWindow::populateTreeItem(QTreeWidgetItem *item, const QString &path)
     for (const QFileInfo &info : list) {
         QTreeWidgetItem *child = new QTreeWidgetItem(item);
         child->setText(0, info.fileName());
-        child->setIcon(0, iconFolder); // ★ 子文件夹加上图标
+        child->setIcon(0, iconFolder);
         child->setData(0, Qt::UserRole, info.absoluteFilePath());
         
         QDir childDir(info.absoluteFilePath());
@@ -328,7 +327,8 @@ void MainWindow::onFolderTreeExpanded(QTreeWidgetItem *item)
     populateTreeItem(item, path);
 }
 
-void MainWindow::onFolderTreeDoubleClicked(QTreeWidgetItem *item, int column)
+// ★ 名字从 DoubleClicked 改成了 Clicked
+void MainWindow::onFolderTreeClicked(QTreeWidgetItem *item, int column)
 {
     Q_UNUSED(column);
     if (!item) return;
@@ -482,6 +482,7 @@ void MainWindow::onAddFolder()
     fillFileTable(files);
 }
 
+// ★ 删除了所有读取图片和加载缩略图的代码，瞬间加载文件名
 void MainWindow::fillFileTable(const QStringList &files)
 {
     m_fileModel->removeRows(0, m_fileModel->rowCount());
@@ -489,15 +490,6 @@ void MainWindow::fillFileTable(const QStringList &files)
         const QFileInfo info(path);
         QStandardItem *item = new QStandardItem(info.fileName());
         
-        cv::Mat mat = cv::imread(path.toStdString());
-        if (!mat.empty()) {
-            cv::Mat thumb;
-            cv::resize(mat, thumb, cv::Size(100, 100), 0, 0, cv::INTER_AREA);
-            cv::cvtColor(thumb, thumb, cv::COLOR_BGR2RGB);
-            QImage img(thumb.data, thumb.cols, thumb.rows, (int)thumb.step, QImage::Format_RGB888);
-            item->setIcon(QIcon(QPixmap::fromImage(img)));
-        }
-
         item->setData(path, Qt::UserRole);
         item->setToolTip(path);
         item->setEditable(false);
@@ -505,7 +497,8 @@ void MainWindow::fillFileTable(const QStringList &files)
     }
 }
 
-void MainWindow::onFileDoubleClicked(const QModelIndex &index)
+// ★ 名字改成了 Clicked
+void MainWindow::onFileClicked(const QModelIndex &index)
 {
     if (!index.isValid()) return;
     const QString path = m_fileModel->data(index, Qt::UserRole).toString();
@@ -566,7 +559,7 @@ void MainWindow::onDenoise()
     if (!m_hasImage || m_currentMat.empty()) return;
     process::DenoiseOptions options;
     protect::StampProtectOptions protectOpt;
-    const protect::StampProtectResult pr = protect::StampProtect::detect(m_currentMat, protectOpt);
+    const process::StampProtectResult pr = protect::StampProtect::detect(m_currentMat, protectOpt);
     if (pr.ok) options.protectMask = pr.mask;
     const process::DenoiseResult result = process::Denoise::removeSpots(m_currentMat, options);
     if (result.ok) {
