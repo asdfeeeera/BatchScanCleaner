@@ -39,15 +39,12 @@ double Background::estimatePaperGray(const cv::Mat &gray,
 }
 
 // ============================================================
-// ★ 新增：判断这张图是否值得做"白纸泛黄"底色处理
-//   是 → 返回 true
-//   否（彩色证件/照片/彩色文档）→ 返回 false，跳过处理
+// 判断是否是纯白泛黄纸（严格版）
 // ============================================================
 static bool isYellowishPaper(const cv::Mat &bgr)
 {
-    if (bgr.empty() || bgr.channels() < 3) return true;  // 灰度图默认处理
+    if (bgr.empty() || bgr.channels() < 3) return true;
 
-    // 缩到 200 宽，加速
     cv::Mat small;
     const int maxDim = std::max(bgr.cols, bgr.rows);
     if (maxDim > 200) {
@@ -57,33 +54,27 @@ static bool isYellowishPaper(const cv::Mat &bgr)
         small = bgr;
     }
 
-    // 1. 平均 BGR
     cv::Scalar meanBGR = cv::mean(small);
     const double meanB = meanBGR[0];
     const double meanG = meanBGR[1];
     const double meanR = meanBGR[2];
 
-    // 2. 平均饱和度
     cv::Mat hsv;
     cv::cvtColor(small, hsv, cv::COLOR_BGR2HSV);
     cv::Scalar meanHSV = cv::mean(hsv);
     const double meanSat = meanHSV[1];
     const double meanVal = meanHSV[2];
 
-    // 3. 判断
-    //   彩色（饱和度 > 25）→ 不处理
-    if (meanSat > 25.0) return false;
+    // 条件 1：饱和度必须极低（粉色证件饱和度会偏高）
+    if (meanSat > 15.0) return false;
 
-    //   整体太暗（V < 180）→ 不处理（可能是照片/深色纸）
-    if (meanVal < 180.0) return false;
+    // 条件 2：整体必须足够亮
+    if (meanVal < 200.0) return false;
 
-    //   "偏黄"特征：R > G > B 且 R - B >= 3
-    //   如果 R <= B 或者差值很小 → 不是泛黄 → 不处理
+    // 条件 3："偏黄"特征
     const double rbDiff = meanR - meanB;
-    if (rbDiff < 3.0) return false;
-
-    //   如果 R - B > 40 → 太黄了（可能是彩色纸）→ 不处理
-    if (rbDiff > 40.0) return false;
+    if (rbDiff < 2.0) return false;  // 偏蓝或纯白
+    if (rbDiff > 35.0) return false; // 太黄了
 
     return true;
 }
@@ -101,7 +92,30 @@ BackgroundResult Background::whiten(const cv::Mat &src,
     const int H = src.rows;
     const int channels = src.channels();
 
-    // ★ 新增：先判断是否是"白纸泛黄"场景
+    // ★ 超级拦截：只要有 3% 的像素是明显彩色（红章、蓝底、粉底），直接跳过
+    if (channels >= 3) {
+        cv::Mat bgr;
+        if (channels == 4) cv::cvtColor(src, bgr, cv::COLOR_BGRA2BGR);
+        else bgr = src;
+
+        cv::Mat hsv, satMask;
+        cv::cvtColor(bgr, hsv, cv::COLOR_BGR2HSV);
+        std::vector<cv::Mat> hsvCh;
+        cv::split(hsv, hsvCh);
+        
+        // 饱和度 > 40 视为明显的彩色
+        cv::inRange(hsvCh[1], 40, 255, satMask);
+        double coloredRatio = static_cast<double>(cv::countNonZero(satMask)) / (W * H);
+        
+        if (coloredRatio > 0.03) { // 3% 阈值
+            result.image = src.clone();
+            result.skipped = true;
+            result.ok = true;
+            return result;
+        }
+    }
+
+    // 黑白/泛黄判断
     {
         cv::Mat bgr;
         if (channels == 4) {
@@ -110,7 +124,6 @@ BackgroundResult Background::whiten(const cv::Mat &src,
             bgr = src;
         }
         if (!isYellowishPaper(bgr)) {
-            // 彩色/照片 → 跳过底色处理
             result.image = src.clone();
             result.skipped = true;
             result.ok = true;
@@ -131,7 +144,6 @@ BackgroundResult Background::whiten(const cv::Mat &src,
     const double paperGray = estimatePaperGray(gray, options);
     result.paperGray = paperGray;
 
-    // 纸已经足够白 → 跳过
     if (paperGray >= 254.5) {
         result.image = src.clone();
         result.skipped = true;
