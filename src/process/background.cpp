@@ -39,48 +39,7 @@ double Background::estimatePaperGray(const cv::Mat &gray,
 }
 
 // ============================================================
-// 判断是否是纯白泛黄纸（严格版）
-// ============================================================
-static bool isYellowishPaper(const cv::Mat &bgr)
-{
-    if (bgr.empty() || bgr.channels() < 3) return true;
-
-    cv::Mat small;
-    const int maxDim = std::max(bgr.cols, bgr.rows);
-    if (maxDim > 200) {
-        const double scale = 200.0 / maxDim;
-        cv::resize(bgr, small, cv::Size(), scale, scale, cv::INTER_AREA);
-    } else {
-        small = bgr;
-    }
-
-    cv::Scalar meanBGR = cv::mean(small);
-    const double meanB = meanBGR[0];
-    const double meanG = meanBGR[1];
-    const double meanR = meanBGR[2];
-
-    cv::Mat hsv;
-    cv::cvtColor(small, hsv, cv::COLOR_BGR2HSV);
-    cv::Scalar meanHSV = cv::mean(hsv);
-    const double meanSat = meanHSV[1];
-    const double meanVal = meanHSV[2];
-
-    // 条件 1：饱和度必须极低（粉色证件饱和度会偏高）
-    if (meanSat > 15.0) return false;
-
-    // 条件 2：整体必须足够亮
-    if (meanVal < 200.0) return false;
-
-    // 条件 3："偏黄"特征
-    const double rbDiff = meanR - meanB;
-    if (rbDiff < 2.0) return false;  // 偏蓝或纯白
-    if (rbDiff > 35.0) return false; // 太黄了
-
-    return true;
-}
-
-// ============================================================
-// 主处理
+// 主处理：基于类型的智能底色净化
 // ============================================================
 BackgroundResult Background::whiten(const cv::Mat &src,
                                      const BackgroundOptions &options)
@@ -92,54 +51,69 @@ BackgroundResult Background::whiten(const cv::Mat &src,
     const int H = src.rows;
     const int channels = src.channels();
 
-    // ★ 超级拦截：只要有 3% 的像素是明显彩色（红章、蓝底、粉底），直接跳过
-    if (channels >= 3) {
-        cv::Mat bgr;
-        if (channels == 4) cv::cvtColor(src, bgr, cv::COLOR_BGRA2BGR);
-        else bgr = src;
-
-        cv::Mat hsv, satMask;
-        cv::cvtColor(bgr, hsv, cv::COLOR_BGR2HSV);
-        std::vector<cv::Mat> hsvCh;
-        cv::split(hsv, hsvCh);
-        
-        // 饱和度 > 40 视为明显的彩色
-        cv::inRange(hsvCh[1], 40, 255, satMask);
-        double coloredRatio = static_cast<double>(cv::countNonZero(satMask)) / (W * H);
-        
-        if (coloredRatio > 0.03) { // 3% 阈值
-            result.image = src.clone();
-            result.skipped = true;
-            result.ok = true;
-            return result;
-        }
-    }
-
-    // 黑白/泛黄判断
-    {
-        cv::Mat bgr;
-        if (channels == 4) {
-            cv::cvtColor(src, bgr, cv::COLOR_BGRA2BGR);
-        } else if (channels == 3) {
-            bgr = src;
-        }
-        if (!isYellowishPaper(bgr)) {
-            result.image = src.clone();
-            result.skipped = true;
-            result.ok = true;
-            return result;
-        }
-    }
-
-    // 灰度转换
-    cv::Mat gray;
-    if (channels == 3) {
-        cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
-    } else if (channels == 4) {
-        cv::cvtColor(src, gray, cv::COLOR_BGRA2GRAY);
+    // 1. 统一转换为 BGR 用于特征提取，保留 src 原图
+    cv::Mat bgr;
+    if (channels == 4) {
+        cv::cvtColor(src, bgr, cv::COLOR_BGRA2BGR);
+    } else if (channels == 3) {
+        bgr = src;
     } else {
-        gray = src.clone();
+        cv::cvtColor(src, bgr, cv::COLOR_GRAY2BGR);
     }
+
+    // 2. 转换为 HSV 提取颜色特征
+    cv::Mat hsv;
+    cv::cvtColor(bgr, hsv, cv::COLOR_BGR2HSV);
+    std::vector<cv::Mat> hsvCh;
+    cv::split(hsv, hsvCh);
+    const cv::Mat &S = hsvCh[1];
+    const cv::Mat &V = hsvCh[2];
+
+    // 3. 判定是否为彩色证件（如粉色身份证、护照）
+    // 统计高饱和度（S > 50）的像素占比
+    cv::Mat coloredMask;
+    cv::inRange(S, 50, 255, coloredMask);
+    double colorRatio = static_cast<double>(cv::countNonZero(coloredMask)) / (W * H);
+
+    // 如果彩色面积占比超过 12%，判定为彩色证件，直接跳过不处理，保护证件底色
+    if (colorRatio > 0.12) {
+        result.image = src.clone();
+        result.skipped = true;
+        result.ok = true;
+        return result;
+    }
+
+    // 4. 判定是否为泛黄纸张（仅分析低饱和度区域，排除印章干扰）
+    cv::Mat lowSatMask;
+    cv::inRange(S, 0, 45, lowSatMask);
+    
+    if (cv::countNonZero(lowSatMask) > 0) {
+        cv::Scalar meanBGR = cv::mean(bgr, lowSatMask);
+        cv::Scalar meanHSV = cv::mean(hsv, lowSatMask);
+        
+        double meanB = meanBGR[0];
+        double meanR = meanBGR[2];
+        double meanVal = meanHSV[2];
+        double rbDiff = meanR - meanB;
+
+        // 如果不偏黄（R-B <= 2）或者已经足够白（Val >= 248），则跳过白化
+        if (rbDiff <= 2.0 || meanVal >= 248.0) {
+            result.image = src.clone();
+            result.skipped = true;
+            result.ok = true;
+            return result;
+        }
+    } else {
+        // 找不到低饱和度区域（全彩图），直接跳过
+        result.image = src.clone();
+        result.skipped = true;
+        result.ok = true;
+        return result;
+    }
+
+    // 5. 灰度转换，估算纸底灰度
+    cv::Mat gray;
+    cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
 
     const double paperGray = estimatePaperGray(gray, options);
     result.paperGray = paperGray;
@@ -151,6 +125,7 @@ BackgroundResult Background::whiten(const cv::Mat &src,
         return result;
     }
 
+    // 6. 生成内容掩膜（文字、表格线、印章）
     const double contentThreshold = paperGray * options.contentRatio;
     const double safeThreshold = paperGray * 0.55;
     const double effectiveThreshold = std::min(contentThreshold, safeThreshold);
@@ -158,60 +133,44 @@ BackgroundResult Background::whiten(const cv::Mat &src,
     cv::Mat contentMask;
     cv::threshold(gray, contentMask, effectiveThreshold, 255, cv::THRESH_BINARY_INV);
 
-    // 形态学保护表格线
+    // 保护表格线
     {
         cv::Mat darkBin;
         const double darkThr = paperGray * 0.9;
         cv::threshold(gray, darkBin, darkThr, 255, cv::THRESH_BINARY_INV);
 
-        cv::Mat closeKernel = cv::getStructuringElement(
-            cv::MORPH_RECT, cv::Size(5, 5));
+        cv::Mat closeKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
         cv::Mat connected;
         cv::morphologyEx(darkBin, connected, cv::MORPH_CLOSE, closeKernel);
 
-        cv::Mat hKernel = cv::getStructuringElement(
-            cv::MORPH_RECT, cv::Size(40, 1));
+        cv::Mat hKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(40, 1));
         cv::Mat hLines;
         cv::morphologyEx(connected, hLines, cv::MORPH_OPEN, hKernel);
 
-        cv::Mat vKernel = cv::getStructuringElement(
-            cv::MORPH_RECT, cv::Size(1, 40));
+        cv::Mat vKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(1, 40));
         cv::Mat vLines;
         cv::morphologyEx(connected, vLines, cv::MORPH_OPEN, vKernel);
 
         cv::Mat linesMask;
         cv::bitwise_or(hLines, vLines, linesMask);
 
-        cv::Mat dilateKernel = cv::getStructuringElement(
-            cv::MORPH_RECT, cv::Size(3, 3));
+        cv::Mat dilateKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
         cv::dilate(linesMask, linesMask, dilateKernel);
 
         cv::bitwise_or(contentMask, linesMask, contentMask);
     }
 
-    // 保护彩色内容（红章、蓝签）
-    if (options.protectColor && channels >= 3) {
-        cv::Mat bgr;
-        if (channels == 4) {
-            cv::cvtColor(src, bgr, cv::COLOR_BGRA2BGR);
-        } else {
-            bgr = src;
-        }
-
-        cv::Mat hsv;
-        cv::cvtColor(bgr, hsv, cv::COLOR_BGR2HSV);
-
-        std::vector<cv::Mat> hsvCh;
-        cv::split(hsv, hsvCh);
-        const cv::Mat &S = hsvCh[1];
-        const cv::Mat &V = hsvCh[2];
-
+    // 保护彩色内容（印章、签名、红章）
+    if (options.protectColor) {
         cv::Mat colorMask;
         cv::inRange(S, options.colorSatMin, 255, colorMask);
-
         cv::Mat valMask;
         cv::inRange(V, 40, 255, valMask);
         cv::bitwise_and(colorMask, valMask, colorMask);
+        
+        // 印章边缘膨胀保护，避免涂白生硬
+        cv::Mat dilateKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
+        cv::dilate(colorMask, colorMask, dilateKernel);
 
         cv::bitwise_or(contentMask, colorMask, contentMask);
     }
@@ -232,6 +191,7 @@ BackgroundResult Background::whiten(const cv::Mat &src,
         cv::bitwise_or(contentMask, ext, contentMask);
     }
 
+    // 7. 背景白化
     cv::Mat bgMask;
     cv::bitwise_not(contentMask, bgMask);
 
@@ -247,6 +207,7 @@ BackgroundResult Background::whiten(const cv::Mat &src,
         white = cv::Scalar(tg);
     }
 
+    // 将背景涂白，被保护的内容保留原样
     dst.setTo(white, bgMask);
 
     result.image = dst;
