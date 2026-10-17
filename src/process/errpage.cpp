@@ -90,14 +90,13 @@ static void notePaddleSuccess()
     g_paddleFailCount = 0;
 }
 
-// ★★★ 严格过滤数字块，剔除噪点和正文 ★★★
+// ★★★ 极严过滤：防止合并后吞掉页眉 ★★★
 std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
 {
     std::vector<cv::Rect> result;
     const int W = gray.cols;
     const int H = gray.rows;
 
-    // 只在右上角和左上角查找
     const int marginX = static_cast<int>(W * 0.20);
     const int marginY = static_cast<int>(H * 0.15);
 
@@ -126,14 +125,13 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
             const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
             const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
 
-            // ★ 严格尺寸限制：高度至少 18，宽度至少 20，防噪点
-            if (h < 18 || h > 120) continue;
-            if (w < 20 || w > 250) continue;
-            if (area < 60) continue;
+            // 单个数字块的高度严格限制，避免选入整段文字
+            if (h < 18 || h > 80) continue;
+            if (w < 15 || w > 200) continue;
+            if (area < 50) continue;
 
-            // ★ 严格长宽比限制：必须是横向的数字
             const double aspect = static_cast<double>(w) / std::max(1, h);
-            if (aspect < 1.0 || aspect > 6.0) continue;
+            if (aspect < 0.8 || aspect > 6.0) continue;
 
             boxes.push_back(cv::Rect(
                 safeRoi.x + stats.at<int>(i, cv::CC_STAT_LEFT),
@@ -143,7 +141,6 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
 
         if (boxes.empty()) continue;
 
-        // 合并相近的数字
         std::sort(boxes.begin(), boxes.end(), [](const cv::Rect &a, const cv::Rect &b) {
             if (std::abs(a.y - b.y) < a.height / 2) return a.x < b.x;
             return a.y < b.y;
@@ -166,11 +163,17 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
                     std::max(current.y + current.height, next.y + next.height) - std::min(current.y, next.y)
                 );
             } else {
-                result.push_back(current);
+                // ★ 关键拦截：合并后如果太宽或太高，直接丢弃（防止吞了整条页眉）
+                if (current.height <= 90 && current.width <= 250) {
+                    result.push_back(current);
+                }
                 current = next;
             }
         }
-        result.push_back(current);
+        // 最后一组也要拦截
+        if (current.height <= 90 && current.width <= 250) {
+            result.push_back(current);
+        }
     }
 
     return result;
@@ -410,19 +413,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src, const QString &sourcePath, co
     const int H = src.rows;
     result.correctPage = parseCorrectPage(sourcePath);
 
-    const QString diagPath = QDir::homePath() + QStringLiteral("/Desktop/ocr_debug.txt");
-    QFile diagFile(diagPath);
-    diagFile.open(QIODevice::Append | QIODevice::Text);
-    QTextStream diag(&diagFile);
-    diag.setCodec("UTF-8");
-    auto writeDiag = [&](const QString &msg) {
-        if (diagFile.isOpen()) { diag << msg << "\n"; diag.flush(); }
-    };
-
-    writeDiag(QString::fromUtf8("----- process() -----"));
-    writeDiag(QString::fromUtf8("文件名：%1").arg(sourcePath));
-    writeDiag(QString::fromUtf8("正确页码：%1").arg(result.correctPage));
-
     cv::Mat gray;
     if (src.channels() == 3) cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
     else if (src.channels() == 4) cv::cvtColor(src, gray, cv::COLOR_BGRA2GRAY);
@@ -460,28 +450,17 @@ ErrPageResult ErrPage::process(const cv::Mat &src, const QString &sourcePath, co
     for (auto &item : candidates) {
         const int textLen = item.recognizedText.length();
         
-        // ★ 核心修改：如果 OCR 失败 (识别=-1)，绝对不进待确认中心，直接抛弃！
-        if (item.recognizedNumber < 0) {
-            continue; 
-        }
-
-        // 必须 3 位数字
-        if (textLen != 3) {
-            continue;
-        }
+        if (item.recognizedNumber < 0) continue; 
+        if (textLen != 3) continue;
 
         const bool matchesCorrect = fuzzyMatchPage(item.recognizedNumber, result.correctPage);
-        if (matchesCorrect) {
-            continue;
-        }
+        if (matchesCorrect) continue;
 
-        // 必须是错误页码，且有划线才进涂白或待确认
         const double kMinConf = 0.5;
         if (item.isCrossed && item.confidence >= kMinConf) {
             eraseBlock(dst, gray, item.boundingBox, white);
             ++result.crossedRemoved;
         } else {
-            // 只有识别出了明确数字，但没划线或置信度不够的，才需要人工看一眼
             ++result.pendingCount;
             pendingItems.push_back(item);
         }
@@ -491,8 +470,6 @@ ErrPageResult ErrPage::process(const cv::Mat &src, const QString &sourcePath, co
     result.markedImage = dst; 
     result.items = pendingItems; 
     result.ok = true;
-
-    diagFile.close();
     return result;
 }
 
