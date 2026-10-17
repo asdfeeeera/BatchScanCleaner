@@ -9,6 +9,8 @@
 
 #include <opencv2/imgproc.hpp>
 
+#include "../analyze/pending_center.h"
+
 namespace batch {
 
 BatchProcessor::BatchProcessor(QObject *parent)
@@ -523,7 +525,33 @@ bool BatchProcessor::runErrPage(cv::Mat &img, const QString &sourcePath)
 {
     const process::ErrPageResult r =
         process::ErrPage::process(img, sourcePath, m_options.errPageOpt);
-    if (r.ok && !r.image.empty()) { img = r.image; return true; }
+
+    if (r.ok && !r.image.empty()) {
+        // ★ 新增：把待确认项存入单例
+        const QFileInfo fi(sourcePath);
+        for (const auto &it : r.items) {
+            analyze::PendingItem p;
+            p.type = analyze::PendingType::WrongPageNumber;
+            p.suggestedAction = analyze::PendingAction::Remove;
+            p.sourceImagePath = sourcePath;
+            p.fileName = fi.fileName();
+            p.boundingBox = it.boundingBox;
+            p.confidence = it.confidence;
+            p.reason = QString::fromUtf8("检测到错误页码，与正确页码不符");
+            p.detail = QString::fromUtf8("识别结果：%1，正确页码：%2")
+                           .arg(it.recognizedNumber).arg(r.correctPage);
+
+            cv::Rect safe = it.boundingBox & cv::Rect(0, 0, r.image.cols, r.image.rows);
+            if (safe.width > 0 && safe.height > 0) {
+                p.thumbnail = r.image(safe).clone();
+            }
+
+            analyze::PendingCenter::instance().addItem(p);
+        }
+
+        img = r.image;
+        return true;
+    }
     return false;
 }
 
