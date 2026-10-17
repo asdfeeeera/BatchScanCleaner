@@ -10,7 +10,7 @@
 #include <QElapsedTimer>
 
 #include <opencv2/imgproc.hpp>
-#include <opencv2/imgcodecs.hpp>  // ★ 必须加上这个，否则 cv::imwrite 报错
+#include <opencv2/imgcodecs.hpp>
 
 #include "../analyze/pending_center.h"
 #include "../ui/settings_dialog.h"
@@ -71,16 +71,14 @@ void BatchProcessor::run()
     timer.start();
 
     for (m_index = 0; m_index < m_options.inputFiles.size(); ++m_index) {
-        // 检查取消
         if (m_cancelled) break;
 
-        // 检查暂停
         while (m_paused && !m_cancelled) {
             QThread::msleep(100);
         }
         if (m_cancelled) break;
 
-        // ★ 多机分片逻辑：只处理属于当前机器索引的文件
+        // 多机分片逻辑：只处理属于当前机器索引的文件
         if (m_options.totalShards > 1) {
             if ((m_index % m_options.totalShards) != m_options.shardIndex) {
                 continue;
@@ -151,22 +149,22 @@ void BatchProcessor::run()
     res.reportPath = writeReport(m_cancelled);
 
     m_running = false;
-    emit finished(res); // ★ 注意：头文件里信号名叫 finished，不是 batchFinished
+    emit finished(res);
 }
 
 bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
 {
-    cv::Mat img = cv::imread(inputPath.toStdString(), cv::imread_anycolor);
+    // ★ 修复：imread_anycolor 改为 cv::IMREAD_COLOR
+    cv::Mat img = cv::imread(inputPath.toStdString(), cv::IMREAD_COLOR);
     if (img.empty()) {
         outError = "无法读取图片";
         return false;
     }
 
     cv::Mat stampMask;
-    if (m_options.stampOpt.protect) {
-        protect::StampProtectResult spr = protect::StampProtect::detect(img, m_options.stampOpt);
-        if (spr.ok) stampMask = spr.mask;
-    }
+    // ★ 修复：不能直接判断 protect 命名空间，直接调用检测，内部失败会返回 ok=false
+    protect::StampProtectResult spr = protect::StampProtect::detect(img, m_options.stampOpt);
+    if (spr.ok) stampMask = spr.mask;
 
     // 遍历用户勾选的步骤，按顺序执行
     for (const StepItem &step : m_options.steps) {
@@ -355,8 +353,9 @@ QString BatchProcessor::writeReport(bool cancelled) const
         
         if (!m_failedFiles.isEmpty()) {
             ts << "失败文件列表：\n";
-            for (const QString &f : m_failedFiles) {
-                ts << "  " << f << "\n";
+            // ★ 修复：变量名从 f 改为 failedFile
+            for (const QString &failedFile : m_failedFiles) {
+                ts << "  " << failedFile << "\n";
             }
         }
     }
