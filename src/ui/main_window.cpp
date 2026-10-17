@@ -5,7 +5,7 @@
 #include <QStatusBar>
 #include <QLabel>
 #include <QSplitter>
-#include <QTreeView>
+#include <QTreeWidget>
 #include <QTableView>
 #include <QListView>
 #include <QStandardItemModel>
@@ -36,7 +36,7 @@
 #include <QCheckBox>
 #include <QPushButton>
 #include <QApplication>
-#include <QFileSystemModel>
+#include <QStandardPaths>
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -172,25 +172,40 @@ void MainWindow::setupCentralWidget()
     QVBoxLayout *leftLayout = new QVBoxLayout(leftWidget);
     leftLayout->setContentsMargins(0, 0, 0, 0);
 
-    m_dirModel = new QFileSystemModel(this);
-    m_dirModel->setFilter(QDir::AllDirs | QDir::NoDotAndDotDot); 
-    
-    // ★ 关键修改：把根节点设为 Administrator 目录，这样就会显示“桌面”
-    QString homePath = QDir::homePath();
-    m_dirModel->setRootPath(homePath);
-
-    m_folderTree = new QTreeView(leftWidget);
-    m_folderTree->setModel(m_dirModel);
-    m_folderTree->setRootIndex(m_dirModel->index(homePath)); // ★ 让视图只显示用户目录
+    m_folderTree = new QTreeWidget(leftWidget);
     m_folderTree->setHeaderHidden(true);
-    for (int i = 1; i < m_dirModel->columnCount(); ++i) {
-        m_folderTree->hideColumn(i);
-    }
-    m_folderTree->setMinimumHeight(200);
-    m_folderTree->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_folderTree->setIconSize(QSize(18, 18));
+
+    // 1. 桌面
+    QTreeWidgetItem *desktopItem = new QTreeWidgetItem(m_folderTree);
+    desktopItem->setText(0, QString::fromUtf8("桌面"));
+    desktopItem->setData(0, Qt::UserRole, QStandardPaths::writableLocation(QStandardPaths::DesktopLocation));
+
+    // 2. 此电脑
+    QTreeWidgetItem *computerItem = new QTreeWidgetItem(m_folderTree);
+    computerItem->setText(0, QString::fromUtf8("此电脑"));
+    computerItem->setData(0, Qt::UserRole, "COMPUTER");
     
-    // ★ 修改：双击才触发扫描，彻底防卡死
-    connect(m_folderTree, &QTreeView::doubleClicked, this, &MainWindow::onFolderTreeClicked);
+    // 自动添加所有盘符
+    QFileInfoList drives = QDir::drives();
+    for (const QFileInfo &drive : drives) {
+        QTreeWidgetItem *driveItem = new QTreeWidgetItem(computerItem);
+        driveItem->setText(0, drive.filePath());
+        driveItem->setData(0, Qt::UserRole, drive.filePath());
+        // 添加一个占位节点，让前面显示展开的 + 号
+        new QTreeWidgetItem(driveItem); 
+    }
+
+    // 3. 网络
+    QTreeWidgetItem *networkItem = new QTreeWidgetItem(m_folderTree);
+    networkItem->setText(0, QString::fromUtf8("网络"));
+    networkItem->setData(0, Qt::UserRole, "NETWORK");
+
+    // 展开“此电脑”
+    computerItem->setExpanded(true);
+
+    connect(m_folderTree, &QTreeWidget::itemDoubleClicked, this, &MainWindow::onFolderTreeDoubleClicked);
+    connect(m_folderTree, &QTreeWidget::itemExpanded, this, &MainWindow::onFolderTreeExpanded);
 
     m_fileModel = new QStandardItemModel(this);
     
@@ -218,7 +233,7 @@ void MainWindow::setupCentralWidget()
     m_previewView->setStyleSheet(QStringLiteral("QGraphicsView { background-color: #dcdcdc; border: none; }"));
 
     // ==========================================
-    // 右侧区域（参数分组 + 功能按钮）
+    // 右侧区域（参数分组）
     // ==========================================
     QScrollArea *paramScroll = new QScrollArea(this);
     paramScroll->setWidgetResizable(true);
@@ -230,7 +245,7 @@ void MainWindow::setupCentralWidget()
     QVBoxLayout *paramLayout = new QVBoxLayout(paramWidget);
     paramLayout->setSpacing(10);
 
-    // 组 1：基础处理（换成可点击的按钮）
+    // 组 1：基础处理
     QGroupBox *basicGroup = new QGroupBox(QString::fromUtf8("基础图像处理"), paramWidget);
     QVBoxLayout *basicLayout = new QVBoxLayout(basicGroup);
     QPushButton *btnDenoise = new QPushButton(QString::fromUtf8("执行 污点去除"), basicGroup);
@@ -248,7 +263,7 @@ void MainWindow::setupCentralWidget()
     QVBoxLayout *enhanceLayout = new QVBoxLayout(enhanceGroup);
     buildEnhancePanel(enhanceLayout); 
 
-    // 组 3：智能分析（换成可点击的按钮）
+    // 组 3：智能分析
     QGroupBox *aiGroup = new QGroupBox(QString::fromUtf8("智能分析"), paramWidget);
     QVBoxLayout *aiLayout = new QVBoxLayout(aiGroup);
     QPushButton *btnErrPage = new QPushButton(QString::fromUtf8("处理 错误页码"), aiGroup);
@@ -280,18 +295,50 @@ void MainWindow::setupCentralWidget()
     setCentralWidget(mainSplitter);
 }
 
-void MainWindow::onFolderTreeClicked(const QModelIndex &index)
+// ★ 辅助：填充子节点（防止初始化时卡死）
+void MainWindow::populateTreeItem(QTreeWidgetItem *item, const QString &path)
 {
-    if (!index.isValid()) return;
-    QString path = m_dirModel->filePath(index);
-    QFileInfo info(path);
+    if (item->childCount() > 1 || (item->childCount() == 1 && item->child(0)->data(0, Qt::UserRole).toString() != "PLACEHOLDER")) {
+        return; // 已经加载过了
+    }
+    item->takeChildren(); // 删除占位符
+
+    QDir dir(path);
+    dir.setFilter(QDir::Dirs | QDir::NoDotAndDotDot);
+    QFileInfoList list = dir.entryInfoList();
+    for (const QFileInfo &info : list) {
+        QTreeWidgetItem *child = new QTreeWidgetItem(item);
+        child->setText(0, info.fileName());
+        child->setData(0, Qt::UserRole, info.absoluteFilePath());
+        // 判断是不是有子目录，如果有，放个占位符
+        QDir childDir(info.absoluteFilePath());
+        childDir.setFilter(QDir::Dirs | QDir::NoDotAndDotDot);
+        if (!childDir.entryList().isEmpty()) {
+            new QTreeWidgetItem(child); 
+        }
+    }
+}
+
+void MainWindow::onFolderTreeExpanded(QTreeWidgetItem *item)
+{
+    if (!item) return;
+    QString path = item->data(0, Qt::UserRole).toString();
+    if (path.isEmpty() || path == "COMPUTER" || path == "NETWORK") return;
+    populateTreeItem(item, path);
+}
+
+void MainWindow::onFolderTreeDoubleClicked(QTreeWidgetItem *item, int column)
+{
+    Q_UNUSED(column);
+    if (!item) return;
+    QString path = item->data(0, Qt::UserRole).toString();
     
-    if (!info.isDir()) return;
-    
+    if (path.isEmpty() || path == "COMPUTER" || path == "NETWORK") return;
+
     m_currentFolder = path;
     statusBar()->showMessage(QString::fromUtf8("正在加载：%1 ...").arg(path));
     
-    // ★ 只加载当前目录的图片，绝对不递归！彻底防卡死！
+    // 只加载当前目录的图片
     QStringList files;
     QDir dir(path);
     QStringList filters;

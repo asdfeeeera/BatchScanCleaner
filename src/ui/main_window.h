@@ -2,13 +2,11 @@
 
 #include <QMainWindow>
 #include <QStringList>
-#include <opencv2/core.hpp>    // ★ 必须保留，因为用了 cv::Mat
+#include <opencv2/core.hpp>
+#include <QTreeWidget>        // ★ 改用 QTreeWidget 手工建树
 
-// ★ 所有的 Qt 类都用前置声明，绝对不要在头文件里 include 它们
-class QTreeView;
 class QTableView;
 class QListView;
-class QFileSystemModel;
 class QStandardItemModel;
 class QGraphicsView;
 class QGraphicsScene;
@@ -60,7 +58,11 @@ private slots:
     void onPendingCenter();
     void onBackground();
     void onOneClickProcess();
-    void onFolderTreeClicked(const QModelIndex &index);
+    
+    // ★ 树节点双击加载图片
+    void onFolderTreeDoubleClicked(QTreeWidgetItem *item, int column);
+    void onFolderTreeExpanded(QTreeWidgetItem *item);
+    
     void onFileDoubleClicked(const QModelIndex &index);
 
 private:
@@ -76,6 +78,9 @@ private:
     
     void buildEnhancePanel(QVBoxLayout *paramLayout);
     process::EnhanceOptions currentEnhanceOptions() const;
+    
+    // ★ 辅助：构建子节点（实现懒加载）
+    void populateTreeItem(QTreeWidgetItem *item, const QString &path);
 
     // 文件与图像状态
     QStringList m_currentFiles;
@@ -89,11 +94,8 @@ private:
     cv::Mat m_colorLineSource;
 
     // 核心控件
-    QTreeView *m_folderTree = nullptr;
-    QFileSystemModel *m_dirModel = nullptr;
-    
+    QTreeWidget *m_folderTree = nullptr;     // ★ 改为 QTreeWidget
     QStandardItemModel *m_fileModel = nullptr;
-    QTableView *m_fileTable = nullptr; 
     QListView *m_fileList = nullptr;   
     
     QGraphicsView *m_previewView = nullptr;
