@@ -90,11 +90,7 @@ static void notePaddleSuccess()
     g_paddleFailCount = 0;
 }
 
-// ============================================================
-// ★ 全页数字检测 + 边缘过滤（4 个角）
-//   ★ 本次修改：marginX 15% -> 10%，marginY 15% -> 8%
-//     （避免检测到页眉，只保留真正的页码位置）
-// ============================================================
+// ★ 放宽尺寸限制，避免 215 和 264 连在一起时被当成异常块过滤
 std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
 {
     std::vector<cv::Rect> result;
@@ -103,7 +99,8 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
     cv::threshold(gray, binary, 0, 255,
                   cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(7, 3));
+    // 膨胀核稍微改大一点，让 215 和 264 尽量连在一起（方便后续整体识别）
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(10, 5));
     cv::Mat dilated;
     cv::dilate(binary, dilated, kernel);
 
@@ -113,9 +110,8 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
 
     const int W = gray.cols;
     const int H = gray.rows;
-    // ★ 修改：marginX 15% -> 10%，marginY 15% -> 8%
-    const int marginX = static_cast<int>(W * 0.10);
-    const int marginY = static_cast<int>(H * 0.08);
+    const int marginX = static_cast<int>(W * 0.12);
+    const int marginY = static_cast<int>(H * 0.10);
 
     for (int i = 1; i < nLabels; ++i) {
         const int area = stats.at<int>(i, cv::CC_STAT_AREA);
@@ -124,14 +120,16 @@ std::vector<cv::Rect> detectAllDigits(const cv::Mat &gray)
         const int w = stats.at<int>(i, cv::CC_STAT_WIDTH);
         const int h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
 
-        if (h < 15 || h > 100) continue;
-        if (w < 20 || w > 250) continue;
-        if (area < 150) continue;
+        // ★ 放宽尺寸限制
+        if (h < 10 || h > 150) continue;
+        if (w < 15 || w > 350) continue;
+        if (area < 100) continue;
 
+        // ★ 放宽宽高比限制
         const double aspect = static_cast<double>(w) / std::max(1, h);
-        if (aspect < 1.2 || aspect > 6.0) continue;
+        if (aspect < 0.8 || aspect > 8.0) continue;
 
-        // ★ 只检测 4 个角
+        // 只检测 4 个角
         const bool inTopLeft     = (x < marginX)           && (y < marginY);
         const bool inTopRight    = (x + w > W - marginX)   && (y < marginY);
         const bool inBottomLeft  = (x < marginX)           && (y + h > H - marginY);
@@ -343,58 +341,34 @@ int ErrPage::recognizeWithTesseract(const cv::Mat &digitImage,
         return -1;
     }
 
-    // 提前打开日志
-    const QString diagPath = QDir::homePath() + QStringLiteral("/Desktop/ocr_debug.txt");
-    QFile diagFile(diagPath);
-    diagFile.open(QIODevice::Append | QIODevice::Text);
-    QTextStream diag(&diagFile);
-    diag.setCodec("UTF-8");
-    auto writeDiag = [&](const QString &msg) {
-        if (diagFile.isOpen()) {
-            diag << msg << "\n";
-            diag.flush();
-        }
-    };
-
     // 1. ONNX 识别
     {
         process::OnnxOcr &ocr = process::OnnxOcr::instance();
         process::OnnxOcr::Result r = ocr.recognize(digitImage);
 
-        if (r.ok && r.confidence >= 0.9) {
+        // 只要 ONNX 有结果就返回（不再强求 >= 0.9）
+        if (r.ok) {
             outText = r.text;
             outConfidence = r.confidence;
-            diagFile.close();
             return r.number;
         }
-        
-        writeDiag(QString::fromUtf8("    ONNX 失败(ok=%1 conf=%2)，尝试 PaddleOCR")
-                  .arg(r.ok).arg(r.confidence));
 
+        // 2. PaddleOCR 兜底
         if (enablePaddleOcr && !g_paddleDisabled) {
             if (process::PaddleOcr *pocr = getPaddleOcr()) {
-                writeDiag(QString::fromUtf8("    调用 PaddleOCR ..."));
                 const process::PaddleOcrResult pr = pocr->recognize(digitImage);
                 if (pr.ok && !pr.text.isEmpty()) {
                     outText = pr.text;
                     outConfidence = pr.confidence;
                     notePaddleSuccess();
-                    writeDiag(QString::fromUtf8("    PaddleOCR 成功: %1").arg(pr.text));
-                    diagFile.close();
                     return pr.number;
                 }
-                writeDiag(QString::fromUtf8("    PaddleOCR 失败: %1").arg(pr.errorMsg));
                 notePaddleFailure();
-            } else {
-                writeDiag(QString::fromUtf8("    getPaddleOcr 返回空指针"));
             }
-        } else {
-             writeDiag(QString::fromUtf8("    PaddleOCR 未启用或已禁用"));
         }
 
         outText.clear();
         outConfidence = 0.0;
-        diagFile.close();
         return -1;
     }
 }
@@ -419,7 +393,7 @@ bool ErrPage::detectCrossLine(const cv::Mat &gray,
 
     const int digitW = digitBox.width;
     const int minCount = digitW * 5 / 10;
-    const int maxCount = digitW * 12 / 10;
+    const int maxCount = digitW * 15 / 10;
 
     int hitRows = 0;
     for (int y = 0; y < binary.rows; ++y) {
@@ -548,7 +522,9 @@ ErrPageResult ErrPage::process(const cv::Mat &src,
             continue;
         }
 
-        const double kMinConf = 0.85;
+        // ★ 核心修改：涂白阈值从 0.85 降到 0.5
+        // 只要认出是错的，且置信度 > 50%，有划线就直接涂白！
+        const double kMinConf = 0.5;
         if (item.isCrossed && item.confidence >= kMinConf) {
             eraseBlock(dst, gray, item.boundingBox, white);
             ++result.crossedRemoved;
