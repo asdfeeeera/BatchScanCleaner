@@ -7,6 +7,7 @@
 #include <QSplitter>
 #include <QTreeView>
 #include <QTableView>
+#include <QListView>
 #include <QStandardItemModel>
 #include <QHeaderView>
 #include <QGraphicsView>
@@ -35,6 +36,7 @@
 #include <QCheckBox>
 #include <QPushButton>
 #include <QApplication>
+#include <QFileSystemModel>
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -62,7 +64,7 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     setWindowTitle(QString::fromUtf8("批量扫描图片净化增强软件"));
-    resize(1280, 800);
+    resize(1366, 850);
 
     m_enhanceDebounceTimer = new QTimer(this);
     m_enhanceDebounceTimer->setSingleShot(true);
@@ -209,74 +211,133 @@ void MainWindow::setupToolBar()
 void MainWindow::setupCentralWidget()
 {
     QSplitter *mainSplitter = new QSplitter(Qt::Horizontal, this);
+
+    // ==========================================
+    // 左侧区域（目录树 + 缩略图列表）
+    // ==========================================
     QWidget *leftWidget = new QWidget(this);
     QVBoxLayout *leftLayout = new QVBoxLayout(leftWidget);
-    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setContentsMargins(2, 2, 2, 2);
+
+    // 1. 目录树
+    m_dirModel = new QFileSystemModel(this);
+    m_dirModel->setRootPath(QDir::currentPath());
+    m_dirModel->setFilter(QDir::AllDirs | QDir::NoDotAndDotDot); 
 
     m_folderTree = new QTreeView(leftWidget);
+    m_folderTree->setModel(m_dirModel);
     m_folderTree->setHeaderHidden(true);
-    leftLayout->addWidget(m_folderTree);
+    for (int i = 1; i < m_dirModel->columnCount(); ++i) {
+        m_folderTree->hideColumn(i);
+    }
+    m_folderTree->setMinimumHeight(180);
+    connect(m_folderTree, &QTreeView::clicked, this, &MainWindow::onFolderTreeClicked);
 
+    // 2. 文件列表（缩略图模式）
     m_fileModel = new QStandardItemModel(this);
-    m_fileModel->setHorizontalHeaderLabels({
-        QString::fromUtf8("文件名"), QString::fromUtf8("大小"), QString::fromUtf8("路径")
-    });
-    m_fileTable = new QTableView(leftWidget);
-    m_fileTable->setModel(m_fileModel);
-    m_fileTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_fileTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    m_fileTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_fileTable->horizontalHeader()->setStretchLastSection(true);
-    m_fileTable->verticalHeader()->setVisible(false);
-    connect(m_fileTable, &QTableView::clicked, this, &MainWindow::onFileDoubleClicked);
-    connect(m_fileTable, &QTableView::doubleClicked, this, &MainWindow::onFileDoubleClicked);
-    leftLayout->addWidget(m_fileTable);
+    
+    m_fileList = new QListView(leftWidget);
+    m_fileList->setModel(m_fileModel);
+    m_fileList->setViewMode(QListView::IconMode); 
+    m_fileList->setIconSize(QSize(100, 100));       
+    m_fileList->setGridSize(QSize(120, 140));      
+    m_fileList->setResizeMode(QListView::Adjust);
+    m_fileList->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_fileList->setSpacing(5);
+    
+    connect(m_fileList, &QListView::doubleClicked, this, &MainWindow::onFileDoubleClicked);
 
+    leftLayout->addWidget(new QLabel(QString::fromUtf8("目录浏览"), leftWidget));
+    leftLayout->addWidget(m_folderTree);
+    leftLayout->addWidget(new QLabel(QString::fromUtf8("文件列表"), leftWidget));
+    leftLayout->addWidget(m_fileList, 1); 
+
+    // ==========================================
+    // 中间区域（预览区）
+    // ==========================================
     m_previewScene = new QGraphicsScene(this);
     m_previewView = new QGraphicsView(m_previewScene, this);
     m_previewView->setRenderHint(QPainter::SmoothPixmapTransform);
     m_previewView->setDragMode(QGraphicsView::ScrollHandDrag);
     m_previewView->setAlignment(Qt::AlignCenter);
+    m_previewView->setStyleSheet(QStringLiteral("QGraphicsView { background-color: #dcdcdc; border: none; }"));
 
+    // ==========================================
+    // 右侧区域（参数分组）
+    // ==========================================
     QScrollArea *paramScroll = new QScrollArea(this);
     QWidget *paramWidget = new QWidget(paramScroll);
     QVBoxLayout *paramLayout = new QVBoxLayout(paramWidget);
-    paramLayout->addWidget(new QLabel(QString::fromUtf8("预设")));
-    paramLayout->addWidget(new QLabel(QString::fromUtf8("污点去除")));
-    paramLayout->addWidget(new QLabel(QString::fromUtf8("黑边去除")));
-    paramLayout->addWidget(new QLabel(QString::fromUtf8("自动扶正")));
-    buildEnhancePanel(paramLayout);
-    paramLayout->addWidget(new QLabel(QString::fromUtf8("彩色故障细线")));
-    paramLayout->addWidget(new QLabel(QString::fromUtf8("签名印章保护")));
-    paramLayout->addWidget(new QLabel(QString::fromUtf8("底色处理")));
-    paramLayout->addWidget(new QLabel(QString::fromUtf8("输出设置")));
-    paramLayout->addStretch();
+    paramLayout->setSpacing(10);
+
+    // 组 1：基础处理
+    QGroupBox *basicGroup = new QGroupBox(QString::fromUtf8("基础图像处理"), paramWidget);
+    QVBoxLayout *basicLayout = new QVBoxLayout(basicGroup);
+    basicLayout->addWidget(new QLabel(QString::fromUtf8("• 污点去除（自动识别保护印章）"), basicGroup));
+    basicLayout->addWidget(new QLabel(QString::fromUtf8("• 黑边去除（投影法边缘检测）"), basicGroup));
+    basicLayout->addWidget(new QLabel(QString::fromUtf8("• 自动扶正（基于轮廓/直线）"), basicGroup));
+
+    // 组 2：增强处理
+    QGroupBox *enhanceGroup = new QGroupBox(QString::fromUtf8("文字与底色增强"), paramWidget);
+    QVBoxLayout *enhanceLayout = new QVBoxLayout(enhanceGroup);
+    buildEnhancePanel(enhanceLayout); 
+
+    // 组 3：智能分析
+    QGroupBox *aiGroup = new QGroupBox(QString::fromUtf8("智能分析"), paramWidget);
+    QVBoxLayout *aiLayout = new QVBoxLayout(aiGroup);
+    aiLayout->addWidget(new QLabel(QString::fromUtf8("• 错误页码处理（基于 PaddleOCR）"), aiGroup));
+    aiLayout->addWidget(new QLabel(QString::fromUtf8("• 签名印章保护"), aiGroup));
+    aiLayout->addWidget(new QLabel(QString::fromUtf8("• 彩色故障细线"), aiGroup));
+
+    paramLayout->addWidget(basicGroup);
+    paramLayout->addWidget(enhanceGroup);
+    paramLayout->addWidget(aiGroup);
+    paramLayout->addStretch(); 
+
     paramScroll->setWidget(paramWidget);
     paramScroll->setWidgetResizable(true);
+    paramScroll->setStyleSheet(QStringLiteral("QScrollArea { border: none; background-color: #f5f5f5; }"));
 
     mainSplitter->addWidget(leftWidget);
     mainSplitter->addWidget(m_previewView);
     mainSplitter->addWidget(paramScroll);
+    
     mainSplitter->setStretchFactor(0, 2);
-    mainSplitter->setStretchFactor(1, 3);
-    mainSplitter->setStretchFactor(2, 1);
-    mainSplitter->setSizes({440, 600, 240});
+    mainSplitter->setStretchFactor(1, 4);
+    mainSplitter->setStretchFactor(2, 2);
+    mainSplitter->setSizes({320, 650, 320});
+
     setCentralWidget(mainSplitter);
+}
+
+void MainWindow::onFolderTreeClicked(const QModelIndex &index)
+{
+    if (!index.isValid()) return;
+    QString path = m_dirModel->filePath(index);
+    QFileInfo info(path);
+    if (info.isDir()) {
+        m_currentFolder = path;
+        statusBar()->showMessage(QString::fromUtf8("正在扫描：%1 ...").arg(path));
+        const QStringList files = core::FileScanner::scanFolder(path);
+        m_currentFiles = files;
+        fillFileTable(files);
+        statusBar()->showMessage(QString::fromUtf8("扫描完成：%1 个文件").arg(files.size()));
+    }
 }
 
 void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
 {
     QToolButton *toggleBtn = new QToolButton(this);
-    toggleBtn->setText(QString::fromUtf8("浅色文字加深"));
+    toggleBtn->setText(QString::fromUtf8("浅色文字加深 (展开)"));
     toggleBtn->setCheckable(true);
-    toggleBtn->setChecked(false);
-    toggleBtn->setArrowType(Qt::RightArrow);
+    toggleBtn->setChecked(true);
+    toggleBtn->setArrowType(Qt::DownArrow);
     toggleBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     toggleBtn->setAutoRaise(true);
 
     QWidget *body = new QWidget(this);
     QGridLayout *grid = new QGridLayout(body);
-    grid->setContentsMargins(10, 4, 4, 4);
+    grid->setContentsMargins(5, 5, 5, 5);
     grid->setHorizontalSpacing(6);
     grid->setVerticalSpacing(4);
 
@@ -325,8 +386,6 @@ void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
     grid->addWidget(m_enhancePaperTargetSlider, row, 1);
     grid->addWidget(m_enhancePaperTargetSpin, row, 2);
     ++row;
-
-    body->setVisible(false);
 
     connect(m_enhanceStrengthSlider, &QSlider::valueChanged, m_enhanceStrengthSpin, &QSpinBox::setValue);
     connect(m_enhanceStrengthSpin, QOverload<int>::of(&QSpinBox::valueChanged), m_enhanceStrengthSlider, &QSlider::setValue);
@@ -425,22 +484,29 @@ void MainWindow::fillFileTable(const QStringList &files)
     m_fileModel->removeRows(0, m_fileModel->rowCount());
     for (const QString &path : files) {
         const QFileInfo info(path);
-        QList<QStandardItem *> row;
-        row << new QStandardItem(info.fileName());
-        row << new QStandardItem(QString::number(info.size() / 1024) + QString::fromUtf8(" KB"));
-        row << new QStandardItem(info.absolutePath());
-        row[0]->setData(path, Qt::UserRole);
-        row[0]->setToolTip(path);
-        m_fileModel->appendRow(row);
+        QStandardItem *item = new QStandardItem(info.fileName());
+        
+        // 加载缩略图（防崩溃，加上异常处理）
+        cv::Mat mat = cv::imread(path.toStdString());
+        if (!mat.empty()) {
+            cv::Mat thumb;
+            cv::resize(mat, thumb, cv::Size(100, 100), 0, 0, cv::INTER_AREA);
+            cv::cvtColor(thumb, thumb, cv::COLOR_BGR2RGB);
+            QImage img(thumb.data, thumb.cols, thumb.rows, (int)thumb.step, QImage::Format_RGB888);
+            item->setIcon(QIcon(QPixmap::fromImage(img)));
+        }
+
+        item->setData(path, Qt::UserRole);
+        item->setToolTip(path);
+        item->setEditable(false);
+        m_fileModel->appendRow(item);
     }
-    m_fileTable->resizeColumnsToContents();
 }
 
 void MainWindow::onFileDoubleClicked(const QModelIndex &index)
 {
     if (!index.isValid()) return;
-    const QModelIndex firstColIndex = m_fileModel->index(index.row(), 0);
-    const QString path = m_fileModel->data(firstColIndex, Qt::UserRole).toString();
+    const QString path = m_fileModel->data(index, Qt::UserRole).toString();
     if (path.isEmpty()) return;
     showImageOnPreview(path);
 }
@@ -870,11 +936,11 @@ void MainWindow::onProcessErrPage()
     }
     statusBar()->showMessage(msg);
 
-    // ★ 自动弹出
+    // 自动弹出
     if (addedCount > 0) {
         analyze::PendingDialog dlg(this);
         dlg.exec();
-        applyAcceptedYellowBlobs(); // 如果用户在里面接受了，要应用到图片上
+        applyAcceptedYellowBlobs();
     }
 }
 
@@ -1020,19 +1086,8 @@ void MainWindow::applyAcceptedYellowBlobs()
         if (item.decision != analyze::PendingDecision::Accepted) continue;
         if (item.sourceImagePath != m_currentImagePath) continue;
         if (item.type != analyze::PendingType::YellowBlob && item.type != analyze::PendingType::WrongPageNumber) continue;
-        cv::Rect r = item.boundingBox;
-
-        // ★ 新增：如果是错误页码，强制左右各扩 40 像素，上下各扩 20 像素，防止漏掉旁边的数字
-        if (item.type == analyze::PendingType::WrongPageNumber) {
-            r.x -= 40;
-            r.y -= 20;
-            r.width += 80;
-            r.height += 40;
-        }
-
-        r &= cv::Rect(0, 0, m_currentMat.cols, m_currentMat.rows);
+        cv::Rect r = item.boundingBox & cv::Rect(0, 0, m_currentMat.cols, m_currentMat.rows);
         if (r.width <= 0 || r.height <= 0) continue;
-
         cv::rectangle(m_currentMat, r, white, cv::FILLED);
         ++applied;
     }
