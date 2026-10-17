@@ -78,7 +78,6 @@ void BatchProcessor::run()
         }
         if (m_cancelled) break;
 
-        // 多机分片逻辑：只处理属于当前机器索引的文件
         if (m_options.totalShards > 1) {
             if ((m_index % m_options.totalShards) != m_options.shardIndex) {
                 continue;
@@ -87,7 +86,6 @@ void BatchProcessor::run()
 
         const QString inputPath = m_options.inputFiles[m_index];
 
-        // 处理前的备份
         if (m_options.backupEnabled) {
             QString err;
             if (!backupOneFile(inputPath, err)) {
@@ -100,7 +98,6 @@ void BatchProcessor::run()
 
         emit fileStarted(inputPath);
 
-        // 计时单个文件
         qint64 fileStartMs = QDateTime::currentMSecsSinceEpoch();
         QString errMsg;
         bool success = processOneFile(inputPath, errMsg);
@@ -118,7 +115,6 @@ void BatchProcessor::run()
             emit fileFinished(inputPath, false);
         }
 
-        // 发送进度
         BatchProgress progress;
         progress.current = m_processedTotal;
         progress.total = m_options.totalShards > 1 ? (m_globalTotal / m_options.totalShards) : m_globalTotal;
@@ -134,7 +130,6 @@ void BatchProcessor::run()
         emit progressChanged(progress);
     }
 
-    // 生成最终报告
     BatchResult res;
     res.cancelled = m_cancelled;
     res.total = m_options.totalShards > 1 ? (m_globalTotal / m_options.totalShards) : m_globalTotal;
@@ -154,19 +149,18 @@ void BatchProcessor::run()
 
 bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
 {
-    // ★ 修复：imread_anycolor 改为 cv::IMREAD_COLOR
-    cv::Mat img = cv::imread(inputPath.toStdString(), cv::IMREAD_COLOR);
-    if (img.empty()) {
-        outError = "无法读取图片";
+    // ★ 核心修复：使用 image::ImageIO::read 读取，完美解决中文路径问题
+    cv::Mat img;
+    image::ImageMeta meta;
+    if (!image::ImageIO::read(inputPath, img, meta)) {
+        outError = "读取图片失败(可能包含中文路径或文件损坏)";
         return false;
     }
 
     cv::Mat stampMask;
-    // ★ 修复：不能直接判断 protect 命名空间，直接调用检测，内部失败会返回 ok=false
     protect::StampProtectResult spr = protect::StampProtect::detect(img, m_options.stampOpt);
     if (spr.ok) stampMask = spr.mask;
 
-    // 遍历用户勾选的步骤，按顺序执行
     for (const StepItem &step : m_options.steps) {
         if (!step.enabled) continue;
 
@@ -182,7 +176,6 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
         }
     }
 
-    // 保存
     QString outPath = makeOutputPath(inputPath);
     QDir().mkpath(QFileInfo(outPath).absolutePath());
 
@@ -191,7 +184,6 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
         return false;
     }
 
-    // 发送预览
     cv::Mat preview = makePreview(img);
     if (!preview.empty()) {
         emit previewImageReady(preview, false);
@@ -248,7 +240,6 @@ bool BatchProcessor::runColorLine(cv::Mat &img)
 
 bool BatchProcessor::runErrPage(cv::Mat &img, const QString &sourcePath)
 {
-    // 强制从 UI 设置读取最新的 PaddleOCR 开关
     process::ErrPageOptions opt = m_options.errPageOpt;
     opt.enablePaddleOcr = ui::AppSettings::load().enablePaddleOcr;
     opt.tesseractPath   = QString();
@@ -259,7 +250,6 @@ bool BatchProcessor::runErrPage(cv::Mat &img, const QString &sourcePath)
     if (r.ok && !r.image.empty()) {
         const QFileInfo fi(sourcePath);
         
-        // 存入待确认中心
         for (const auto &it : r.items) {
             analyze::PendingItem p;
             p.type = analyze::PendingType::WrongPageNumber;
@@ -306,10 +296,8 @@ QString BatchProcessor::relativeSubDir(const QString &inputPath) const
     QDir rootDir(m_options.inputRootDir);
     QString relPath = rootDir.relativeFilePath(inputPath);
     
-    // 如果包含 ".."，说明不在同一个根目录下
     if (relPath.startsWith("..")) return QString();
     
-    // 去掉文件名，只保留目录
     QFileInfo fi(relPath);
     return fi.path() == "." ? QString() : fi.path();
 }
@@ -353,7 +341,6 @@ QString BatchProcessor::writeReport(bool cancelled) const
         
         if (!m_failedFiles.isEmpty()) {
             ts << "失败文件列表：\n";
-            // ★ 修复：变量名从 f 改为 failedFile
             for (const QString &failedFile : m_failedFiles) {
                 ts << "  " << failedFile << "\n";
             }
