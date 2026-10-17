@@ -4,7 +4,7 @@
 #include <QStringList>
 #include <QFileSystemModel>
 #include <QListView>
-#include <opencv2/core.hpp>    // ★ 加上这一行，解决 cv::Mat 不识别的问题
+#include <opencv2/core.hpp>    // 解决 cv::Mat
 
 class QTreeView;
 class QTableView;
@@ -18,6 +18,7 @@ class QSpinBox;
 class QCheckBox;
 class QToolButton;
 class QModelIndex;
+class QVBoxLayout;            // ★ 新增：解决 QVBoxLayout 不识别
 
 namespace batch { class BatchDialog; }
 namespace ui { class SettingsDialog; }
@@ -59,6 +60,7 @@ private slots:
     void onBackground();
     void onOneClickProcess();
     void onFolderTreeClicked(const QModelIndex &index);
+    void onFileDoubleClicked(const QModelIndex &index); // ★ 新增：解决 onFileDoubleClicked 不识别
 
 private:
     void setupMenuBar();
