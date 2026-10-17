@@ -149,9 +149,9 @@ void BatchProcessor::run()
 
 bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
 {
-    // ★ 核心修复：使用 image::ImageIO::read 读取，完美解决中文路径问题
     cv::Mat img;
     image::ImageMeta meta;
+    // 使用 ImageIO::read 读取，完美解决中文路径问题
     if (!image::ImageIO::read(inputPath, img, meta)) {
         outError = "读取图片失败(可能包含中文路径或文件损坏)";
         return false;
@@ -177,6 +177,7 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
     }
 
     QString outPath = makeOutputPath(inputPath);
+    // 自动新建文件夹
     QDir().mkpath(QFileInfo(outPath).absolutePath());
 
     if (!image::JpegWriter::write(outPath, img, m_options.jpegOpt)) {
@@ -281,11 +282,23 @@ QString BatchProcessor::makeOutputPath(const QString &inputPath) const
     const QFileInfo fi(inputPath);
     QString baseName = fi.completeBaseName() + m_options.outputSuffix + "." + fi.suffix();
     
-    QString subDir = relativeSubDir(inputPath);
     QString outDir = m_options.outputDir;
+    
+    // ★ 修正：把输入根目录的文件夹名带上（比如 "12" 或 "16"），防止同名覆盖
+    if (!m_options.inputRootDir.isEmpty()) {
+        QFileInfo rootInfo(m_options.inputRootDir);
+        QString rootName = rootInfo.fileName();
+        if (!rootName.isEmpty()) {
+            outDir = QDir(outDir).filePath(rootName);
+        }
+    }
+    
+    // 保留子目录结构
+    QString subDir = relativeSubDir(inputPath);
     if (!subDir.isEmpty()) {
         outDir = QDir(outDir).filePath(subDir);
     }
+    
     return QDir(outDir).filePath(baseName);
 }
 
@@ -357,6 +370,14 @@ bool BatchProcessor::backupOneFile(const QString &inputPath, QString &outError) 
     
     QString subDir = relativeSubDir(inputPath);
     QString backupDir = QDir(m_options.backupDir).filePath(dateStr);
+    
+    if (!m_options.inputRootDir.isEmpty()) {
+        QString rootName = QFileInfo(m_options.inputRootDir).fileName();
+        if (!rootName.isEmpty()) {
+            backupDir = QDir(backupDir).filePath(rootName);
+        }
+    }
+    
     if (!subDir.isEmpty()) {
         backupDir = QDir(backupDir).filePath(subDir);
     }
