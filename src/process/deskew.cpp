@@ -122,58 +122,95 @@ cv::Mat roughCropEdges(const cv::Mat &binary)
     return binary(roi).clone();
 }
 
-// ============================================================
-// ★ 改进：Hough 直线检测（参数放宽）
-//   适用：合格证、身份证、发票等有明确边框的图
-// ============================================================
+// ★★★ 新增：最大轮廓最小外接矩形法（适用于证件、照片、书本） ★★★
+std::pair<double, bool> detectAngleByContour(const cv::Mat &gray)
+{
+    // 1. 二值化
+    cv::Mat binary;
+    cv::threshold(gray, binary, 0, 255,
+                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+
+    // 2. 形态学闭运算，把断裂的边缘连起来
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(15, 15));
+    cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, kernel);
+
+    // 3. 寻找轮廓
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+    if (contours.empty()) return { 0.0, false };
+
+    // 4. 找面积最大的轮廓
+    double maxArea = 0;
+    int maxIdx = -1;
+    for (size_t i = 0; i < contours.size(); ++i) {
+        double area = cv::contourArea(contours[i]);
+        if (area > maxArea) {
+            maxArea = area;
+            maxIdx = static_cast<int>(i);
+        }
+    }
+
+    if (maxIdx < 0) return { 0.0, false };
+
+    // 面积必须占全图的 10% 以上
+    double imgArea = gray.cols * gray.rows;
+    if (maxArea < imgArea * 0.10) return { 0.0, false };
+
+    // 5. 计算最小外接矩形
+    cv::RotatedRect minRect = cv::minAreaRect(contours[maxIdx]);
+    double angle = minRect.angle;
+
+    // 6. 归一化到 [-45, 45]
+    if (angle > 45.0) angle -= 90.0;
+    if (angle < -45.0) angle += 90.0;
+
+    // 如果矩形太窄，说明可能是干扰
+    if (minRect.size.width < 50 || minRect.size.height < 50) {
+        return { 0.0, false };
+    }
+
+    // 符号判断：根据实测，getRotationMatrix2D 的正角度是逆时针旋转
+    // 如果图像是顺时针倾斜，minRect 可能是负角度，需要反一下。
+    return { -angle, true };
+}
+
+// Hough 直线检测（备选）
 std::pair<double, bool> detectAngleByHough(const cv::Mat &gray)
 {
     const int W = gray.cols;
     const int H = gray.rows;
     if (W < 100 || H < 100) return { 0.0, false };
 
-    // 1. Canny 边缘检测（★ 阈值从 50/150 放宽到 30/100）
     cv::Mat edges;
     cv::Canny(gray, edges, 30, 100, 3);
 
-    // 2. 概率 Hough 变换（★ 参数放宽）
     std::vector<cv::Vec4i> lines;
     const int minLineLen = std::max(30, static_cast<int>(std::min(W, H) * 0.15));
     const int maxLineGap = 30;
-    cv::HoughLinesP(edges, lines, 1, CV_PI / 180.0,
-                    50,          // ★ 累加器阈值 80 -> 50
-                    minLineLen,
-                    maxLineGap);
+    cv::HoughLinesP(edges, lines, 1, CV_PI / 180.0, 50, minLineLen, maxLineGap);
 
-    if (lines.size() < 2) return { 0.0, false };   // ★ 从 3 改成 2
+    if (lines.size() < 2) return { 0.0, false };
 
-    // 3. 统计接近水平/垂直的线的角度
     std::vector<double> angles;
     for (const auto &l : lines) {
         const double dx = static_cast<double>(l[2] - l[0]);
         const double dy = static_cast<double>(l[3] - l[1]);
         if (std::abs(dx) < 1.0 && std::abs(dy) < 1.0) continue;
 
-        // ★ 只保留"接近水平"的线（排除竖直线误判）
-        if (std::abs(dy) > std::abs(dx) * 0.5) continue;
+        if (std::abs(dy) > std::abs(dx) * 0.5) continue; // 只保留水平线
 
         double ang = std::atan2(dy, dx) * 180.0 / CV_PI;
-
-        // 归一化到 [-45, 45]（水平线的倾角）
         while (ang >  45.0) ang -= 90.0;
         while (ang < -45.0) ang += 90.0;
 
-        // 只保留"明显倾斜但不太陡"的线（跳过噪点）
         if (std::abs(ang) < 0.1) continue;
         if (std::abs(ang) > 40.0) continue;
-
         angles.push_back(ang);
     }
 
-    // 4. ★ 至少 2 条倾斜线才算有效（从 3 改成 2）
     if (angles.size() < 2) return { 0.0, false };
 
-    // 5. 取中位数
     std::sort(angles.begin(), angles.end());
     const double median = angles[angles.size() / 2];
 
@@ -184,9 +221,7 @@ std::pair<double, bool> detectAngleByHough(const cv::Mat &gray)
 
 double Deskew::detectAngle(const cv::Mat &src)
 {
-    if (src.empty()) {
-        return 0.0;
-    }
+    if (src.empty()) return 0.0;
 
     cv::Mat gray;
     if (src.channels() == 3) {
@@ -197,7 +232,7 @@ double Deskew::detectAngle(const cv::Mat &src)
         gray = src.clone();
     }
 
-    // 缩放（加速处理）
+    // 缩放加速
     cv::Mat smallGray;
     const int maxDim = std::max(gray.cols, gray.rows);
     if (maxDim > 800) {
@@ -207,17 +242,19 @@ double Deskew::detectAngle(const cv::Mat &src)
         smallGray = gray;
     }
 
-    // ============================================================
-    // 第 1 层：Hough 直线检测（有边框的图）
-    // ============================================================
+    // ★ 第 1 优先级：轮廓外接矩形（证件、照片）
+    auto contourRes = detectAngleByContour(smallGray);
+    if (contourRes.second) {
+        return contourRes.first;
+    }
+
+    // ★ 第 2 优先级：Hough 直线（表格、文档）
     auto hough = detectAngleByHough(smallGray);
     if (hough.second) {
         return hough.first;
     }
 
-    // ============================================================
-    // 第 2 层：投影法（文字为主的图）
-    // ============================================================
+    // ★ 第 3 优先级：投影法（纯文字）
     const int W = smallGray.cols;
     const int H = smallGray.rows;
     const int mx = static_cast<int>(W * 0.15);
@@ -228,16 +265,12 @@ double Deskew::detectAngle(const cv::Mat &src)
     cv::Mat center = smallGray(centerRoi).clone();
 
     cv::Mat binary;
-    cv::threshold(center, binary, 0, 255,
-                  cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+    cv::threshold(center, binary, 0, 255, cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
 
     auto coarse = searchAngleByProjection(binary, -45.0, 45.0, 1.0);
     const double coarseAngle = coarse.first;
 
-    auto fine = searchAngleByProjection(binary,
-                                        coarseAngle - 1.5,
-                                        coarseAngle + 1.5,
-                                        0.05);
+    auto fine = searchAngleByProjection(binary, coarseAngle - 1.5, coarseAngle + 1.5, 0.05);
 
     auto result = fine.second ? fine : coarse;
 
@@ -245,10 +278,7 @@ double Deskew::detectAngle(const cv::Mat &src)
         cv::Mat cropped = roughCropEdges(binary);
         if (cropped.cols != binary.cols || cropped.rows != binary.rows) {
             auto coarse2 = searchAngleByProjection(cropped, -45.0, 45.0, 1.0);
-            auto fine2 = searchAngleByProjection(cropped,
-                                                  coarse2.first - 1.5,
-                                                  coarse2.first + 1.5,
-                                                  0.05);
+            auto fine2 = searchAngleByProjection(cropped, coarse2.first - 1.5, coarse2.first + 1.5, 0.05);
             auto retry = fine2.second ? fine2 : coarse2;
             if (retry.second) {
                 return retry.first;
@@ -293,13 +323,10 @@ DeskewResult Deskew::autoDeskew(const cv::Mat &src)
 {
     DeskewResult result;
 
-    if (src.empty()) {
-        return result;
-    }
+    if (src.empty()) return result;
 
     const double angle = detectAngle(src);
 
-    // ★ 角度阈值 0.2 -> 1.5（避免对正向图做微小旋转）
     if (std::abs(angle) < 1.5) {
         result.image = src.clone();
         result.angle = 0.0;
