@@ -2,8 +2,9 @@
 
 #include <QMainWindow>
 #include <QStringList>
-#include <QFileSystemModel>   // ★ 新增：目录树需要
-#include <QListView>          // ★ 新增：缩略图列表需要
+#include <QFileSystemModel>
+#include <QListView>
+#include <opencv2/core.hpp>    // ★ 加上这一行，解决 cv::Mat 不识别的问题
 
 class QTreeView;
 class QTableView;
@@ -22,6 +23,7 @@ namespace batch { class BatchDialog; }
 namespace ui { class SettingsDialog; }
 namespace backup { class BackupDialog; }
 namespace annotate { class AnnotationDialog; }
+namespace process { struct EnhanceOptions; }
 
 class MainWindow : public QMainWindow
 {
@@ -56,8 +58,6 @@ private slots:
     void onPendingCenter();
     void onBackground();
     void onOneClickProcess();
-    
-    // ★ 新增：点击左侧目录树加载图片
     void onFolderTreeClicked(const QModelIndex &index);
 
 private:
@@ -87,11 +87,11 @@ private:
 
     // 核心控件
     QTreeView *m_folderTree = nullptr;
-    QFileSystemModel *m_dirModel = nullptr; // ★ 新增
+    QFileSystemModel *m_dirModel = nullptr;
     
     QStandardItemModel *m_fileModel = nullptr;
-    QTableView *m_fileTable = nullptr;      // 保留以防万一
-    QListView *m_fileList = nullptr;        // ★ 新增：缩略图列表
+    QTableView *m_fileTable = nullptr; 
+    QListView *m_fileList = nullptr;   
     
     QGraphicsView *m_previewView = nullptr;
     QGraphicsScene *m_previewScene = nullptr;
