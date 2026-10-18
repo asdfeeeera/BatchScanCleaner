@@ -168,16 +168,21 @@ cv::Mat Deskew::rotateKeepAll(const cv::Mat &src, double angle)
     const double cosA = std::abs(std::cos(rad));
     const double sinA = std::abs(std::sin(rad));
 
-    const int newW = static_cast<int>(srcH * sinA + srcW * cosA);
-    const int newH = static_cast<int>(srcH * cosA + srcW * sinA);
+    // ★ 核心修复：向上取整 (ceil) 并加上 2 像素安全外扩
+    // 彻底杜绝因角度倾斜导致的外接矩形差 1~2 像素，把边缘文字切掉的问题
+    const int newW = static_cast<int>(std::ceil(srcH * sinA + srcW * cosA)) + 2;
+    const int newH = static_cast<int>(std::ceil(srcH * cosA + srcW * sinA)) + 2;
 
     cv::Point2f center(srcW / 2.0f, srcH / 2.0f);
 
     cv::Mat rot = cv::getRotationMatrix2D(center, angle, 1.0);
+    
+    // 平移中心到新画布的正中央
     rot.at<double>(0, 2) += (newW - srcW) / 2.0;
     rot.at<double>(1, 2) += (newH - srcH) / 2.0;
 
     cv::Mat dst;
+    // 采用纯白填充四周
     cv::warpAffine(src, dst, rot, cv::Size(newW, newH),
                    cv::INTER_CUBIC, cv::BORDER_CONSTANT, cv::Scalar::all(255));
     return dst;
