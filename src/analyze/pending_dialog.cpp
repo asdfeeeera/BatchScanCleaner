@@ -16,6 +16,9 @@
 #include <QScrollArea>
 #include <QMap>
 #include <QDebug>
+#include <QSettings>
+#include <QCoreApplication>
+#include <QDir>
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -61,10 +64,39 @@ QPixmap matToPixmap(const cv::Mat &mat, int maxW, int maxH)
     return QPixmap::fromImage(qimg.copy());
 }
 
-// ★ 核心：将接受的项目直接应用到硬盘文件
+// ★ 辅助：计算输出路径（绝不覆盖原图）
+QString calculateOutputPath(const QString &sourcePath)
+{
+    const QString iniPath = QCoreApplication::applicationDirPath() + QStringLiteral("/settings.ini");
+    QSettings ini(iniPath, QSettings::IniFormat);
+    ini.setIniCodec("UTF-8");
+    
+    QString defaultOutDir = ini.value(QStringLiteral("General/defaultOutputDir")).toString().trimmed();
+    QString outputSuffix = ini.value(QStringLiteral("General/defaultOutputSuffix")).toString().trimmed();
+
+    QFileInfo srcInfo(sourcePath);
+    QString outDir = defaultOutDir;
+    
+    if (outDir.isEmpty()) {
+        // 如果全局没设置，按照批处理默认：放在原图同级 output 目录
+        outDir = srcInfo.absoluteDir().filePath(QStringLiteral("output"));
+    }
+
+    // 确保目标目录存在
+    QDir().mkpath(outDir);
+
+    QString fileName = srcInfo.completeBaseName();
+    if (!outputSuffix.isEmpty()) {
+        fileName += outputSuffix;
+    }
+    
+    return QDir(outDir).filePath(fileName + QStringLiteral(".jpg"));
+}
+
+// ★ 核心：将接受的项目直接应用到目标文件夹
 void applyDecisionsToDisk(const QList<int> &ids)
 {
-    // 1. 按文件路径分组（同一张图可能有多个接受项）
+    // 1. 按文件路径分组
     QMap<QString, QList<PendingItem>> fileMap;
     for (int id : ids) {
         PendingItem it = PendingCenter::instance().itemById(id);
@@ -75,13 +107,13 @@ void applyDecisionsToDisk(const QList<int> &ids)
 
     // 2. 遍历每个文件进行处理和保存
     for (auto it = fileMap.begin(); it != fileMap.end(); ++it) {
-        const QString &path = it.key();
+        const QString &srcPath = it.key();
         cv::Mat mat;
         image::ImageMeta meta;
         
         // 读取原图
-        if (!image::ImageIO::read(path, mat, meta)) {
-            qDebug() << "Failed to read image for saving:" << path;
+        if (!image::ImageIO::read(srcPath, mat, meta)) {
+            qDebug() << "Failed to read image for saving:" << srcPath;
             continue;
         }
 
@@ -89,7 +121,6 @@ void applyDecisionsToDisk(const QList<int> &ids)
         for (const PendingItem &item : it.value()) {
             // 直接将对应区域涂白
             if (item.boundingBox.width > 0 && item.boundingBox.height > 0) {
-                // 边界保护，防止越界崩溃
                 cv::Rect safeRect = item.boundingBox & cv::Rect(0, 0, mat.cols, mat.rows);
                 if (safeRect.width > 0 && safeRect.height > 0) {
                     if (mat.channels() == 4) {
@@ -104,15 +135,17 @@ void applyDecisionsToDisk(const QList<int> &ids)
             }
         }
 
-        // 如果发生了修改，保存回原路径
+        // 如果发生了修改，保存到目标输出路径
         if (modified) {
+            const QString outPath = calculateOutputPath(srcPath);
+            
             image::JpegSaveOptions options;
             options.quality = 98;
             options.dpiX = 300.0;
             options.dpiY = 300.0;
             options.use444Sampling = true;
-            image::JpegWriter::write(path, mat, options);
-            qDebug() << "Saved applied decisions to:" << path;
+            image::JpegWriter::write(outPath, mat, options);
+            qDebug() << "Saved applied decisions to:" << outPath;
         }
     }
 }
@@ -339,7 +372,7 @@ void PendingDialog::onAcceptCurrent()
     // 1. 更新内存状态
     PendingCenter::instance().setDecisionByIds(ids, PendingDecision::Accepted);
     
-    // 2. ★ 核心：应用到原图并保存
+    // 2. ★ 核心：应用到目标输出目录（不覆盖原图）
     applyDecisionsToDisk(ids);
 
     // 3. 刷新界面
@@ -380,11 +413,11 @@ void PendingDialog::onAcceptAll()
 
     const int n = PendingCenter::instance().acceptAllPending();
     
-    // ★ 核心：将所有接受的项应用到原图并保存
+    // ★ 核心：将所有接受的项应用到目标输出目录
     applyDecisionsToDisk(ids);
 
     QMessageBox::information(this, QString::fromUtf8("提示"),
-                             QString::fromUtf8("已接受 %1 项，并已保存到原图").arg(n));
+                             QString::fromUtf8("已接受 %1 项，并已保存至输出文件夹").arg(n));
     refreshFromCenter();
 }
 
