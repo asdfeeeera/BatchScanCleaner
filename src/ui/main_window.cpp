@@ -349,13 +349,13 @@ void MainWindow::onOneClickProcess()
 {
     if (!m_hasImage || m_currentMat.empty()) return;
     
-    // ★ 核心修改：顺序必须是先黑边后扶正！
-    if (m_oneClickBlackEdgeCheck && m_oneClickBlackEdgeCheck->isChecked()) {
-        const process::BlackEdgeResult r = process::BlackEdge::removeBlackEdge(m_currentMat, process::BlackEdgeOptions());
-        if (r.ok && !r.image.empty()) m_currentMat = r.image.clone();
-    }
+    // ★ 核心修改：恢复正确顺序，必须先扶正，再黑边！
     if (m_oneClickDeskewCheck && m_oneClickDeskewCheck->isChecked()) {
         const process::DeskewResult r = process::Deskew::autoDeskew(m_currentMat);
+        if (r.ok && !r.image.empty()) m_currentMat = r.image.clone();
+    }
+    if (m_oneClickBlackEdgeCheck && m_oneClickBlackEdgeCheck->isChecked()) {
+        const process::BlackEdgeResult r = process::BlackEdge::removeBlackEdge(m_currentMat, process::BlackEdgeOptions());
         if (r.ok && !r.image.empty()) m_currentMat = r.image.clone();
     }
     

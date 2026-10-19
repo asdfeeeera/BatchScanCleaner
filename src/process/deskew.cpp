@@ -44,51 +44,11 @@ std::pair<double, bool> searchAngleByProjection(const cv::Mat &binary, double mi
 
     bool confident = false;
     if (bestScore > 0.0) {
-        if (secondScore > 0.0) confident = (bestScore > secondScore * 1.15);
+        if (secondScore > 0.0) confident = (bestScore > secondScore * 1.2);
         else confident = true;
-        if (bestScore < 500.0) confident = false;
+        if (bestScore < 1000.0) confident = false;
     }
     return { bestAngle, confident };
-}
-
-std::pair<double, bool> detectAngleByLongestLines(const cv::Mat &gray)
-{
-    const int W = gray.cols;
-    const int H = gray.rows;
-    if (W < 100 || H < 100) return { 0.0, false };
-
-    cv::Mat edges;
-    cv::Canny(gray, edges, 50, 150, 3);
-
-    std::vector<cv::Vec4i> lines;
-    const int minLineLen = std::max(60, static_cast<int>(std::min(W, H) * 0.15));
-    const int maxLineGap = 20;
-    
-    cv::HoughLinesP(edges, lines, 1, CV_PI / 180.0, 60, minLineLen, maxLineGap);
-
-    if (lines.empty()) return { 0.0, false };
-
-    std::vector<double> angles;
-    for (const auto &l : lines) {
-        const double dx = static_cast<double>(l[2] - l[0]);
-        const double dy = static_cast<double>(l[3] - l[1]);
-        if (std::abs(dx) < 1.0 && std::abs(dy) < 1.0) continue;
-        if (std::abs(dy) > std::abs(dx) * 1.5) continue;
-
-        double ang = std::atan2(dy, dx) * 180.0 / CV_PI;
-        while (ang >  45.0) ang -= 90.0;
-        while (ang < -45.0) ang += 90.0;
-
-        if (std::abs(ang) > 30.0) continue;
-        angles.push_back(ang);
-    }
-
-    if (angles.size() < 2) return { 0.0, false };
-
-    std::sort(angles.begin(), angles.end());
-    const double median = angles[angles.size() / 2];
-
-    return { -median, true };
 }
 
 } // namespace
@@ -104,25 +64,31 @@ double Deskew::detectAngle(const cv::Mat &src)
 
     cv::Mat smallGray;
     const int maxDim = std::max(gray.cols, gray.rows);
-    if (maxDim > 800) {
-        const double scale = 800.0 / maxDim;
+    if (maxDim > 1000) {
+        const double scale = 1000.0 / maxDim;
         cv::resize(gray, smallGray, cv::Size(), scale, scale, cv::INTER_AREA);
     } else {
         smallGray = gray;
     }
 
-    auto lineRes = detectAngleByLongestLines(smallGray);
-    if (lineRes.second) return lineRes.first;
-
+    // 使用自适应二值化，强化文字，弱化照片背景
     cv::Mat binary;
-    cv::adaptiveThreshold(smallGray, binary, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY_INV, 15, 10);
+    cv::adaptiveThreshold(smallGray, binary, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY_INV, 31, 15);
 
-    auto coarse = searchAngleByProjection(binary, -30.0, 30.0, 0.5);
+    // 高斯模糊去掉微小噪点，使投影法更精准
+    cv::GaussianBlur(binary, binary, cv::Size(3, 3), 0);
+
+    // 粗搜索 [-10, 10] 度，步长 0.2
+    auto coarse = searchAngleByProjection(binary, -10.0, 10.0, 0.2);
     const double coarseAngle = coarse.first;
-    auto fine = searchAngleByProjection(binary, coarseAngle - 1.0, coarseAngle + 1.0, 0.05);
-    auto result = fine.second ? fine : coarse;
 
-    return result.first;
+    // 细搜索，步长 0.05
+    auto fine = searchAngleByProjection(binary, coarseAngle - 0.5, coarseAngle + 0.5, 0.05);
+    
+    // 如果粗搜索很自信，直接返回粗搜索的结果，否则用细搜索
+    if (coarse.second) return coarseAngle;
+    
+    return fine.second ? fine.first : coarseAngle;
 }
 
 cv::Mat Deskew::rotateKeepAll(const cv::Mat &src, double angle)
@@ -148,7 +114,7 @@ cv::Mat Deskew::rotateKeepAll(const cv::Mat &src, double angle)
     cv::Mat dst;
     cv::warpAffine(src, dst, rot, cv::Size(newW, newH), cv::INTER_CUBIC, cv::BORDER_CONSTANT, cv::Scalar::all(255));
 
-    // ★ 旋转后自动裁切四周多余的白边
+    // 旋转后，去除四周多余的纯白边
     cv::Mat gray;
     if (dst.channels() == 3) cv::cvtColor(dst, gray, cv::COLOR_BGR2GRAY);
     else if (dst.channels() == 4) cv::cvtColor(dst, gray, cv::COLOR_BGRA2GRAY);
@@ -161,7 +127,7 @@ cv::Mat Deskew::rotateKeepAll(const cv::Mat &src, double angle)
     
     if (!points.empty()) {
         cv::Rect rect = cv::boundingRect(points);
-        int pad = 5;
+        int pad = 2;
         rect.x = std::max(0, rect.x - pad);
         rect.y = std::max(0, rect.y - pad);
         rect.width = std::min(dst.cols - rect.x, rect.width + 2 * pad);
@@ -182,7 +148,8 @@ DeskewResult Deskew::autoDeskew(const cv::Mat &src)
 
     const double angle = detectAngle(src);
 
-    if (std::abs(angle) < 0.3) {
+    // 阈值降低到 0.2 度，只要有一点点歪都转
+    if (std::abs(angle) < 0.2) {
         result.image = src.clone();
         result.angle = 0.0;
         result.ok = true;
