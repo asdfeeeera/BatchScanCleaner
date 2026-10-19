@@ -107,7 +107,6 @@ cv::Mat Deskew::rotateKeepAll(const cv::Mat &src, double angle)
     cv::Mat dst;
     cv::warpAffine(src, dst, rot, cv::Size(newW, newH), cv::INTER_CUBIC, cv::BORDER_CONSTANT, cv::Scalar::all(255));
 
-    // ★ 绝对没有裁剪代码，画布尺寸一毫米都不会缩水
     return dst;
 }
 
