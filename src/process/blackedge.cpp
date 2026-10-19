@@ -212,7 +212,10 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
     result.bottomPixels = bottomCut;
     result.leftPixels = leftCut;
     result.rightPixels = rightCut;
-    result.whitenedPixels = (topCut + bottomCut) * W + (leftCut + rightCut) * H;
+    
+    // ★ 这里之前写错成了 whitenedPixels，现在改回黑边头文件里定义的 filledPixels
+    result.filledPixels = (topCut + bottomCut) * W + (leftCut + rightCut) * H;
+    
     result.ok = true;
     return result;
 }
