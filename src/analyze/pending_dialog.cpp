@@ -32,18 +32,11 @@ namespace {
 
 QPixmap matToPixmap(const cv::Mat &mat, int maxW, int maxH)
 {
-    if (mat.empty()) {
-        return QPixmap();
-    }
-
+    if (mat.empty()) return QPixmap();
     cv::Mat rgb;
-    if (mat.channels() == 3) {
-        cv::cvtColor(mat, rgb, cv::COLOR_BGR2RGB);
-    } else if (mat.channels() == 4) {
-        cv::cvtColor(mat, rgb, cv::COLOR_BGRA2RGB);
-    } else {
-        cv::cvtColor(mat, rgb, cv::COLOR_GRAY2RGB);
-    }
+    if (mat.channels() == 3) cv::cvtColor(mat, rgb, cv::COLOR_BGR2RGB);
+    else if (mat.channels() == 4) cv::cvtColor(mat, rgb, cv::COLOR_BGRA2RGB);
+    else cv::cvtColor(mat, rgb, cv::COLOR_GRAY2RGB);
 
     cv::Mat scaled;
     if (rgb.cols > maxW || rgb.rows > maxH) {
@@ -54,36 +47,43 @@ QPixmap matToPixmap(const cv::Mat &mat, int maxW, int maxH)
     } else {
         scaled = rgb;
     }
-
-    QImage qimg(scaled.data, scaled.cols, scaled.rows,
-                static_cast<int>(scaled.step), QImage::Format_RGB888);
+    QImage qimg(scaled.data, scaled.cols, scaled.rows, static_cast<int>(scaled.step), QImage::Format_RGB888);
     return QPixmap::fromImage(qimg.copy());
 }
 
-QString calculateOutputPath(const QString &sourcePath)
+QStringList getOutputPaths(const QString &sourcePath)
 {
+    QStringList outPaths;
     const QString iniPath = QCoreApplication::applicationDirPath() + QStringLiteral("/settings.ini");
     QSettings ini(iniPath, QSettings::IniFormat);
     ini.setIniCodec("UTF-8");
     
     QString defaultOutDir = ini.value(QStringLiteral("General/defaultOutputDir")).toString().trimmed();
     QString outputSuffix = ini.value(QStringLiteral("General/defaultOutputSuffix")).toString().trimmed();
+    QStringList extraDirs = ini.value(QStringLiteral("Batch/extraDirs")).toStringList();
 
     QFileInfo srcInfo(sourcePath);
-    QString outDir = defaultOutDir;
-    
-    if (outDir.isEmpty()) {
-        outDir = srcInfo.absoluteDir().filePath(QStringLiteral("output"));
-    }
-
-    QDir().mkpath(outDir);
-
     QString fileName = srcInfo.completeBaseName();
-    if (!outputSuffix.isEmpty()) {
-        fileName += outputSuffix;
+    if (!outputSuffix.isEmpty()) fileName += outputSuffix;
+    fileName += QStringLiteral(".jpg");
+
+    if (!defaultOutDir.isEmpty()) {
+        QDir().mkpath(defaultOutDir);
+        outPaths.append(QDir(defaultOutDir).filePath(fileName));
+    } else {
+        QString outDir = srcInfo.absoluteDir().filePath(QStringLiteral("output"));
+        QDir().mkpath(outDir);
+        outPaths.append(QDir(outDir).filePath(fileName));
     }
     
-    return QDir(outDir).filePath(fileName + QStringLiteral(".jpg"));
+    for (const QString &dir : extraDirs) {
+        QString d = dir.trimmed();
+        if (!d.isEmpty()) {
+            QDir().mkpath(d);
+            outPaths.append(QDir(d).filePath(fileName));
+        }
+    }
+    return outPaths;
 }
 
 void applyDecisionsToDisk(const QList<int> &ids)
@@ -101,55 +101,52 @@ void applyDecisionsToDisk(const QList<int> &ids)
         cv::Mat mat;
         image::ImageMeta meta;
         
-        if (!image::ImageIO::read(srcPath, mat, meta)) {
-            qDebug() << "Failed to read image for saving:" << srcPath;
-            continue;
+        // 优先读取批处理输出目录里的图（如果存在），否则读原图
+        QString readPath = srcPath;
+        QStringList outPaths = getOutputPaths(srcPath);
+        if (!outPaths.isEmpty() && QFile::exists(outPaths.first())) {
+            readPath = outPaths.first();
         }
+
+        if (!image::ImageIO::read(readPath, mat, meta)) continue;
 
         bool modified = false;
         for (const PendingItem &item : it.value()) {
             if (item.boundingBox.width > 0 && item.boundingBox.height > 0) {
                 cv::Rect safeRect = item.boundingBox & cv::Rect(0, 0, mat.cols, mat.rows);
                 if (safeRect.width > 0 && safeRect.height > 0) {
-                    if (mat.channels() == 4) {
-                        mat(safeRect).setTo(cv::Scalar(255, 255, 255, 255));
-                    } else if (mat.channels() == 3) {
-                        mat(safeRect).setTo(cv::Scalar(255, 255, 255));
-                    } else {
-                        mat(safeRect).setTo(cv::Scalar(255));
-                    }
+                    if (mat.channels() == 4) mat(safeRect).setTo(cv::Scalar(255, 255, 255, 255));
+                    else if (mat.channels() == 3) mat(safeRect).setTo(cv::Scalar(255, 255, 255));
+                    else mat(safeRect).setTo(cv::Scalar(255));
                     modified = true;
                 }
             }
         }
 
         if (modified) {
-            const QString outPath = calculateOutputPath(srcPath);
-            qDebug() << "Saving applied decisions to:" << outPath;
-            
             image::JpegSaveOptions options;
             options.quality = 98;
             options.dpiX = 300.0;
             options.dpiY = 300.0;
             options.use444Sampling = true;
-            bool ok = image::JpegWriter::write(outPath, mat, options);
             
-            if (!ok) {
-                QMessageBox::warning(nullptr, QString::fromUtf8("保存失败"),
-                    QString::fromUtf8("无法写入文件：\n%1\n请检查目录是否存在或是否有写入权限。").arg(outPath));
+            for (const QString &outPath : outPaths) {
+                image::JpegWriter::write(outPath, mat, options);
             }
+            
+            // 弹窗告知用户具体更新了哪些文件
+            QMessageBox::information(nullptr, QString::fromUtf8("已应用更新"), 
+                QString::fromUtf8("修改已覆盖保存至以下位置：\n%1").arg(outPaths.join("\n")));
         }
     }
 }
 
 } // namespace
 
-PendingDialog::PendingDialog(QWidget *parent)
-    : QDialog(parent)
+PendingDialog::PendingDialog(QWidget *parent) : QDialog(parent)
 {
     setWindowTitle(QString::fromUtf8("待确认中心"));
     resize(1000, 640);
-
     setupUi();
     refreshFromCenter();
 }
@@ -161,14 +158,12 @@ void PendingDialog::setupUi()
     m_listWidget = new QListWidget(this);
     m_listWidget->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_listWidget->setMinimumWidth(280);
-    connect(m_listWidget, &QListWidget::itemSelectionChanged,
-            this, &PendingDialog::onItemSelectionChanged);
+    connect(m_listWidget, &QListWidget::itemSelectionChanged, this, &PendingDialog::onItemSelectionChanged);
 
     m_thumbnailLabel = new QLabel(this);
     m_thumbnailLabel->setAlignment(Qt::AlignCenter);
     m_thumbnailLabel->setMinimumSize(360, 240);
-    m_thumbnailLabel->setStyleSheet(
-        QStringLiteral("QLabel { background-color: #f0f0f0; border: 1px solid #c0c0c0; }"));
+    m_thumbnailLabel->setStyleSheet(QStringLiteral("QLabel { background-color: #f0f0f0; border: 1px solid #c0c0c0; }"));
 
     QScrollArea *thumbScroll = new QScrollArea(this);
     thumbScroll->setWidget(m_thumbnailLabel);
@@ -240,34 +235,22 @@ void PendingDialog::refreshFromCenter()
 void PendingDialog::rebuildList()
 {
     m_listWidget->clear();
-
     const QList<PendingItem> items = PendingCenter::instance().allItems();
     for (const PendingItem &it : items) {
         QListWidgetItem *lwi = new QListWidgetItem(formatListItemText(it));
         lwi->setData(Qt::UserRole, it.id);
         m_listWidget->addItem(lwi);
     }
-
     const int total = PendingCenter::instance().count();
     const int pending = PendingCenter::instance().pendingCount();
-    m_statsLabel->setText(
-        QString::fromUtf8("共 %1 项，其中待确认 %2 项")
-            .arg(total).arg(pending));
+    m_statsLabel->setText(QString::fromUtf8("共 %1 项，其中待确认 %2 项").arg(total).arg(pending));
 }
 
 QString PendingDialog::formatListItemText(const PendingItem &it) const
 {
-    QString line = QString::fromUtf8("[%1] %2")
-        .arg(it.id)
-        .arg(PendingItem::typeToString(it.type));
-
-    if (!it.fileName.isEmpty()) {
-        line += QString::fromUtf8(" — %1").arg(it.fileName);
-    }
-
-    line += QString::fromUtf8("  (%1)")
-        .arg(PendingItem::decisionToString(it.decision));
-
+    QString line = QString::fromUtf8("[%1] %2").arg(it.id).arg(PendingItem::typeToString(it.type));
+    if (!it.fileName.isEmpty()) line += QString::fromUtf8(" — %1").arg(it.fileName);
+    line += QString::fromUtf8("  (%1)").arg(PendingItem::decisionToString(it.decision));
     return line;
 }
 
@@ -280,13 +263,11 @@ void PendingDialog::updateDetailPanel()
         m_detailEdit->clear();
         return;
     }
-
     const int id = sel.first()->data(Qt::UserRole).toInt();
     const PendingItem it = PendingCenter::instance().itemById(id);
 
     if (!it.thumbnail.empty()) {
-        const QPixmap pix = matToPixmap(it.thumbnail, 500, 400);
-        m_thumbnailLabel->setPixmap(pix);
+        m_thumbnailLabel->setPixmap(matToPixmap(it.thumbnail, 500, 400));
         m_thumbnailLabel->setText(QString());
     } else {
         m_thumbnailLabel->setPixmap(QPixmap());
@@ -297,20 +278,12 @@ void PendingDialog::updateDetailPanel()
     text += QString::fromUtf8("类型：%1\n").arg(PendingItem::typeToString(it.type));
     text += QString::fromUtf8("建议动作：%1\n").arg(PendingItem::actionToString(it.suggestedAction));
     text += QString::fromUtf8("当前决定：%1\n").arg(PendingItem::decisionToString(it.decision));
-    text += QString::fromUtf8("来源文件：%1\n").arg(it.sourceImagePath.isEmpty()
-                                                    ? QString::fromUtf8("（无）")
-                                                    : it.sourceImagePath);
-    text += QString::fromUtf8("位置：(x=%1, y=%2, w=%3, h=%4)\n")
-                .arg(it.boundingBox.x).arg(it.boundingBox.y)
-                .arg(it.boundingBox.width).arg(it.boundingBox.height);
+    text += QString::fromUtf8("来源文件：%1\n").arg(it.sourceImagePath.isEmpty() ? QString::fromUtf8("（无）") : it.sourceImagePath);
+    text += QString::fromUtf8("位置：(x=%1, y=%2, w=%3, h=%4)\n").arg(it.boundingBox.x).arg(it.boundingBox.y).arg(it.boundingBox.width).arg(it.boundingBox.height);
     text += QString::fromUtf8("置信度：%1\n").arg(it.confidence, 0, 'f', 2);
     text += QString::fromUtf8("原因：%1\n").arg(it.reason);
     text += QString::fromUtf8("详情：%1\n").arg(it.detail);
-    if (it.createdAt.isValid()) {
-        text += QString::fromUtf8("时间：%1\n")
-                    .arg(it.createdAt.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
-    }
-
+    if (it.createdAt.isValid()) text += QString::fromUtf8("时间：%1\n").arg(it.createdAt.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
     m_detailEdit->setPlainText(text);
 }
 
@@ -329,36 +302,23 @@ void PendingDialog::updateButtonsState()
     m_clearDecidedBtn->setEnabled(hasAny);
 }
 
-void PendingDialog::onItemSelectionChanged()
-{
-    updateDetailPanel();
-    updateButtonsState();
-}
+void PendingDialog::onItemSelectionChanged() { updateDetailPanel(); updateButtonsState(); }
 
 void PendingDialog::onAcceptCurrent()
 {
     QList<int> ids;
-    for (QListWidgetItem *lwi : m_listWidget->selectedItems()) {
-        ids.append(lwi->data(Qt::UserRole).toInt());
-    }
+    for (QListWidgetItem *lwi : m_listWidget->selectedItems()) ids.append(lwi->data(Qt::UserRole).toInt());
     if (ids.isEmpty()) return;
-
     PendingCenter::instance().setDecisionByIds(ids, PendingDecision::Accepted);
-    
-    // 应用到磁盘输出目录
     applyDecisionsToDisk(ids);
-
     refreshFromCenter();
 }
 
 void PendingDialog::onRejectCurrent()
 {
     QList<int> ids;
-    for (QListWidgetItem *lwi : m_listWidget->selectedItems()) {
-        ids.append(lwi->data(Qt::UserRole).toInt());
-    }
+    for (QListWidgetItem *lwi : m_listWidget->selectedItems()) ids.append(lwi->data(Qt::UserRole).toInt());
     if (ids.isEmpty()) return;
-
     PendingCenter::instance().setDecisionByIds(ids, PendingDecision::Rejected);
     refreshFromCenter();
 }
@@ -366,11 +326,8 @@ void PendingDialog::onRejectCurrent()
 void PendingDialog::onIgnoreCurrent()
 {
     QList<int> ids;
-    for (QListWidgetItem *lwi : m_listWidget->selectedItems()) {
-        ids.append(lwi->data(Qt::UserRole).toInt());
-    }
+    for (QListWidgetItem *lwi : m_listWidget->selectedItems()) ids.append(lwi->data(Qt::UserRole).toInt());
     if (ids.isEmpty()) return;
-
     PendingCenter::instance().setDecisionByIds(ids, PendingDecision::Ignored);
     refreshFromCenter();
 }
@@ -379,45 +336,31 @@ void PendingDialog::onAcceptAll()
 {
     const QList<PendingItem> pendingItems = PendingCenter::instance().pendingItems();
     QList<int> ids;
-    for (const auto &it : pendingItems) {
-        ids.append(it.id);
-    }
-
+    for (const auto &it : pendingItems) ids.append(it.id);
     const int n = PendingCenter::instance().acceptAllPending();
-    
     applyDecisionsToDisk(ids);
-
-    QMessageBox::information(this, QString::fromUtf8("提示"),
-                             QString::fromUtf8("已接受 %1 项，并已保存至输出文件夹").arg(n));
+    QMessageBox::information(this, QString::fromUtf8("提示"), QString::fromUtf8("已接受 %1 项，并已保存至输出文件夹").arg(n));
     refreshFromCenter();
 }
 
 void PendingDialog::onRejectAll()
 {
     const int n = PendingCenter::instance().rejectAllPending();
-    QMessageBox::information(this, QString::fromUtf8("提示"),
-                             QString::fromUtf8("已拒绝 %1 项").arg(n));
+    QMessageBox::information(this, QString::fromUtf8("提示"), QString::fromUtf8("已拒绝 %1 项").arg(n));
     refreshFromCenter();
 }
 
 void PendingDialog::onIgnoreAll()
 {
     const int n = PendingCenter::instance().ignoreAllPending();
-    QMessageBox::information(this, QString::fromUtf8("提示"),
-                             QString::fromUtf8("已忽略 %1 项").arg(n));
+    QMessageBox::information(this, QString::fromUtf8("提示"), QString::fromUtf8("已忽略 %1 项").arg(n));
     refreshFromCenter();
 }
 
 void PendingDialog::onClearDecided()
 {
-    const QMessageBox::StandardButton ret = QMessageBox::question(
-        this,
-        QString::fromUtf8("确认"),
-        QString::fromUtf8("确定要清除所有已决定的项吗？（待确认项不会受影响）"),
-        QMessageBox::Yes | QMessageBox::No);
-
+    const QMessageBox::StandardButton ret = QMessageBox::question(this, QString::fromUtf8("确认"), QString::fromUtf8("确定要清除所有已决定的项吗？（待确认项不会受影响）"), QMessageBox::Yes | QMessageBox::No);
     if (ret != QMessageBox::Yes) return;
-
     PendingCenter::instance().clearDecided();
     refreshFromCenter();
 }

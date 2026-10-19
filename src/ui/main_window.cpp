@@ -63,17 +63,13 @@
 #include "../backup/backup_dialog.h"
 #include "../annotate/annotation_dialog.h"
 
-MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent)
+MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
     setWindowTitle(QString::fromUtf8("批量扫描图片净化增强软件"));
     resize(1366, 850);
-
     m_enhanceDebounceTimer = new QTimer(this);
     m_enhanceDebounceTimer->setSingleShot(true);
-    connect(m_enhanceDebounceTimer, &QTimer::timeout,
-            this, &MainWindow::onEnhanceDebounceTimeout);
-
+    connect(m_enhanceDebounceTimer, &QTimer::timeout, this, &MainWindow::onEnhanceDebounceTimeout);
     setupMenuBar();
     setupToolBar();
     setupCentralWidget();
@@ -103,17 +99,14 @@ void MainWindow::setupToolBar()
 {
     QToolBar *toolBar = addToolBar(QString::fromUtf8("工具栏"));
     toolBar->setMovable(false);
-
     toolBar->addAction(QString::fromUtf8("打开图片"), this, &MainWindow::onOpenImage);
     toolBar->addAction(QString::fromUtf8("添加文件夹"), this, &MainWindow::onAddFolder);
     toolBar->addAction(QString::fromUtf8("另存为"), this, &MainWindow::onSaveAs);
     toolBar->addSeparator();
-
     {
         QToolButton *oneClickBtn = new QToolButton(toolBar);
         oneClickBtn->setText(QString::fromUtf8("一键处理"));
         oneClickBtn->setPopupMode(QToolButton::InstantPopup);
-
         QMenu *menu = new QMenu(oneClickBtn);
         auto makeCheckItem = [&](const QString &text, bool checked) -> QCheckBox* {
             QWidget *w = new QWidget(menu);
@@ -127,7 +120,6 @@ void MainWindow::setupToolBar()
             menu->addAction(wa);
             return cb;
         };
-
         m_oneClickDeskewCheck     = makeCheckItem(QString::fromUtf8("自动扶正"), true);
         m_oneClickBlackEdgeCheck  = makeCheckItem(QString::fromUtf8("黑边去除"), true);
         m_oneClickErrPageCheck    = makeCheckItem(QString::fromUtf8("错误页码处理"), false);
@@ -135,7 +127,6 @@ void MainWindow::setupToolBar()
         m_oneClickEnhanceCheck    = makeCheckItem(QString::fromUtf8("文字加深"), true);
         m_oneClickBackgroundCheck = makeCheckItem(QString::fromUtf8("底色处理"), false);
         m_oneClickColorLineCheck  = makeCheckItem(QString::fromUtf8("彩色细线清除"), false);
-
         menu->addSeparator();
         QWidget *execWidget = new QWidget(menu);
         QHBoxLayout *execLayout = new QHBoxLayout(execWidget);
@@ -145,15 +136,10 @@ void MainWindow::setupToolBar()
         QWidgetAction *execAction = new QWidgetAction(menu);
         execAction->setDefaultWidget(execWidget);
         menu->addAction(execAction);
-
-        connect(execBtn, &QPushButton::clicked, this, [this, menu]() {
-            menu->close();
-            onOneClickProcess();
-        });
+        connect(execBtn, &QPushButton::clicked, this, [this, menu]() { menu->close(); onOneClickProcess(); });
         oneClickBtn->setMenu(menu);
         toolBar->addWidget(oneClickBtn);
     }
-
     toolBar->addAction(QString::fromUtf8("自动扶正"), this, &MainWindow::onDeskew);
     toolBar->addAction(QString::fromUtf8("黑边去除"), this, &MainWindow::onRemoveBlackEdge);
     toolBar->addAction(QString::fromUtf8("污点去除"), this, &MainWindow::onDenoise);
@@ -167,7 +153,6 @@ void MainWindow::setupToolBar()
 void MainWindow::setupCentralWidget()
 {
     QSplitter *mainSplitter = new QSplitter(Qt::Horizontal, this);
-
     QWidget *leftWidget = new QWidget(this);
     QVBoxLayout *leftLayout = new QVBoxLayout(leftWidget);
     leftLayout->setContentsMargins(0, 0, 0, 0);
@@ -191,7 +176,6 @@ void MainWindow::setupCentralWidget()
     computerItem->setText(0, QString::fromUtf8("此电脑"));
     computerItem->setIcon(0, iconComputer);
     computerItem->setData(0, Qt::UserRole, "COMPUTER");
-    
     QFileInfoList drives = QDir::drives();
     for (const QFileInfo &drive : drives) {
         QTreeWidgetItem *driveItem = new QTreeWidgetItem(computerItem);
@@ -200,26 +184,22 @@ void MainWindow::setupCentralWidget()
         driveItem->setData(0, Qt::UserRole, drive.filePath());
         new QTreeWidgetItem(driveItem); 
     }
-
     QTreeWidgetItem *networkItem = new QTreeWidgetItem(m_folderTree);
     networkItem->setText(0, QString::fromUtf8("网络"));
     networkItem->setIcon(0, iconNetwork);
     networkItem->setData(0, Qt::UserRole, "NETWORK");
     new QTreeWidgetItem(networkItem); 
-
     computerItem->setExpanded(true);
 
     connect(m_folderTree, &QTreeWidget::itemClicked, this, &MainWindow::onFolderTreeClicked);
     connect(m_folderTree, &QTreeWidget::itemExpanded, this, &MainWindow::onFolderTreeExpanded);
 
     m_fileModel = new QStandardItemModel(this);
-    
     m_fileList = new QListView(leftWidget);
     m_fileList->setModel(m_fileModel);
     m_fileList->setViewMode(QListView::ListMode); 
     m_fileList->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_fileList->setUniformItemSizes(true);
-    
     connect(m_fileList, &QListView::clicked, this, &MainWindow::onFileClicked);
 
     leftLayout->addWidget(m_folderTree);
@@ -247,9 +227,7 @@ void MainWindow::setupCentralWidget()
     QPushButton *btnDenoise = new QPushButton(QString::fromUtf8("执行 污点去除"), basicGroup);
     QPushButton *btnBlackEdge = new QPushButton(QString::fromUtf8("执行 黑边去除"), basicGroup);
     QPushButton *btnDeskew = new QPushButton(QString::fromUtf8("执行 自动扶正"), basicGroup);
-    basicLayout->addWidget(btnDenoise);
-    basicLayout->addWidget(btnBlackEdge);
-    basicLayout->addWidget(btnDeskew);
+    basicLayout->addWidget(btnDenoise); basicLayout->addWidget(btnBlackEdge); basicLayout->addWidget(btnDeskew);
     connect(btnDenoise, &QPushButton::clicked, this, &MainWindow::onDenoise);
     connect(btnBlackEdge, &QPushButton::clicked, this, &MainWindow::onRemoveBlackEdge);
     connect(btnDeskew, &QPushButton::clicked, this, &MainWindow::onDeskew);
@@ -263,9 +241,7 @@ void MainWindow::setupCentralWidget()
     QPushButton *btnErrPage = new QPushButton(QString::fromUtf8("处理 错误页码"), aiGroup);
     QPushButton *btnStamp = new QPushButton(QString::fromUtf8("印章保护测试"), aiGroup);
     QPushButton *btnPending = new QPushButton(QString::fromUtf8("打开待确认中心"), aiGroup);
-    aiLayout->addWidget(btnErrPage);
-    aiLayout->addWidget(btnStamp);
-    aiLayout->addWidget(btnPending);
+    aiLayout->addWidget(btnErrPage); aiLayout->addWidget(btnStamp); aiLayout->addWidget(btnPending);
     connect(btnErrPage, &QPushButton::clicked, this, &MainWindow::onProcessErrPage);
     connect(btnStamp, &QPushButton::clicked, this, &MainWindow::onStampProtectTest);
     connect(btnPending, &QPushButton::clicked, this, &MainWindow::onPendingCenter);
@@ -274,48 +250,35 @@ void MainWindow::setupCentralWidget()
     paramLayout->addWidget(enhanceGroup);
     paramLayout->addWidget(aiGroup);
     paramLayout->addStretch(); 
-
     paramScroll->setWidget(paramWidget);
 
     mainSplitter->addWidget(leftWidget);
     mainSplitter->addWidget(m_previewView);
     mainSplitter->addWidget(paramScroll);
-    
     mainSplitter->setStretchFactor(0, 2);
     mainSplitter->setStretchFactor(1, 4);
     mainSplitter->setStretchFactor(2, 2);
     mainSplitter->setSizes({300, 700, 340});
-
     setCentralWidget(mainSplitter);
 }
 
 void MainWindow::populateTreeItem(QTreeWidgetItem *item, const QString &path)
 {
     if (!item) return;
-
-    if (item->childCount() > 0 && !item->child(0)->text(0).isEmpty()) {
-        return; 
-    }
-    
+    if (item->childCount() > 0 && !item->child(0)->text(0).isEmpty()) return;
     item->takeChildren(); 
-
     QIcon iconFolder = QApplication::style()->standardIcon(QStyle::SP_DirIcon);
-
     QDir dir(path);
     dir.setFilter(QDir::Dirs | QDir::NoDotAndDotDot);
     QFileInfoList list = dir.entryInfoList();
-    
     for (const QFileInfo &info : list) {
         QTreeWidgetItem *child = new QTreeWidgetItem(item);
         child->setText(0, info.fileName());
         child->setIcon(0, iconFolder);
         child->setData(0, Qt::UserRole, info.absoluteFilePath());
-        
         QDir childDir(info.absoluteFilePath());
         childDir.setFilter(QDir::Dirs | QDir::NoDotAndDotDot);
-        if (!childDir.entryList().isEmpty()) {
-            new QTreeWidgetItem(child); 
-        }
+        if (!childDir.entryList().isEmpty()) new QTreeWidgetItem(child); 
     }
 }
 
@@ -332,21 +295,15 @@ void MainWindow::onFolderTreeClicked(QTreeWidgetItem *item, int column)
     Q_UNUSED(column);
     if (!item) return;
     QString path = item->data(0, Qt::UserRole).toString();
-    
     if (path.isEmpty() || path == "COMPUTER" || path == "NETWORK") return;
-
     m_currentFolder = path;
     statusBar()->showMessage(QString::fromUtf8("正在加载：%1 ...").arg(path));
-    
     QStringList files;
     QDir dir(path);
     QStringList filters;
     filters << "*.jpg" << "*.jpeg" << "*.png" << "*.bmp" << "*.tif" << "*.tiff";
     QFileInfoList fileList = dir.entryInfoList(filters, QDir::Files);
-    for (const QFileInfo &fileInfo : fileList) {
-        files.append(fileInfo.absoluteFilePath());
-    }
-    
+    for (const QFileInfo &fileInfo : fileList) files.append(fileInfo.absoluteFilePath());
     m_currentFiles = files;
     fillFileTable(files);
     statusBar()->showMessage(QString::fromUtf8("加载完成：%1 个文件").arg(files.size()));
@@ -361,57 +318,44 @@ void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
     toggleBtn->setArrowType(Qt::DownArrow);
     toggleBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     toggleBtn->setAutoRaise(true);
-
     QWidget *body = new QWidget(paramLayout->parentWidget());
     QGridLayout *grid = new QGridLayout(body);
     grid->setContentsMargins(5, 5, 5, 5);
     grid->setHorizontalSpacing(6);
     grid->setVerticalSpacing(4);
-
     int row = 0;
+    
     grid->addWidget(new QLabel(QString::fromUtf8("强度"), body), row, 0);
     m_enhanceStrengthSlider = new QSlider(Qt::Horizontal, body);
-    m_enhanceStrengthSlider->setRange(1, 30);
-    m_enhanceStrengthSlider->setValue(16);
+    m_enhanceStrengthSlider->setRange(1, 30); m_enhanceStrengthSlider->setValue(16);
     m_enhanceStrengthSpin = new QSpinBox(body);
-    m_enhanceStrengthSpin->setRange(1, 30);
-    m_enhanceStrengthSpin->setValue(16);
+    m_enhanceStrengthSpin->setRange(1, 30); m_enhanceStrengthSpin->setValue(16);
     m_enhanceStrengthSpin->setSuffix(QString::fromUtf8(" ×0.1"));
-    grid->addWidget(m_enhanceStrengthSlider, row, 1);
-    grid->addWidget(m_enhanceStrengthSpin, row, 2);
+    grid->addWidget(m_enhanceStrengthSlider, row, 1); grid->addWidget(m_enhanceStrengthSpin, row, 2);
     ++row;
-
+    
     grid->addWidget(new QLabel(QString::fromUtf8("彩色保护"), body), row, 0);
     m_enhanceColorSatSlider = new QSlider(Qt::Horizontal, body);
-    m_enhanceColorSatSlider->setRange(0, 255);
-    m_enhanceColorSatSlider->setValue(40);
+    m_enhanceColorSatSlider->setRange(0, 255); m_enhanceColorSatSlider->setValue(40);
     m_enhanceColorSatSpin = new QSpinBox(body);
-    m_enhanceColorSatSpin->setRange(0, 255);
-    m_enhanceColorSatSpin->setValue(40);
-    grid->addWidget(m_enhanceColorSatSlider, row, 1);
-    grid->addWidget(m_enhanceColorSatSpin, row, 2);
+    m_enhanceColorSatSpin->setRange(0, 255); m_enhanceColorSatSpin->setValue(40);
+    grid->addWidget(m_enhanceColorSatSlider, row, 1); grid->addWidget(m_enhanceColorSatSpin, row, 2);
     ++row;
-
+    
     grid->addWidget(new QLabel(QString::fromUtf8("暗部目标"), body), row, 0);
     m_enhanceDarkTargetSlider = new QSlider(Qt::Horizontal, body);
-    m_enhanceDarkTargetSlider->setRange(0, 100);
-    m_enhanceDarkTargetSlider->setValue(0);
+    m_enhanceDarkTargetSlider->setRange(0, 100); m_enhanceDarkTargetSlider->setValue(0);
     m_enhanceDarkTargetSpin = new QSpinBox(body);
-    m_enhanceDarkTargetSpin->setRange(0, 100);
-    m_enhanceDarkTargetSpin->setValue(0);
-    grid->addWidget(m_enhanceDarkTargetSlider, row, 1);
-    grid->addWidget(m_enhanceDarkTargetSpin, row, 2);
+    m_enhanceDarkTargetSpin->setRange(0, 100); m_enhanceDarkTargetSpin->setValue(0);
+    grid->addWidget(m_enhanceDarkTargetSlider, row, 1); grid->addWidget(m_enhanceDarkTargetSpin, row, 2);
     ++row;
-
+    
     grid->addWidget(new QLabel(QString::fromUtf8("纸张目标"), body), row, 0);
     m_enhancePaperTargetSlider = new QSlider(Qt::Horizontal, body);
-    m_enhancePaperTargetSlider->setRange(200, 255);
-    m_enhancePaperTargetSlider->setValue(255);
+    m_enhancePaperTargetSlider->setRange(200, 255); m_enhancePaperTargetSlider->setValue(255);
     m_enhancePaperTargetSpin = new QSpinBox(body);
-    m_enhancePaperTargetSpin->setRange(200, 255);
-    m_enhancePaperTargetSpin->setValue(255);
-    grid->addWidget(m_enhancePaperTargetSlider, row, 1);
-    grid->addWidget(m_enhancePaperTargetSpin, row, 2);
+    m_enhancePaperTargetSpin->setRange(200, 255); m_enhancePaperTargetSpin->setValue(255);
+    grid->addWidget(m_enhancePaperTargetSlider, row, 1); grid->addWidget(m_enhancePaperTargetSpin, row, 2);
     ++row;
 
     connect(m_enhanceStrengthSlider, &QSlider::valueChanged, m_enhanceStrengthSpin, &QSpinBox::setValue);
@@ -422,12 +366,9 @@ void MainWindow::buildEnhancePanel(QVBoxLayout *paramLayout)
     connect(m_enhanceDarkTargetSpin, QOverload<int>::of(&QSpinBox::valueChanged), m_enhanceDarkTargetSlider, &QSlider::setValue);
     connect(m_enhancePaperTargetSlider, &QSlider::valueChanged, m_enhancePaperTargetSpin, &QSpinBox::setValue);
     connect(m_enhancePaperTargetSpin, QOverload<int>::of(&QSpinBox::valueChanged), m_enhancePaperTargetSlider, &QSlider::setValue);
-
     connect(toggleBtn, &QToolButton::toggled, this, [body, toggleBtn](bool on) {
-        body->setVisible(on);
-        toggleBtn->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+        body->setVisible(on); toggleBtn->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
     });
-
     paramLayout->addWidget(toggleBtn);
     paramLayout->addWidget(body);
 }
@@ -451,10 +392,7 @@ process::EnhanceOptions MainWindow::currentEnhanceOptions() const
 void MainWindow::onEnhanceParamChanged() {}
 void MainWindow::onEnhanceDebounceTimeout() {}
 
-void MainWindow::setupStatusBar()
-{
-    statusBar()->showMessage(QString::fromUtf8("就绪"));
-}
+void MainWindow::setupStatusBar() { statusBar()->showMessage(QString::fromUtf8("就绪")); }
 
 void MainWindow::resizeEvent(QResizeEvent *event)
 {
@@ -487,7 +425,6 @@ void MainWindow::fillFileTable(const QStringList &files)
     for (const QString &path : files) {
         const QFileInfo info(path);
         QStandardItem *item = new QStandardItem(info.fileName());
-        
         item->setData(path, Qt::UserRole);
         item->setToolTip(path);
         item->setEditable(false);
@@ -520,12 +457,8 @@ void MainWindow::onSaveAs()
     }
     const QString savePath = QFileDialog::getSaveFileName(this, QString::fromUtf8("另存为"), defaultName, QString::fromUtf8("JPG 图片 (*.jpg *.jpeg)"));
     if (savePath.isEmpty()) return;
-
     image::JpegSaveOptions options;
-    options.quality = 98;
-    options.dpiX = 300.0;
-    options.dpiY = 300.0;
-    options.use444Sampling = true;
+    options.quality = 98; options.dpiX = 300.0; options.dpiY = 300.0; options.use444Sampling = true;
     image::JpegWriter::write(savePath, m_currentMat, options);
 }
 
@@ -543,13 +476,9 @@ void MainWindow::onDeskew()
 void MainWindow::onRemoveBlackEdge()
 {
     if (!m_hasImage || m_currentMat.empty()) return;
-    process::BlackEdgeOptions options;
-    options.fillWhite = true;
+    process::BlackEdgeOptions options; options.fillWhite = true;
     const process::BlackEdgeResult result = process::BlackEdge::removeBlackEdge(m_currentMat, options);
-    if (result.ok && !result.image.empty()) {
-        m_currentMat = result.image.clone(); 
-        showMatOnPreview(m_currentMat);
-    }
+    if (result.ok && !result.image.empty()) { m_currentMat = result.image.clone(); showMatOnPreview(m_currentMat); }
 }
 
 void MainWindow::onDenoise()
@@ -560,10 +489,7 @@ void MainWindow::onDenoise()
     const protect::StampProtectResult pr = protect::StampProtect::detect(m_currentMat, protectOpt);
     if (pr.ok) options.protectMask = pr.mask;
     const process::DenoiseResult result = process::Denoise::removeSpots(m_currentMat, options);
-    if (result.ok && !result.image.empty()) {
-        m_currentMat = result.image.clone();
-        showMatOnPreview(m_currentMat);
-    }
+    if (result.ok && !result.image.empty()) { m_currentMat = result.image.clone(); showMatOnPreview(m_currentMat); }
 }
 
 void MainWindow::onEnhance()
@@ -571,10 +497,7 @@ void MainWindow::onEnhance()
     if (!m_hasImage || m_currentMat.empty()) return;
     process::EnhanceOptions options = currentEnhanceOptions();
     const process::EnhanceResult result = process::Enhance::enhanceText(m_currentMat, options);
-    if (result.ok && !result.image.empty()) {
-        m_currentMat = result.image.clone();
-        showMatOnPreview(m_currentMat);
-    }
+    if (result.ok && !result.image.empty()) { m_currentMat = result.image.clone(); showMatOnPreview(m_currentMat); }
 }
 
 void MainWindow::onBackground()
@@ -585,10 +508,7 @@ void MainWindow::onBackground()
     const protect::StampProtectResult pr = protect::StampProtect::detect(m_currentMat, protectOpt);
     if (pr.ok) options.protectMask = pr.mask;
     const process::BackgroundResult result = process::Background::whiten(m_currentMat, options);
-    if (result.ok && !result.image.empty()) {
-        m_currentMat = result.image.clone();
-        showMatOnPreview(m_currentMat);
-    }
+    if (result.ok && !result.image.empty()) { m_currentMat = result.image.clone(); showMatOnPreview(m_currentMat); }
 }
 
 void MainWindow::onOneClickProcess()
@@ -619,43 +539,20 @@ void MainWindow::onClearColorLine() {}
 void MainWindow::onProcessErrPage()
 {
     if (!m_hasImage || m_currentMat.empty() || m_currentImagePath.isEmpty()) return;
-    
     process::ErrPageOptions opt;
-    
-    opt.detectTopLeft          = true;
-    opt.topLeftWidthRatio      = 0.12;
-    opt.topLeftHeightRatio     = 0.08;
-    
-    opt.detectTopRight         = true;
-    opt.topRightWidthRatio     = 0.25;
-    opt.topRightHeightRatio    = 0.15;
-    
-    opt.detectBottomRight      = true;
-    opt.bottomRightWidthRatio  = 0.25;
-    opt.bottomRightHeightRatio = 0.15;
-    
-    opt.detectBottomLeft       = false;
-    
-    opt.minDigitHeight         = 20;
-    opt.maxDigitHeight         = 100;
-    opt.minDigitWidth          = 10;
-    opt.maxDigitWidth          = 150; // 修复漏检
-    
-    opt.crossLineRatio         = 0.5;
-    opt.fillWhite              = true;
-    opt.tesseractPath          = QString();
-    
+    opt.detectTopLeft = true; opt.topLeftWidthRatio = 0.12; opt.topLeftHeightRatio = 0.08;
+    opt.detectTopRight = true; opt.topRightWidthRatio = 0.25; opt.topRightHeightRatio = 0.15;
+    opt.detectBottomRight = true; opt.bottomRightWidthRatio = 0.25; opt.bottomRightHeightRatio = 0.15;
+    opt.detectBottomLeft = false;
+    opt.minDigitHeight = 20; opt.maxDigitHeight = 100; opt.minDigitWidth = 10; opt.maxDigitWidth = 150;
+    opt.crossLineRatio = 0.5; opt.fillWhite = true; opt.tesseractPath = QString();
     opt.enablePaddleOcr = ui::AppSettings::load().enablePaddleOcr;
-    
     const process::ErrPageResult r = process::ErrPage::process(m_currentMat, m_currentImagePath, opt);
     if (r.ok && !r.image.empty()) {
         m_currentMat = r.image.clone();
         showMatOnPreview(m_currentMat);
-        if (r.pendingCount > 0) {
-            statusBar()->showMessage(QString::fromUtf8("错误页码检测完成，发现 %1 处疑似错误，请打开待确认中心处理。").arg(r.pendingCount), 5000);
-        } else {
-            statusBar()->showMessage(QString::fromUtf8("错误页码检测完成，未发现异常。"), 3000);
-        }
+        if (r.pendingCount > 0) statusBar()->showMessage(QString::fromUtf8("错误页码检测完成，发现 %1 处疑似错误，请打开待确认中心处理。").arg(r.pendingCount), 5000);
+        else statusBar()->showMessage(QString::fromUtf8("错误页码检测完成，未发现异常。"), 3000);
     }
 }
 
@@ -670,6 +567,7 @@ void MainWindow::onBatchProcess()
         m_batchDialog->show();
     }
 }
+
 void MainWindow::onOpenSettings()
 {
     if (!m_settingsDialog) {
@@ -679,11 +577,12 @@ void MainWindow::onOpenSettings()
         m_settingsDialog->show();
     }
 }
+
 void MainWindow::onOpenBackupManager() {}
 void MainWindow::onOpenAnnotator() {}
 void MainWindow::onBatchPreview(const cv::Mat &mat, bool before) {}
 
-// 内部辅助：获取输出路径
+// 获取批处理配置中的输出路径
 static QString getOutputPathForSrc(const QString &sourcePath)
 {
     const QString iniPath = QCoreApplication::applicationDirPath() + QStringLiteral("/settings.ini");
@@ -691,21 +590,15 @@ static QString getOutputPathForSrc(const QString &sourcePath)
     ini.setIniCodec("UTF-8");
     
     QString defaultOutDir = ini.value(QStringLiteral("General/defaultOutputDir")).toString().trimmed();
-    QString outputSuffix = ini.value(QStringLiteral("General/defaultOutputSuffix")).toString().trimmed();
-
+    QString suffix = ini.value(QStringLiteral("General/defaultOutputSuffix")).toString().trimmed();
+    
     QFileInfo srcInfo(sourcePath);
-    QString outDir = defaultOutDir;
-    
-    if (outDir.isEmpty()) {
-        outDir = srcInfo.absoluteDir().filePath(QStringLiteral("output"));
-    }
-
     QString fileName = srcInfo.completeBaseName();
-    if (!outputSuffix.isEmpty()) {
-        fileName += outputSuffix;
-    }
+    if (!suffix.isEmpty()) fileName += suffix;
+    fileName += ".jpg";
     
-    return QDir(outDir).filePath(fileName + QStringLiteral(".jpg"));
+    if (!defaultOutDir.isEmpty()) return QDir(defaultOutDir).filePath(fileName);
+    return srcInfo.absoluteDir().filePath("output/" + fileName);
 }
 
 void MainWindow::onPendingCenter()
@@ -713,34 +606,12 @@ void MainWindow::onPendingCenter()
     analyze::PendingDialog dlg(this);
     dlg.exec();
     
-    // ★ 修复：弹窗关闭后，判断当前图片是否有被 Accepted 的区域，直接内存涂白，并更新 UI
-    const auto items = analyze::PendingCenter::instance().allItems();
-    bool updated = false;
-    
-    if (!m_currentMat.empty()) {
-        for (const auto &item : items) {
-            if (item.decision == analyze::PendingDecision::Accepted && 
-                item.sourceImagePath == m_currentImagePath) {
-                
-                if (item.boundingBox.width > 0 && item.boundingBox.height > 0) {
-                    cv::Rect safeRect = item.boundingBox & cv::Rect(0, 0, m_currentMat.cols, m_currentMat.rows);
-                    if (safeRect.width > 0 && safeRect.height > 0) {
-                        if (m_currentMat.channels() == 4) m_currentMat(safeRect).setTo(cv::Scalar(255, 255, 255, 255));
-                        else if (m_currentMat.channels() == 3) m_currentMat(safeRect).setTo(cv::Scalar(255, 255, 255));
-                        else m_currentMat(safeRect).setTo(cv::Scalar(255));
-                        updated = true;
-                    }
-                }
-            }
-        }
-    }
-    
-    if (updated) {
-        showMatOnPreview(m_currentMat);
-        statusBar()->showMessage(QString::fromUtf8("待确认中心处理完毕，涂白结果已应用。"));
+    // 弹窗关闭后，立即刷新当前显示
+    if (!m_currentImagePath.isEmpty()) {
+        showImageOnPreview(m_currentImagePath);
+        statusBar()->showMessage(QString::fromUtf8("待确认中心处理完毕，预览已刷新。"));
     }
 }
-
 void MainWindow::applyAcceptedYellowBlobs() {}
 
 void MainWindow::showMatOnPreview(const cv::Mat &mat)
@@ -750,17 +621,13 @@ void MainWindow::showMatOnPreview(const cv::Mat &mat)
     if (mat.channels() == 3) cv::cvtColor(mat, rgb, cv::COLOR_BGR2RGB);
     else if (mat.channels() == 4) cv::cvtColor(mat, rgb, cv::COLOR_BGRA2RGB);
     else cv::cvtColor(mat, rgb, cv::COLOR_GRAY2RGB);
-
     QImage qimg(rgb.data, rgb.cols, rgb.rows, static_cast<int>(rgb.step), QImage::Format_RGB888);
     QPixmap pix = QPixmap::fromImage(qimg.copy());
-    
     m_previewScene->clear();
     m_previewScene->addPixmap(pix);
     m_previewScene->setSceneRect(pix.rect());
     m_hasImage = true;
-    
     m_previewView->viewport()->update();
-    
     QTimer::singleShot(0, this, [this]() { fitPreviewToWindow(); });
 }
 
@@ -769,7 +636,7 @@ void MainWindow::showImageOnPreview(const QString &path)
     cv::Mat mat;
     image::ImageMeta meta;
     
-    // ★ 修复：如果输出目录有处理好的图，优先加载输出目录的图；否则加载原图
+    // ★ 优先加载输出目录里的图（更新后的图）
     const QString outPath = getOutputPathForSrc(path);
     QString loadPath = path;
     if (QFile::exists(outPath)) {
@@ -778,7 +645,7 @@ void MainWindow::showImageOnPreview(const QString &path)
     
     if (image::ImageIO::read(loadPath, mat, meta)) {
         m_currentMat = mat;
-        m_currentImagePath = path; // 当前图路径依然记为原路径
+        m_currentImagePath = path; 
         m_enhancePreviewBase = mat.clone();
         showMatOnPreview(m_currentMat);
     }
