@@ -61,9 +61,15 @@ QStringList getOutputPaths(const QString &sourcePath)
     QFileInfo srcInfo(sourcePath);
     QString relativePath;
     
-    // 计算相对路径
+    // 计算相对路径，包含当前文件夹名
     if (!inputRootDir.isEmpty() && sourcePath.startsWith(inputRootDir, Qt::CaseInsensitive)) {
-        relativePath = QDir(inputRootDir).relativeFilePath(sourcePath);
+        QString rootName = QFileInfo(inputRootDir).fileName();
+        QString relPath = QDir(inputRootDir).relativeFilePath(sourcePath);
+        if (!rootName.isEmpty()) {
+            relativePath = QDir(rootName).filePath(relPath);
+        } else {
+            relativePath = relPath;
+        }
     } else {
         relativePath = srcInfo.absoluteDir().dirName() + "/" + srcInfo.fileName();
     }

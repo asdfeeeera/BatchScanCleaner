@@ -198,7 +198,6 @@ void MainWindow::onFolderTreeClicked(QTreeWidgetItem *item, int column)
     if (path.isEmpty() || path == "COMPUTER" || path == "NETWORK") return;
     m_currentFolder = path;
     
-    // 记录根路径供输出使用
     QSettings ini(QCoreApplication::applicationDirPath() + QStringLiteral("/settings.ini"), QSettings::IniFormat); ini.setIniCodec("UTF-8");
     ini.setValue(QStringLiteral("General/lastInputRootDir"), m_currentFolder);
 
@@ -404,7 +403,7 @@ void MainWindow::onOpenBackupManager() {}
 void MainWindow::onOpenAnnotator() {}
 void MainWindow::onBatchPreview(const cv::Mat &mat, bool before) {}
 
-// ★ 核心：获取批处理配置中的输出路径（包含子文件夹结构）
+// ★ 核心：获取批处理配置中的输出路径（强制包含当前扫描的文件夹名，如 "测试/372.jpg"）
 static QString getOutputPathForSrc(const QString &sourcePath)
 {
     QSettings ini(QCoreApplication::applicationDirPath() + QStringLiteral("/settings.ini"), QSettings::IniFormat);
@@ -418,7 +417,15 @@ static QString getOutputPathForSrc(const QString &sourcePath)
     QString relativePath;
     
     if (!inputRootDir.isEmpty() && sourcePath.startsWith(inputRootDir, Qt::CaseInsensitive)) {
-        relativePath = QDir(inputRootDir).relativeFilePath(sourcePath);
+        // 获取根文件夹名称，例如 "测试"
+        QString rootName = QFileInfo(inputRootDir).fileName();
+        QString relPath = QDir(inputRootDir).relativeFilePath(sourcePath); // 例如 "372.jpg"
+        
+        if (!rootName.isEmpty()) {
+            relativePath = QDir(rootName).filePath(relPath); // 拼接成 "测试/372.jpg"
+        } else {
+            relativePath = relPath;
+        }
     } else {
         relativePath = srcInfo.absoluteDir().dirName() + "/" + srcInfo.fileName();
     }
