@@ -613,17 +613,51 @@ void MainWindow::onOneClickProcess()
 
 void MainWindow::onDetectColorLine() {}
 void MainWindow::onClearColorLine() {}
+
 void MainWindow::onProcessErrPage()
 {
     if (!m_hasImage || m_currentMat.empty() || m_currentImagePath.isEmpty()) return;
+    
     process::ErrPageOptions opt;
+    
+    // ★ 核心修复：补齐所有区域检测参数，对齐 batch_dialog.cpp 中的批处理参数
+    opt.detectTopLeft          = true;
+    opt.topLeftWidthRatio      = 0.12;
+    opt.topLeftHeightRatio     = 0.08;
+    
+    opt.detectTopRight         = true;
+    opt.topRightWidthRatio     = 0.25;
+    opt.topRightHeightRatio    = 0.15;
+    
+    opt.detectBottomRight      = true;
+    opt.bottomRightWidthRatio  = 0.25;
+    opt.bottomRightHeightRatio = 0.15;
+    
+    opt.detectBottomLeft       = false;
+    
+    opt.minDigitHeight         = 20;
+    opt.maxDigitHeight         = 100;
+    opt.minDigitWidth          = 10;
+    opt.maxDigitWidth          = 150; // ★ 之前这里是默认的 100，导致较宽的数字无法被检测
+    
+    opt.crossLineRatio         = 0.5;
+    opt.fillWhite              = true;
+    opt.tesseractPath          = QString();
+    
     opt.enablePaddleOcr = ui::AppSettings::load().enablePaddleOcr;
+    
     const process::ErrPageResult r = process::ErrPage::process(m_currentMat, m_currentImagePath, opt);
     if (r.ok && !r.image.empty()) {
         m_currentMat = r.image.clone();
         showMatOnPreview(m_currentMat);
+        if (r.pendingCount > 0) {
+            statusBar()->showMessage(QString::fromUtf8("错误页码检测完成，发现 %1 处疑似错误，请打开待确认中心处理。").arg(r.pendingCount), 5000);
+        } else {
+            statusBar()->showMessage(QString::fromUtf8("错误页码检测完成，未发现异常。"), 3000);
+        }
     }
 }
+
 void MainWindow::onStampProtectTest() {}
 void MainWindow::onBatchProcess()
 {
@@ -653,7 +687,6 @@ void MainWindow::onPendingCenter()
     analyze::PendingDialog dlg(this);
     dlg.exec();
     
-    // ★ 核心修复：弹窗关闭后，直接重新加载当前图片，强制刷新预览
     if (!m_currentImagePath.isEmpty() && QFile::exists(m_currentImagePath)) {
         showImageOnPreview(m_currentImagePath);
         statusBar()->showMessage(QString::fromUtf8("待确认中心处理完毕，预览已更新。"));
@@ -677,7 +710,6 @@ void MainWindow::showMatOnPreview(const cv::Mat &mat)
     m_previewScene->setSceneRect(pix.rect());
     m_hasImage = true;
     
-    // ★ 强制刷新界面，解决预览不更新问题
     m_previewView->viewport()->update();
     
     QTimer::singleShot(0, this, [this]() { fitPreviewToWindow(); });
