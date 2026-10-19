@@ -28,12 +28,12 @@ double calcPaperGray(const cv::Mat &gray)
     return static_cast<double>(pixels[idx]);
 }
 
-// 扫描函数：增加颜色掩膜保护（遇到印章就停止）
+// 扫描函数：增加颜色掩膜保护（遇到印章直接返回 -1，表示该行不可切）
 int scanLineForEdge(const uchar *grayData, const uchar *colorData, int length, double darkThr, int maxGap, int maxScan, int edgeMinThick)
 {
-    // 前 edgeMinThick 个像素必须都是暗的，否则说明边缘本身是白的，不是黑边
+    // 前 edgeMinThick 个像素必须都是极黑的（灰度 < 50），否则说明边缘本身是白的，或者只是表格的黑框
     for (int i = 0; i < edgeMinThick && i < length; ++i) {
-        if (grayData[i] >= darkThr) {
+        if (grayData[i] >= 50) {
             return 0;
         }
     }
@@ -42,9 +42,9 @@ int scanLineForEdge(const uchar *grayData, const uchar *colorData, int length, d
     int whiteRun = 0;
 
     for (int i = 0; i < length && i < maxScan; ++i) {
-        // 关键保护：如果发现当前像素是红色印章（或明显彩色），立刻视为黑边结束
+        // 碰到红章，立刻返回 -1，表示遇到绝对保护区域
         if (colorData && colorData[i] == 255) {
-            break;
+            return -1;
         }
 
         if (grayData[i] < darkThr) {
@@ -95,8 +95,12 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
         std::vector<cv::Mat> hsvCh;
         cv::split(hsv, hsvCh);
         
-        // 饱和度 > 40 视为彩色（印章、红章）
+        // 饱和度 > 40 视为彩色（印章）
         cv::inRange(hsvCh[1], 40, 255, colorMask);
+        
+        // 膨胀彩色区域，防止边缘被误切
+        cv::Mat dilateKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
+        cv::dilate(colorMask, colorMask, dilateKernel);
     }
 
     const double paperGray = calcPaperGray(gray);
@@ -107,15 +111,20 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
     if (darkThr < 30.0) darkThr = 30.0;
     result.darkThreshold = darkThr;
 
-    const int maxScanY = static_cast<int>(H * options.maxScanRatio);
-    const int maxScanX = static_cast<int>(W * options.maxScanRatio);
+    // 最大扫描深度降低为 15%（之前是30%）
+    const int maxScanY = static_cast<int>(H * 0.15);
+    const int maxScanX = static_cast<int>(W * 0.15);
 
-    const int maxGapY = std::max(15, static_cast<int>(H * 0.015));
-    const int maxGapX = std::max(15, static_cast<int>(W * 0.015));
-    const int edgeMinThick = 3;
+    // 容差变小，必须是连续黑边（之前是15，现在改为5）
+    const int maxGapY = 5;
+    const int maxGapX = 5;
+
+    // 边缘最小厚度设为 5，严格过滤表格线
+    const int edgeMinThick = 5;
 
     // --- 1. 扫描上边缘 ---
     std::vector<int> topCuts;
+    bool topBlocked = false;
     for (int x = 0; x < W; ++x) {
         std::vector<uchar> colG(H), colC(H);
         for (int y = 0; y < H; ++y) {
@@ -123,13 +132,15 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
             colC[y] = colorMask.empty() ? 0 : colorMask.at<uchar>(y, x);
         }
         int cut = scanLineForEdge(colG.data(), colC.data(), H, darkThr, maxGapY, maxScanY, edgeMinThick);
-        if (cut > 0) topCuts.push_back(cut);
+        if (cut == -1) topBlocked = true;
+        else if (cut > 0) topCuts.push_back(cut);
     }
     int topCut = 0;
-    if (topCuts.size() > W * 0.1) topCut = getMedian(topCuts);
+    if (!topBlocked && topCuts.size() > W * 0.1) topCut = getMedian(topCuts);
 
     // --- 2. 扫描下边缘 ---
     std::vector<int> bottomCuts;
+    bool bottomBlocked = false;
     for (int x = 0; x < W; ++x) {
         std::vector<uchar> colG(H), colC(H);
         for (int y = 0; y < H; ++y) {
@@ -137,13 +148,15 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
             colC[y] = colorMask.empty() ? 0 : colorMask.at<uchar>(H - 1 - y, x);
         }
         int cut = scanLineForEdge(colG.data(), colC.data(), H, darkThr, maxGapY, maxScanY, edgeMinThick);
-        if (cut > 0) bottomCuts.push_back(cut);
+        if (cut == -1) bottomBlocked = true;
+        else if (cut > 0) bottomCuts.push_back(cut);
     }
     int bottomCut = 0;
-    if (bottomCuts.size() > W * 0.1) bottomCut = getMedian(bottomCuts);
+    if (!bottomBlocked && bottomCuts.size() > W * 0.1) bottomCut = getMedian(bottomCuts);
 
     // --- 3. 扫描左边缘 ---
     std::vector<int> leftCuts;
+    bool leftBlocked = false;
     for (int y = 0; y < H; ++y) {
         std::vector<uchar> rowG(W), rowC(W);
         const uchar *gPtr = gray.ptr<uchar>(y);
@@ -153,13 +166,15 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
             rowC[x] = cPtr ? cPtr[x] : 0;
         }
         int cut = scanLineForEdge(rowG.data(), rowC.data(), W, darkThr, maxGapX, maxScanX, edgeMinThick);
-        if (cut > 0) leftCuts.push_back(cut);
+        if (cut == -1) leftBlocked = true;
+        else if (cut > 0) leftCuts.push_back(cut);
     }
     int leftCut = 0;
-    if (leftCuts.size() > H * 0.1) leftCut = getMedian(leftCuts);
+    if (!leftBlocked && leftCuts.size() > H * 0.1) leftCut = getMedian(leftCuts);
 
     // --- 4. 扫描右边缘 ---
     std::vector<int> rightCuts;
+    bool rightBlocked = false;
     for (int y = 0; y < H; ++y) {
         std::vector<uchar> rowG(W), rowC(W);
         const uchar *gPtr = gray.ptr<uchar>(y);
@@ -169,21 +184,19 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
             rowC[x] = cPtr ? cPtr[W - 1 - x] : 0;
         }
         int cut = scanLineForEdge(rowG.data(), rowC.data(), W, darkThr, maxGapX, maxScanX, edgeMinThick);
-        if (cut > 0) rightCuts.push_back(cut);
+        if (cut == -1) rightBlocked = true;
+        else if (cut > 0) rightCuts.push_back(cut);
     }
     int rightCut = 0;
-    if (rightCuts.size() > H * 0.1) rightCut = getMedian(rightCuts);
+    if (!rightBlocked && rightCuts.size() > H * 0.1) rightCut = getMedian(rightCuts);
 
-    // 增加一点扩张像素，确保切干净
+    // 增加扩张像素，确保切干净（改为 0，防止误切内容）
     topCut = std::min(H, topCut + options.expandPixels);
     bottomCut = std::min(H, bottomCut + options.expandPixels);
     leftCut = std::min(W, leftCut + options.expandPixels);
     rightCut = std::min(W, rightCut + options.expandPixels);
 
-    if (topCut <= options.expandPixels + 1 && 
-        bottomCut <= options.expandPixels + 1 &&
-        leftCut <= options.expandPixels + 1 && 
-        rightCut <= options.expandPixels + 1) {
+    if (topCut == 0 && bottomCut == 0 && leftCut == 0 && rightCut == 0) {
         result.image = src.clone();
         result.skipped = true;
         result.ok = true;
