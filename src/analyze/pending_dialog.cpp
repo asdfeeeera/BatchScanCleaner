@@ -14,8 +14,15 @@
 #include <QPixmap>
 #include <QFileInfo>
 #include <QScrollArea>
+#include <QMap>
+#include <QDebug>
 
 #include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>
+
+// ★ 引入项目的图像读取和写入类（保证中文路径读写正常）
+#include "image_io.h"
+#include "jpeg_writer.h"
 
 namespace analyze {
 
@@ -39,7 +46,6 @@ QPixmap matToPixmap(const cv::Mat &mat, int maxW, int maxH)
         cv::cvtColor(mat, rgb, cv::COLOR_GRAY2RGB);
     }
 
-    // Scale down if needed
     cv::Mat scaled;
     if (rgb.cols > maxW || rgb.rows > maxH) {
         const double sx = static_cast<double>(maxW) / rgb.cols;
@@ -53,6 +59,62 @@ QPixmap matToPixmap(const cv::Mat &mat, int maxW, int maxH)
     QImage qimg(scaled.data, scaled.cols, scaled.rows,
                 static_cast<int>(scaled.step), QImage::Format_RGB888);
     return QPixmap::fromImage(qimg.copy());
+}
+
+// ★ 核心：将接受的项目直接应用到硬盘文件
+void applyDecisionsToDisk(const QList<int> &ids)
+{
+    // 1. 按文件路径分组（同一张图可能有多个接受项）
+    QMap<QString, QList<PendingItem>> fileMap;
+    for (int id : ids) {
+        PendingItem it = PendingCenter::instance().itemById(id);
+        if (it.decision == PendingDecision::Accepted && !it.sourceImagePath.isEmpty()) {
+            fileMap[it.sourceImagePath].append(it);
+        }
+    }
+
+    // 2. 遍历每个文件进行处理和保存
+    for (auto it = fileMap.begin(); it != fileMap.end(); ++it) {
+        const QString &path = it.key();
+        cv::Mat mat;
+        image::ImageMeta meta;
+        
+        // 读取原图
+        if (!image::ImageIO::read(path, mat, meta)) {
+            qDebug() << "Failed to read image for saving:" << path;
+            continue;
+        }
+
+        bool modified = false;
+        for (const PendingItem &item : it.value()) {
+            // 直接将对应区域涂白
+            if (item.boundingBox.width > 0 && item.boundingBox.height > 0) {
+                // 边界保护，防止越界崩溃
+                cv::Rect safeRect = item.boundingBox & cv::Rect(0, 0, mat.cols, mat.rows);
+                if (safeRect.width > 0 && safeRect.height > 0) {
+                    if (mat.channels() == 4) {
+                        mat(safeRect).setTo(cv::Scalar(255, 255, 255, 255));
+                    } else if (mat.channels() == 3) {
+                        mat(safeRect).setTo(cv::Scalar(255, 255, 255));
+                    } else {
+                        mat(safeRect).setTo(cv::Scalar(255));
+                    }
+                    modified = true;
+                }
+            }
+        }
+
+        // 如果发生了修改，保存回原路径
+        if (modified) {
+            image::JpegSaveOptions options;
+            options.quality = 98;
+            options.dpiX = 300.0;
+            options.dpiY = 300.0;
+            options.use444Sampling = true;
+            image::JpegWriter::write(path, mat, options);
+            qDebug() << "Saved applied decisions to:" << path;
+        }
+    }
 }
 
 } // namespace
@@ -77,14 +139,12 @@ PendingDialog::~PendingDialog() = default;
 // ============================================================
 void PendingDialog::setupUi()
 {
-    // ---- Left: list ----
     m_listWidget = new QListWidget(this);
     m_listWidget->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_listWidget->setMinimumWidth(280);
     connect(m_listWidget, &QListWidget::itemSelectionChanged,
             this, &PendingDialog::onItemSelectionChanged);
 
-    // ---- Right: preview + detail ----
     m_thumbnailLabel = new QLabel(this);
     m_thumbnailLabel->setAlignment(Qt::AlignCenter);
     m_thumbnailLabel->setMinimumSize(360, 240);
@@ -107,17 +167,14 @@ void PendingDialog::setupUi()
     rightLayout->addWidget(new QLabel(QString::fromUtf8("详细信息："), this));
     rightLayout->addWidget(m_detailEdit);
 
-    // ---- Splitter ----
     QSplitter *splitter = new QSplitter(Qt::Horizontal, this);
     splitter->addWidget(m_listWidget);
     splitter->addWidget(rightWidget);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 2);
 
-    // ---- Top: stats ----
     m_statsLabel = new QLabel(this);
 
-    // ---- Bottom: buttons ----
     m_acceptBtn     = new QPushButton(QString::fromUtf8("接受当前"), this);
     m_rejectBtn     = new QPushButton(QString::fromUtf8("拒绝当前"), this);
     m_ignoreBtn     = new QPushButton(QString::fromUtf8("忽略当前"), this);
@@ -148,7 +205,6 @@ void PendingDialog::setupUi()
     buttonLayout->addWidget(m_clearDecidedBtn);
     buttonLayout->addWidget(m_closeBtn);
 
-    // ---- Main layout ----
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     mainLayout->addWidget(m_statsLabel);
     mainLayout->addWidget(splitter, 1);
@@ -215,7 +271,6 @@ void PendingDialog::updateDetailPanel()
     const int id = sel.first()->data(Qt::UserRole).toInt();
     const PendingItem it = PendingCenter::instance().itemById(id);
 
-    // Thumbnail
     if (!it.thumbnail.empty()) {
         const QPixmap pix = matToPixmap(it.thumbnail, 500, 400);
         m_thumbnailLabel->setPixmap(pix);
@@ -225,7 +280,6 @@ void PendingDialog::updateDetailPanel()
         m_thumbnailLabel->setText(QString::fromUtf8("（无缩略图）"));
     }
 
-    // Detail
     QString text;
     text += QString::fromUtf8("类型：%1\n").arg(PendingItem::typeToString(it.type));
     text += QString::fromUtf8("建议动作：%1\n").arg(PendingItem::actionToString(it.suggestedAction));
@@ -282,7 +336,13 @@ void PendingDialog::onAcceptCurrent()
     }
     if (ids.isEmpty()) return;
 
+    // 1. 更新内存状态
     PendingCenter::instance().setDecisionByIds(ids, PendingDecision::Accepted);
+    
+    // 2. ★ 核心：应用到原图并保存
+    applyDecisionsToDisk(ids);
+
+    // 3. 刷新界面
     refreshFromCenter();
 }
 
@@ -312,9 +372,19 @@ void PendingDialog::onIgnoreCurrent()
 
 void PendingDialog::onAcceptAll()
 {
+    const QList<PendingItem> pendingItems = PendingCenter::instance().pendingItems();
+    QList<int> ids;
+    for (const auto &it : pendingItems) {
+        ids.append(it.id);
+    }
+
     const int n = PendingCenter::instance().acceptAllPending();
+    
+    // ★ 核心：将所有接受的项应用到原图并保存
+    applyDecisionsToDisk(ids);
+
     QMessageBox::information(this, QString::fromUtf8("提示"),
-                             QString::fromUtf8("已接受 %1 项").arg(n));
+                             QString::fromUtf8("已接受 %1 项，并已保存到原图").arg(n));
     refreshFromCenter();
 }
 
