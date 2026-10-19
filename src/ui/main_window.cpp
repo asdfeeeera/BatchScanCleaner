@@ -38,6 +38,8 @@
 #include <QApplication>
 #include <QStandardPaths>
 #include <QStyle>
+#include <QSettings>
+#include <QCoreApplication>
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -532,7 +534,7 @@ void MainWindow::onDeskew()
     if (!m_hasImage || m_currentMat.empty()) return;
     const process::DeskewResult result = process::Deskew::autoDeskew(m_currentMat);
     if (result.ok && !result.image.empty()) {
-        m_currentMat = result.image.clone(); // ★ 强制深拷贝
+        m_currentMat = result.image.clone(); 
         showMatOnPreview(m_currentMat);
         statusBar()->showMessage(QString::fromUtf8("自动扶正完成，角度：%1°").arg(result.angle));
     }
@@ -545,7 +547,7 @@ void MainWindow::onRemoveBlackEdge()
     options.fillWhite = true;
     const process::BlackEdgeResult result = process::BlackEdge::removeBlackEdge(m_currentMat, options);
     if (result.ok && !result.image.empty()) {
-        m_currentMat = result.image.clone(); // ★ 强制深拷贝
+        m_currentMat = result.image.clone(); 
         showMatOnPreview(m_currentMat);
     }
 }
@@ -620,7 +622,6 @@ void MainWindow::onProcessErrPage()
     
     process::ErrPageOptions opt;
     
-    // ★ 核心修复：补齐所有区域检测参数，对齐 batch_dialog.cpp 中的批处理参数
     opt.detectTopLeft          = true;
     opt.topLeftWidthRatio      = 0.12;
     opt.topLeftHeightRatio     = 0.08;
@@ -638,7 +639,7 @@ void MainWindow::onProcessErrPage()
     opt.minDigitHeight         = 20;
     opt.maxDigitHeight         = 100;
     opt.minDigitWidth          = 10;
-    opt.maxDigitWidth          = 150; // ★ 之前这里是默认的 100，导致较宽的数字无法被检测
+    opt.maxDigitWidth          = 150; // 修复漏检
     
     opt.crossLineRatio         = 0.5;
     opt.fillWhite              = true;
@@ -682,16 +683,64 @@ void MainWindow::onOpenBackupManager() {}
 void MainWindow::onOpenAnnotator() {}
 void MainWindow::onBatchPreview(const cv::Mat &mat, bool before) {}
 
+// 内部辅助：获取输出路径
+static QString getOutputPathForSrc(const QString &sourcePath)
+{
+    const QString iniPath = QCoreApplication::applicationDirPath() + QStringLiteral("/settings.ini");
+    QSettings ini(iniPath, QSettings::IniFormat);
+    ini.setIniCodec("UTF-8");
+    
+    QString defaultOutDir = ini.value(QStringLiteral("General/defaultOutputDir")).toString().trimmed();
+    QString outputSuffix = ini.value(QStringLiteral("General/defaultOutputSuffix")).toString().trimmed();
+
+    QFileInfo srcInfo(sourcePath);
+    QString outDir = defaultOutDir;
+    
+    if (outDir.isEmpty()) {
+        outDir = srcInfo.absoluteDir().filePath(QStringLiteral("output"));
+    }
+
+    QString fileName = srcInfo.completeBaseName();
+    if (!outputSuffix.isEmpty()) {
+        fileName += outputSuffix;
+    }
+    
+    return QDir(outDir).filePath(fileName + QStringLiteral(".jpg"));
+}
+
 void MainWindow::onPendingCenter()
 {
     analyze::PendingDialog dlg(this);
     dlg.exec();
     
-    if (!m_currentImagePath.isEmpty() && QFile::exists(m_currentImagePath)) {
-        showImageOnPreview(m_currentImagePath);
-        statusBar()->showMessage(QString::fromUtf8("待确认中心处理完毕，预览已更新。"));
+    // ★ 修复：弹窗关闭后，判断当前图片是否有被 Accepted 的区域，直接内存涂白，并更新 UI
+    const auto items = analyze::PendingCenter::instance().allItems();
+    bool updated = false;
+    
+    if (!m_currentMat.empty()) {
+        for (const auto &item : items) {
+            if (item.decision == analyze::PendingDecision::Accepted && 
+                item.sourceImagePath == m_currentImagePath) {
+                
+                if (item.boundingBox.width > 0 && item.boundingBox.height > 0) {
+                    cv::Rect safeRect = item.boundingBox & cv::Rect(0, 0, m_currentMat.cols, m_currentMat.rows);
+                    if (safeRect.width > 0 && safeRect.height > 0) {
+                        if (m_currentMat.channels() == 4) m_currentMat(safeRect).setTo(cv::Scalar(255, 255, 255, 255));
+                        else if (m_currentMat.channels() == 3) m_currentMat(safeRect).setTo(cv::Scalar(255, 255, 255));
+                        else m_currentMat(safeRect).setTo(cv::Scalar(255));
+                        updated = true;
+                    }
+                }
+            }
+        }
+    }
+    
+    if (updated) {
+        showMatOnPreview(m_currentMat);
+        statusBar()->showMessage(QString::fromUtf8("待确认中心处理完毕，涂白结果已应用。"));
     }
 }
+
 void MainWindow::applyAcceptedYellowBlobs() {}
 
 void MainWindow::showMatOnPreview(const cv::Mat &mat)
@@ -719,9 +768,17 @@ void MainWindow::showImageOnPreview(const QString &path)
 {
     cv::Mat mat;
     image::ImageMeta meta;
-    if (image::ImageIO::read(path, mat, meta)) {
+    
+    // ★ 修复：如果输出目录有处理好的图，优先加载输出目录的图；否则加载原图
+    const QString outPath = getOutputPathForSrc(path);
+    QString loadPath = path;
+    if (QFile::exists(outPath)) {
+        loadPath = outPath;
+    }
+    
+    if (image::ImageIO::read(loadPath, mat, meta)) {
         m_currentMat = mat;
-        m_currentImagePath = path;
+        m_currentImagePath = path; // 当前图路径依然记为原路径
         m_enhancePreviewBase = mat.clone();
         showMatOnPreview(m_currentMat);
     }

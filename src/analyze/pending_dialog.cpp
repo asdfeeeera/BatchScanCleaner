@@ -23,15 +23,11 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
 
-// ★ 引入项目的图像读取和写入类（保证中文路径读写正常）
 #include "image_io.h"
 #include "jpeg_writer.h"
 
 namespace analyze {
 
-// ============================================================
-// Helper: cv::Mat -> QPixmap
-// ============================================================
 namespace {
 
 QPixmap matToPixmap(const cv::Mat &mat, int maxW, int maxH)
@@ -64,7 +60,6 @@ QPixmap matToPixmap(const cv::Mat &mat, int maxW, int maxH)
     return QPixmap::fromImage(qimg.copy());
 }
 
-// ★ 辅助：计算输出路径（绝不覆盖原图）
 QString calculateOutputPath(const QString &sourcePath)
 {
     const QString iniPath = QCoreApplication::applicationDirPath() + QStringLiteral("/settings.ini");
@@ -78,11 +73,9 @@ QString calculateOutputPath(const QString &sourcePath)
     QString outDir = defaultOutDir;
     
     if (outDir.isEmpty()) {
-        // 如果全局没设置，按照批处理默认：放在原图同级 output 目录
         outDir = srcInfo.absoluteDir().filePath(QStringLiteral("output"));
     }
 
-    // 确保目标目录存在
     QDir().mkpath(outDir);
 
     QString fileName = srcInfo.completeBaseName();
@@ -93,10 +86,8 @@ QString calculateOutputPath(const QString &sourcePath)
     return QDir(outDir).filePath(fileName + QStringLiteral(".jpg"));
 }
 
-// ★ 核心：将接受的项目直接应用到目标文件夹
 void applyDecisionsToDisk(const QList<int> &ids)
 {
-    // 1. 按文件路径分组
     QMap<QString, QList<PendingItem>> fileMap;
     for (int id : ids) {
         PendingItem it = PendingCenter::instance().itemById(id);
@@ -105,13 +96,11 @@ void applyDecisionsToDisk(const QList<int> &ids)
         }
     }
 
-    // 2. 遍历每个文件进行处理和保存
     for (auto it = fileMap.begin(); it != fileMap.end(); ++it) {
         const QString &srcPath = it.key();
         cv::Mat mat;
         image::ImageMeta meta;
         
-        // 读取原图
         if (!image::ImageIO::read(srcPath, mat, meta)) {
             qDebug() << "Failed to read image for saving:" << srcPath;
             continue;
@@ -119,7 +108,6 @@ void applyDecisionsToDisk(const QList<int> &ids)
 
         bool modified = false;
         for (const PendingItem &item : it.value()) {
-            // 直接将对应区域涂白
             if (item.boundingBox.width > 0 && item.boundingBox.height > 0) {
                 cv::Rect safeRect = item.boundingBox & cv::Rect(0, 0, mat.cols, mat.rows);
                 if (safeRect.width > 0 && safeRect.height > 0) {
@@ -135,26 +123,27 @@ void applyDecisionsToDisk(const QList<int> &ids)
             }
         }
 
-        // 如果发生了修改，保存到目标输出路径
         if (modified) {
             const QString outPath = calculateOutputPath(srcPath);
+            qDebug() << "Saving applied decisions to:" << outPath;
             
             image::JpegSaveOptions options;
             options.quality = 98;
             options.dpiX = 300.0;
             options.dpiY = 300.0;
             options.use444Sampling = true;
-            image::JpegWriter::write(outPath, mat, options);
-            qDebug() << "Saved applied decisions to:" << outPath;
+            bool ok = image::JpegWriter::write(outPath, mat, options);
+            
+            if (!ok) {
+                QMessageBox::warning(nullptr, QString::fromUtf8("保存失败"),
+                    QString::fromUtf8("无法写入文件：\n%1\n请检查目录是否存在或是否有写入权限。").arg(outPath));
+            }
         }
     }
 }
 
 } // namespace
 
-// ============================================================
-// Constructor / Destructor
-// ============================================================
 PendingDialog::PendingDialog(QWidget *parent)
     : QDialog(parent)
 {
@@ -167,9 +156,6 @@ PendingDialog::PendingDialog(QWidget *parent)
 
 PendingDialog::~PendingDialog() = default;
 
-// ============================================================
-// UI
-// ============================================================
 void PendingDialog::setupUi()
 {
     m_listWidget = new QListWidget(this);
@@ -244,9 +230,6 @@ void PendingDialog::setupUi()
     mainLayout->addLayout(buttonLayout);
 }
 
-// ============================================================
-// Reload data
-// ============================================================
 void PendingDialog::refreshFromCenter()
 {
     rebuildList();
@@ -288,9 +271,6 @@ QString PendingDialog::formatListItemText(const PendingItem &it) const
     return line;
 }
 
-// ============================================================
-// Detail panel
-// ============================================================
 void PendingDialog::updateDetailPanel()
 {
     const QList<QListWidgetItem *> sel = m_listWidget->selectedItems();
@@ -334,9 +314,6 @@ void PendingDialog::updateDetailPanel()
     m_detailEdit->setPlainText(text);
 }
 
-// ============================================================
-// Buttons state
-// ============================================================
 void PendingDialog::updateButtonsState()
 {
     const bool hasSelection = !m_listWidget->selectedItems().isEmpty();
@@ -352,9 +329,6 @@ void PendingDialog::updateButtonsState()
     m_clearDecidedBtn->setEnabled(hasAny);
 }
 
-// ============================================================
-// Slots
-// ============================================================
 void PendingDialog::onItemSelectionChanged()
 {
     updateDetailPanel();
@@ -369,13 +343,11 @@ void PendingDialog::onAcceptCurrent()
     }
     if (ids.isEmpty()) return;
 
-    // 1. 更新内存状态
     PendingCenter::instance().setDecisionByIds(ids, PendingDecision::Accepted);
     
-    // 2. ★ 核心：应用到目标输出目录（不覆盖原图）
+    // 应用到磁盘输出目录
     applyDecisionsToDisk(ids);
 
-    // 3. 刷新界面
     refreshFromCenter();
 }
 
@@ -413,7 +385,6 @@ void PendingDialog::onAcceptAll()
 
     const int n = PendingCenter::instance().acceptAllPending();
     
-    // ★ 核心：将所有接受的项应用到目标输出目录
     applyDecisionsToDisk(ids);
 
     QMessageBox::information(this, QString::fromUtf8("提示"),
