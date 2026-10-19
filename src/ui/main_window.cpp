@@ -348,10 +348,25 @@ void MainWindow::onBackground()
 void MainWindow::onOneClickProcess()
 {
     if (!m_hasImage || m_currentMat.empty()) return;
-    if (m_oneClickDeskewCheck && m_oneClickDeskewCheck->isChecked()) { const process::DeskewResult r = process::Deskew::autoDeskew(m_currentMat); if (r.ok && !r.image.empty()) m_currentMat = r.image.clone(); }
-    if (m_oneClickBlackEdgeCheck && m_oneClickBlackEdgeCheck->isChecked()) { const process::BlackEdgeResult r = process::BlackEdge::removeBlackEdge(m_currentMat, process::BlackEdgeOptions()); if (r.ok && !r.image.empty()) m_currentMat = r.image.clone(); }
-    if (m_oneClickDenoiseCheck && m_oneClickDenoiseCheck->isChecked()) { const process::DenoiseResult r = process::Denoise::removeSpots(m_currentMat, process::DenoiseOptions()); if (r.ok && !r.image.empty()) m_currentMat = r.image.clone(); }
-    if (m_oneClickEnhanceCheck && m_oneClickEnhanceCheck->isChecked()) { const process::EnhanceResult r = process::Enhance::enhanceText(m_currentMat, currentEnhanceOptions()); if (r.ok && !r.image.empty()) m_currentMat = r.image.clone(); }
+    
+    // ★ 核心修改：顺序必须是先黑边后扶正！
+    if (m_oneClickBlackEdgeCheck && m_oneClickBlackEdgeCheck->isChecked()) {
+        const process::BlackEdgeResult r = process::BlackEdge::removeBlackEdge(m_currentMat, process::BlackEdgeOptions());
+        if (r.ok && !r.image.empty()) m_currentMat = r.image.clone();
+    }
+    if (m_oneClickDeskewCheck && m_oneClickDeskewCheck->isChecked()) {
+        const process::DeskewResult r = process::Deskew::autoDeskew(m_currentMat);
+        if (r.ok && !r.image.empty()) m_currentMat = r.image.clone();
+    }
+    
+    if (m_oneClickDenoiseCheck && m_oneClickDenoiseCheck->isChecked()) {
+        const process::DenoiseResult r = process::Denoise::removeSpots(m_currentMat, process::DenoiseOptions());
+        if (r.ok && !r.image.empty()) m_currentMat = r.image.clone();
+    }
+    if (m_oneClickEnhanceCheck && m_oneClickEnhanceCheck->isChecked()) {
+        const process::EnhanceResult r = process::Enhance::enhanceText(m_currentMat, currentEnhanceOptions());
+        if (r.ok && !r.image.empty()) m_currentMat = r.image.clone();
+    }
     showMatOnPreview(m_currentMat);
 }
 
@@ -403,29 +418,21 @@ void MainWindow::onOpenBackupManager() {}
 void MainWindow::onOpenAnnotator() {}
 void MainWindow::onBatchPreview(const cv::Mat &mat, bool before) {}
 
-// ★ 核心：获取批处理配置中的输出路径（强制包含当前扫描的文件夹名，如 "测试/372.jpg"）
 static QString getOutputPathForSrc(const QString &sourcePath)
 {
     QSettings ini(QCoreApplication::applicationDirPath() + QStringLiteral("/settings.ini"), QSettings::IniFormat);
     ini.setIniCodec("UTF-8");
-    
     QString defaultOutDir = ini.value(QStringLiteral("General/defaultOutputDir")).toString().trimmed();
     QString suffix = ini.value(QStringLiteral("General/defaultOutputSuffix")).toString().trimmed();
     QString inputRootDir = ini.value(QStringLiteral("General/lastInputRootDir")).toString().trimmed();
     
     QFileInfo srcInfo(sourcePath);
     QString relativePath;
-    
     if (!inputRootDir.isEmpty() && sourcePath.startsWith(inputRootDir, Qt::CaseInsensitive)) {
-        // 获取根文件夹名称，例如 "测试"
         QString rootName = QFileInfo(inputRootDir).fileName();
-        QString relPath = QDir(inputRootDir).relativeFilePath(sourcePath); // 例如 "372.jpg"
-        
-        if (!rootName.isEmpty()) {
-            relativePath = QDir(rootName).filePath(relPath); // 拼接成 "测试/372.jpg"
-        } else {
-            relativePath = relPath;
-        }
+        QString relPath = QDir(inputRootDir).relativeFilePath(sourcePath);
+        if (!rootName.isEmpty()) relativePath = QDir(rootName).filePath(relPath);
+        else relativePath = relPath;
     } else {
         relativePath = srcInfo.absoluteDir().dirName() + "/" + srcInfo.fileName();
     }
