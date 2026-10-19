@@ -183,7 +183,7 @@ void MainWindow::setupCentralWidget()
     desktopItem->setText(0, QString::fromUtf8("桌面"));
     desktopItem->setIcon(0, iconDesktop);
     desktopItem->setData(0, Qt::UserRole, QStandardPaths::writableLocation(QStandardPaths::DesktopLocation));
-    new QTreeWidgetItem(desktopItem); // ★ 添加占位符，显示箭头
+    new QTreeWidgetItem(desktopItem); 
 
     QTreeWidgetItem *computerItem = new QTreeWidgetItem(m_folderTree);
     computerItem->setText(0, QString::fromUtf8("此电脑"));
@@ -203,7 +203,7 @@ void MainWindow::setupCentralWidget()
     networkItem->setText(0, QString::fromUtf8("网络"));
     networkItem->setIcon(0, iconNetwork);
     networkItem->setData(0, Qt::UserRole, "NETWORK");
-    new QTreeWidgetItem(networkItem); // ★ 添加占位符，显示箭头
+    new QTreeWidgetItem(networkItem); 
 
     computerItem->setExpanded(true);
 
@@ -531,9 +531,10 @@ void MainWindow::onDeskew()
 {
     if (!m_hasImage || m_currentMat.empty()) return;
     const process::DeskewResult result = process::Deskew::autoDeskew(m_currentMat);
-    if (result.ok) {
-        m_currentMat = result.image;
+    if (result.ok && !result.image.empty()) {
+        m_currentMat = result.image.clone(); // ★ 强制深拷贝
         showMatOnPreview(m_currentMat);
+        statusBar()->showMessage(QString::fromUtf8("自动扶正完成，角度：%1°").arg(result.angle));
     }
 }
 
@@ -543,8 +544,8 @@ void MainWindow::onRemoveBlackEdge()
     process::BlackEdgeOptions options;
     options.fillWhite = true;
     const process::BlackEdgeResult result = process::BlackEdge::removeBlackEdge(m_currentMat, options);
-    if (result.ok) {
-        m_currentMat = result.image;
+    if (result.ok && !result.image.empty()) {
+        m_currentMat = result.image.clone(); // ★ 强制深拷贝
         showMatOnPreview(m_currentMat);
     }
 }
@@ -557,8 +558,8 @@ void MainWindow::onDenoise()
     const protect::StampProtectResult pr = protect::StampProtect::detect(m_currentMat, protectOpt);
     if (pr.ok) options.protectMask = pr.mask;
     const process::DenoiseResult result = process::Denoise::removeSpots(m_currentMat, options);
-    if (result.ok) {
-        m_currentMat = result.image;
+    if (result.ok && !result.image.empty()) {
+        m_currentMat = result.image.clone();
         showMatOnPreview(m_currentMat);
     }
 }
@@ -568,8 +569,8 @@ void MainWindow::onEnhance()
     if (!m_hasImage || m_currentMat.empty()) return;
     process::EnhanceOptions options = currentEnhanceOptions();
     const process::EnhanceResult result = process::Enhance::enhanceText(m_currentMat, options);
-    if (result.ok) {
-        m_currentMat = result.image;
+    if (result.ok && !result.image.empty()) {
+        m_currentMat = result.image.clone();
         showMatOnPreview(m_currentMat);
     }
 }
@@ -582,8 +583,8 @@ void MainWindow::onBackground()
     const protect::StampProtectResult pr = protect::StampProtect::detect(m_currentMat, protectOpt);
     if (pr.ok) options.protectMask = pr.mask;
     const process::BackgroundResult result = process::Background::whiten(m_currentMat, options);
-    if (result.ok) {
-        m_currentMat = result.image;
+    if (result.ok && !result.image.empty()) {
+        m_currentMat = result.image.clone();
         showMatOnPreview(m_currentMat);
     }
 }
@@ -593,19 +594,19 @@ void MainWindow::onOneClickProcess()
     if (!m_hasImage || m_currentMat.empty()) return;
     if (m_oneClickDeskewCheck && m_oneClickDeskewCheck->isChecked()) {
         const process::DeskewResult r = process::Deskew::autoDeskew(m_currentMat);
-        if (r.ok) m_currentMat = r.image;
+        if (r.ok && !r.image.empty()) m_currentMat = r.image.clone();
     }
     if (m_oneClickBlackEdgeCheck && m_oneClickBlackEdgeCheck->isChecked()) {
         const process::BlackEdgeResult r = process::BlackEdge::removeBlackEdge(m_currentMat, process::BlackEdgeOptions());
-        if (r.ok) m_currentMat = r.image;
+        if (r.ok && !r.image.empty()) m_currentMat = r.image.clone();
     }
     if (m_oneClickDenoiseCheck && m_oneClickDenoiseCheck->isChecked()) {
         const process::DenoiseResult r = process::Denoise::removeSpots(m_currentMat, process::DenoiseOptions());
-        if (r.ok) m_currentMat = r.image;
+        if (r.ok && !r.image.empty()) m_currentMat = r.image.clone();
     }
     if (m_oneClickEnhanceCheck && m_oneClickEnhanceCheck->isChecked()) {
         const process::EnhanceResult r = process::Enhance::enhanceText(m_currentMat, currentEnhanceOptions());
-        if (r.ok) m_currentMat = r.image;
+        if (r.ok && !r.image.empty()) m_currentMat = r.image.clone();
     }
     showMatOnPreview(m_currentMat);
 }
@@ -618,8 +619,8 @@ void MainWindow::onProcessErrPage()
     process::ErrPageOptions opt;
     opt.enablePaddleOcr = ui::AppSettings::load().enablePaddleOcr;
     const process::ErrPageResult r = process::ErrPage::process(m_currentMat, m_currentImagePath, opt);
-    if (r.ok) {
-        m_currentMat = r.image;
+    if (r.ok && !r.image.empty()) {
+        m_currentMat = r.image.clone();
         showMatOnPreview(m_currentMat);
     }
 }
@@ -646,11 +647,17 @@ void MainWindow::onOpenSettings()
 void MainWindow::onOpenBackupManager() {}
 void MainWindow::onOpenAnnotator() {}
 void MainWindow::onBatchPreview(const cv::Mat &mat, bool before) {}
+
 void MainWindow::onPendingCenter()
 {
     analyze::PendingDialog dlg(this);
     dlg.exec();
-    applyAcceptedYellowBlobs();
+    
+    // ★ 核心修复：弹窗关闭后，直接重新加载当前图片，强制刷新预览
+    if (!m_currentImagePath.isEmpty() && QFile::exists(m_currentImagePath)) {
+        showImageOnPreview(m_currentImagePath);
+        statusBar()->showMessage(QString::fromUtf8("待确认中心处理完毕，预览已更新。"));
+    }
 }
 void MainWindow::applyAcceptedYellowBlobs() {}
 
@@ -664,10 +671,15 @@ void MainWindow::showMatOnPreview(const cv::Mat &mat)
 
     QImage qimg(rgb.data, rgb.cols, rgb.rows, static_cast<int>(rgb.step), QImage::Format_RGB888);
     QPixmap pix = QPixmap::fromImage(qimg.copy());
+    
     m_previewScene->clear();
     m_previewScene->addPixmap(pix);
     m_previewScene->setSceneRect(pix.rect());
     m_hasImage = true;
+    
+    // ★ 强制刷新界面，解决预览不更新问题
+    m_previewView->viewport()->update();
+    
     QTimer::singleShot(0, this, [this]() { fitPreviewToWindow(); });
 }
 
