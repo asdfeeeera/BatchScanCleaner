@@ -27,35 +27,6 @@ double calcPaperGray(const cv::Mat &gray)
     return static_cast<double>(pixels[idx]);
 }
 
-// 扫描函数：返回应该被涂白的深度
-int scanLineForEdge(const uchar *grayData, const uchar *colorData, int length, double darkThr, int maxGap, int maxScan)
-{
-    int cutLength = 0;
-    int whiteRun = 0;
-    int darkCount = 0;
-
-    for (int i = 0; i < length && i < maxScan; ++i) {
-        // 遇到彩色印章，立刻停止，保护印章
-        if (colorData && colorData[i] == 255) break;
-
-        if (grayData[i] < darkThr) {
-            cutLength = i + 1;
-            whiteRun = 0;
-            darkCount++;
-        } else {
-            whiteRun++;
-            // 遇到连续白点，说明黑边断了，立刻停止
-            if (whiteRun > maxGap) break;
-        }
-    }
-
-    // 如果这段区域的深度超过10个像素，且黑点占比大于5%，就判定为黑边
-    if (cutLength > 10 && (static_cast<double>(darkCount) / cutLength) > 0.05) {
-        return cutLength;
-    }
-    return 0;
-}
-
 } // namespace
 
 BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOptions &options)
@@ -71,7 +42,7 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
     else if (src.channels() == 4) cv::cvtColor(src, gray, cv::COLOR_BGRA2GRAY);
     else gray = src.clone();
 
-    // 印章保护掩膜
+    // 1. 提取红色印章，绝对保护
     cv::Mat colorMask;
     if (src.channels() >= 3) {
         cv::Mat bgr;
@@ -83,86 +54,75 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
         std::vector<cv::Mat> hsvCh;
         cv::split(hsv, hsvCh);
         cv::inRange(hsvCh[1], 30, 255, colorMask);
-        
-        cv::Mat dilateKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(7, 7));
+        cv::Mat dilateKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
         cv::dilate(colorMask, colorMask, dilateKernel);
     }
 
     const double paperGray = calcPaperGray(gray);
     result.paperGray = paperGray;
 
-    // 比较宽容的黑度阈值
-    double darkThr = std::min(paperGray * options.darkRatio, 140.0);
+    // 黑度阈值，只要比纸张暗很多就算
+    double darkThr = std::min(paperGray * options.darkRatio, 130.0);
     if (darkThr < 40.0) darkThr = 40.0;
     result.darkThreshold = darkThr;
 
-    const int maxScanY = static_cast<int>(H * 0.20);
-    const int maxScanX = static_cast<int>(W * 0.20);
-    const int maxGap = 15; // 容忍 15 像素的反光断点
+    // 2. 二值化：把偏黑的地方全部抓出来
+    cv::Mat binary;
+    cv::threshold(gray, binary, darkThr, 255, cv::THRESH_BINARY_INV);
 
-    cv::Mat dst = src.clone();
-    int paintedCount = 0;
+    // 3. 开运算：去掉细小的文字干扰，只留大块黑边
+    cv::Mat openKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
+    cv::morphologyEx(binary, binary, cv::MORPH_OPEN, openKernel);
 
-    auto setWhite = [&](int y, int x) {
-        if (y < 0 || y >= dst.rows || x < 0 || x >= dst.cols) return;
-        if (!colorMask.empty() && colorMask.at<uchar>(y, x) > 0) return; // 保护印章
+    // 4. 闭运算：把黑边里的反光、白点连起来，变成一整块
+    cv::Mat closeKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(15, 15));
+    cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, closeKernel);
+
+    // 5. 寻找轮廓
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+    cv::Mat mask = cv::Mat::zeros(gray.size(), CV_8UC1);
+
+    for (const auto &cnt : contours) {
+        cv::Rect r = cv::boundingRect(cnt);
         
-        if (dst.channels() == 3) dst.at<cv::Vec3b>(y, x) = cv::Vec3b(255, 255, 255);
-        else if (dst.channels() == 4) dst.at<cv::Vec4b>(y, x) = cv::Vec4b(255, 255, 255, 255);
-        else dst.at<uchar>(y, x) = 255;
-        paintedCount++;
-    };
+        // 判定是否贴边（允许 15 像素误差）
+        bool touchesEdge = (r.x <= 15) || (r.y <= 15) || 
+                           (r.x + r.width >= W - 15) || (r.y + r.height >= H - 15);
+        
+        // 判定面积是否足够大（至少 0.1% 的图幅，过滤掉噪点）
+        double area = cv::contourArea(cnt);
+        bool isBigEnough = (area > W * H * 0.001);
 
-    // 1. 涂白上边缘
-    for (int x = 0; x < W; ++x) {
-        std::vector<uchar> colG(H), colC(H);
-        for (int y = 0; y < H; ++y) {
-            colG[y] = gray.at<uchar>(y, x);
-            colC[y] = colorMask.empty() ? 0 : colorMask.at<uchar>(y, x);
+        // 排除全图（如果是大面积黑图）
+        bool isWholePage = (r.width >= W - 10 && r.height >= H - 10);
+
+        if (touchesEdge && isBigEnough && !isWholePage) {
+            cv::drawContours(mask, std::vector<std::vector<cv::Point>>{cnt}, -1, cv::Scalar(255), cv::FILLED);
         }
-        int cut = scanLineForEdge(colG.data(), colC.data(), H, darkThr, maxGap, maxScanY);
-        for (int y = 0; y < cut; ++y) setWhite(y, x);
     }
 
-    // 2. 涂白下边缘
-    for (int x = 0; x < W; ++x) {
-        std::vector<uchar> colG(H), colC(H);
-        for (int y = 0; y < H; ++y) {
-            colG[y] = gray.at<uchar>(H - 1 - y, x);
-            colC[y] = colorMask.empty() ? 0 : colorMask.at<uchar>(H - 1 - y, x);
-        }
-        int cut = scanLineForEdge(colG.data(), colC.data(), H, darkThr, maxGap, maxScanY);
-        for (int y = 0; y < cut; ++y) setWhite(H - 1 - y, x);
+    // 6. 膨胀掩膜（保证切干净发灰的过渡带）
+    cv::Mat dilateKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
+    cv::dilate(mask, mask, dilateKernel);
+
+    // 7. 扣除印章区域
+    if (!colorMask.empty()) {
+        cv::bitwise_and(mask, ~colorMask, mask);
     }
 
-    // 3. 涂白左边缘
-    for (int y = 0; y < H; ++y) {
-        std::vector<uchar> rowG(W), rowC(W);
-        const uchar *gPtr = gray.ptr<uchar>(y);
-        const uchar *cPtr = colorMask.empty() ? nullptr : colorMask.ptr<uchar>(y);
-        for (int x = 0; x < W; ++x) {
-            rowG[x] = gPtr[x];
-            rowC[x] = cPtr ? cPtr[x] : 0;
-        }
-        int cut = scanLineForEdge(rowG.data(), rowC.data(), W, darkThr, maxGap, maxScanX);
-        for (int x = 0; x < cut; ++x) setWhite(y, x);
-    }
+    // 8. 将最终的黑边区域涂成纯白（绝不缩小画布）
+    cv::Mat dst = src.clone();
+    cv::Scalar white;
+    if (src.channels() == 4) white = cv::Scalar(255, 255, 255, 255);
+    else if (src.channels() == 3) white = cv::Scalar(255, 255, 255);
+    else white = cv::Scalar(255);
 
-    // 4. 涂白右边缘
-    for (int y = 0; y < H; ++y) {
-        std::vector<uchar> rowG(W), rowC(W);
-        const uchar *gPtr = gray.ptr<uchar>(y);
-        const uchar *cPtr = colorMask.empty() ? nullptr : colorMask.ptr<uchar>(y);
-        for (int x = 0; x < W; ++x) {
-            rowG[x] = gPtr[W - 1 - x];
-            rowC[x] = cPtr ? cPtr[W - 1 - x] : 0;
-        }
-        int cut = scanLineForEdge(rowG.data(), rowC.data(), W, darkThr, maxGap, maxScanX);
-        for (int x = 0; x < cut; ++x) setWhite(y, W - 1 - x);
-    }
+    dst.setTo(white, mask);
 
     result.image = dst;
-    result.filledPixels = paintedCount;
+    result.filledPixels = cv::countNonZero(mask);
     result.ok = true;
     return result;
 }
