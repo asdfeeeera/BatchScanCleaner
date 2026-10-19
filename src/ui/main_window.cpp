@@ -349,7 +349,7 @@ void MainWindow::onOneClickProcess()
 {
     if (!m_hasImage || m_currentMat.empty()) return;
     
-    // ★ 终极修复：恢复正确顺序，必须先黑边，再扶正！
+    // ★ 彻底恢复物理顺序：先去黑边，后扶正。
     if (m_oneClickBlackEdgeCheck && m_oneClickBlackEdgeCheck->isChecked()) {
         const process::BlackEdgeResult r = process::BlackEdge::removeBlackEdge(m_currentMat, process::BlackEdgeOptions());
         if (r.ok && !r.image.empty()) m_currentMat = r.image.clone();
@@ -476,11 +476,9 @@ void MainWindow::showMatOnPreview(const cv::Mat &mat)
 void MainWindow::showImageOnPreview(const QString &path)
 {
     cv::Mat mat; image::ImageMeta meta;
-    const QString outPath = getOutputPathForSrc(path);
-    QString loadPath = path;
-    if (QFile::exists(outPath)) loadPath = outPath;
     
-    if (image::ImageIO::read(loadPath, mat, meta)) {
+    // ★ 核心修复：绝对读取原图，防止你看到的是旧 output 文件夹里的旧图！
+    if (image::ImageIO::read(path, mat, meta)) {
         m_currentMat = mat; m_currentImagePath = path; m_enhancePreviewBase = mat.clone(); showMatOnPreview(m_currentMat);
     }
 }
