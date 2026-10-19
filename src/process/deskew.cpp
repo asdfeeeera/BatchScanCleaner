@@ -71,21 +71,16 @@ double Deskew::detectAngle(const cv::Mat &src)
         smallGray = gray;
     }
 
-    // 使用自适应二值化，强化文字，弱化照片背景
     cv::Mat binary;
     cv::adaptiveThreshold(smallGray, binary, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY_INV, 31, 15);
 
-    // 高斯模糊去掉微小噪点，使投影法更精准
     cv::GaussianBlur(binary, binary, cv::Size(3, 3), 0);
 
-    // 粗搜索 [-10, 10] 度，步长 0.2
     auto coarse = searchAngleByProjection(binary, -10.0, 10.0, 0.2);
     const double coarseAngle = coarse.first;
 
-    // 细搜索，步长 0.05
     auto fine = searchAngleByProjection(binary, coarseAngle - 0.5, coarseAngle + 0.5, 0.05);
     
-    // 如果粗搜索很自信，直接返回粗搜索的结果，否则用细搜索
     if (coarse.second) return coarseAngle;
     
     return fine.second ? fine.first : coarseAngle;
@@ -114,29 +109,7 @@ cv::Mat Deskew::rotateKeepAll(const cv::Mat &src, double angle)
     cv::Mat dst;
     cv::warpAffine(src, dst, rot, cv::Size(newW, newH), cv::INTER_CUBIC, cv::BORDER_CONSTANT, cv::Scalar::all(255));
 
-    // 旋转后，去除四周多余的纯白边
-    cv::Mat gray;
-    if (dst.channels() == 3) cv::cvtColor(dst, gray, cv::COLOR_BGR2GRAY);
-    else if (dst.channels() == 4) cv::cvtColor(dst, gray, cv::COLOR_BGRA2GRAY);
-    else gray = dst;
-
-    cv::Mat mask;
-    cv::threshold(gray, mask, 245, 255, cv::THRESH_BINARY_INV);
-    std::vector<cv::Point> points;
-    cv::findNonZero(mask, points);
-    
-    if (!points.empty()) {
-        cv::Rect rect = cv::boundingRect(points);
-        int pad = 2;
-        rect.x = std::max(0, rect.x - pad);
-        rect.y = std::max(0, rect.y - pad);
-        rect.width = std::min(dst.cols - rect.x, rect.width + 2 * pad);
-        rect.height = std::min(dst.rows - rect.y, rect.height + 2 * pad);
-        
-        if (rect.width > 50 && rect.height > 50) {
-            dst = dst(rect).clone();
-        }
-    }
+    // ★ 彻底删除了裁剪白边的逻辑，保证原图内容 100% 不被切掉！
 
     return dst;
 }
@@ -148,7 +121,6 @@ DeskewResult Deskew::autoDeskew(const cv::Mat &src)
 
     const double angle = detectAngle(src);
 
-    // 阈值降低到 0.2 度，只要有一点点歪都转
     if (std::abs(angle) < 0.2) {
         result.image = src.clone();
         result.angle = 0.0;

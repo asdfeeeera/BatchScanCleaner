@@ -8,7 +8,6 @@ namespace process {
 
 namespace {
 
-// 采样估算纸张灰度（放宽极暗的干扰）
 double calcPaperGray(const cv::Mat &gray)
 {
     std::vector<uchar> pixels;
@@ -47,15 +46,14 @@ int scanLineForEdge(const uchar *grayData, const uchar *colorData, int length, d
             darkCount++;
         } else {
             whiteRun++;
-            // 如果连续白点超过 maxGap（比如遇到了纸张真实的白色区域），说明黑边结束了
+            // ★ maxGap 改为了 5。遇到文字（间距一定超过 5 像素）立刻停止！
             if (whiteRun > maxGap) {
                 break;
             }
         }
     }
 
-    // 判定条件：这段区域的深度必须有一定厚度，且黑点数量不能太少（过滤单像素噪点）
-    // 同时，黑点在这个区域内的占比不能太低，防止误伤边缘的文字
+    // 判定条件：这段区域的深度必须有一定厚度，且黑点数量不能太少
     if (cutLength > 5 && darkCount > 5 && (static_cast<double>(darkCount) / cutLength) > 0.1) {
         return cutLength;
     }
@@ -77,7 +75,6 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
     else if (src.channels() == 4) cv::cvtColor(src, gray, cv::COLOR_BGRA2GRAY);
     else gray = src.clone();
 
-    // 提取高饱和度区域（彩色印章），用于绝对保护
     cv::Mat colorMask;
     if (src.channels() >= 3) {
         cv::Mat bgr;
@@ -90,7 +87,6 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
         cv::split(hsv, hsvCh);
         cv::inRange(hsvCh[1], 30, 255, colorMask);
         
-        // 稍微膨胀一下印章保护区域
         cv::Mat dilateKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
         cv::dilate(colorMask, colorMask, dilateKernel);
     }
@@ -98,22 +94,21 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
     const double paperGray = calcPaperGray(gray);
     result.paperGray = paperGray;
 
-    // 黑度阈值：稍微放宽到 120，为了抓住发灰的扫描黑边
-    double darkThr = std::min(paperGray * options.darkRatio, 120.0);
+    // 稍微放宽黑度，防止偏灰的黑边被漏掉
+    double darkThr = std::min(paperGray * options.darkRatio, 130.0);
     if (darkThr < 40.0) darkThr = 40.0;
     result.darkThreshold = darkThr;
 
     const int maxScanY = static_cast<int>(H * 0.20);
     const int maxScanX = static_cast<int>(W * 0.20);
-    const int maxGap = 30; // 允许黑边中有 30 像素的断点（比如反光）
+    const int maxGap = 5; // ★ 断点容忍度从 30 骤降到 5，绝不扫进正文
 
     cv::Mat dst = src.clone();
     int paintedCount = 0;
 
-    // 精确涂白函数，带印章保护
     auto setWhite = [&](int y, int x) {
         if (y < 0 || y >= dst.rows || x < 0 || x >= dst.cols) return;
-        if (!colorMask.empty() && colorMask.at<uchar>(y, x) > 0) return; // 避开印章
+        if (!colorMask.empty() && colorMask.at<uchar>(y, x) > 0) return;
         
         if (dst.channels() == 3) dst.at<cv::Vec3b>(y, x) = cv::Vec3b(255, 255, 255);
         else if (dst.channels() == 4) dst.at<cv::Vec4b>(y, x) = cv::Vec4b(255, 255, 255, 255);
@@ -121,7 +116,7 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
         paintedCount++;
     };
 
-    // 1. 逐列扫描上边缘
+    // 1. 扫描上边缘
     for (int x = 0; x < W; ++x) {
         std::vector<uchar> colG(H), colC(H);
         for (int y = 0; y < H; ++y) {
@@ -132,7 +127,7 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
         for (int y = 0; y < cut; ++y) setWhite(y, x);
     }
 
-    // 2. 逐列扫描下边缘
+    // 2. 扫描下边缘
     for (int x = 0; x < W; ++x) {
         std::vector<uchar> colG(H), colC(H);
         for (int y = 0; y < H; ++y) {
@@ -143,7 +138,7 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
         for (int y = 0; y < cut; ++y) setWhite(H - 1 - y, x);
     }
 
-    // 3. 逐行扫描左边缘
+    // 3. 扫描左边缘
     for (int y = 0; y < H; ++y) {
         std::vector<uchar> rowG(W), rowC(W);
         const uchar *gPtr = gray.ptr<uchar>(y);
@@ -156,7 +151,7 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
         for (int x = 0; x < cut; ++x) setWhite(y, x);
     }
 
-    // 4. 逐行扫描右边缘
+    // 4. 扫描右边缘
     for (int y = 0; y < H; ++y) {
         std::vector<uchar> rowG(W), rowC(W);
         const uchar *gPtr = gray.ptr<uchar>(y);
