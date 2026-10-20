@@ -1,7 +1,10 @@
 ﻿#include "blackedge.h"
 #include <opencv2/imgproc.hpp>
-#include <QFileInfo>
+#include <opencv2/imgcodecs.hpp> // ★ 修复 imwrite 缺失
+#include <QFileInfo>             // ★ 修复路径问题
 #include <QDir>
+#include <QDateTime>             // ★ 修复 currentDateTime 缺失
+#include <QDebug>                // ★ 修复 QDebug 缺失
 #include <vector>
 #include <algorithm>
 
@@ -46,7 +49,7 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
         else cv::bitwise_or(colorMask, colorMask2, colorMask);
     }
 
-    // ★ 印章膨胀保护 (为了看清楚，先用 15 像素，如果图上印章绿圈不够大，我们再调)
+    // ★ 印章膨胀保护 (先用 25 像素)
     cv::Mat colorDilated;
     if (!colorMask.empty()) {
         cv::dilate(colorMask, colorDilated, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(25, 25)));
@@ -95,24 +98,22 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
     // 绿色 = 被判定为印章并保护起来的区域
     // 剩余 = 原图（文字、表格等）
     // ============================================================
-    cv::Mat debugImg = src.clone();
-    if (debugImg.channels() == 1) cv::cvtColor(debugImg, debugImg, cv::COLOR_GRAY2BGR);
-
-    // 画黑边（红色）
-    if (src.channels() == 3) debugImg.setTo(cv::Scalar(0, 0, 255), finalMask);
-    else debugImg.setTo(cv::Scalar(0, 0, 255, 255), finalMask);
-
-    // 画印章保护（绿色）
-    if (src.channels() == 3) debugImg.setTo(cv::Scalar(0, 255, 0), colorDilated);
-    else debugImg.setTo(cv::Scalar(0, 255, 0, 255), colorDilated);
-
-    // 保存 Debug 图到临时目录
     try {
+        cv::Mat debugImg = src.clone();
+        if (debugImg.channels() == 1) cv::cvtColor(debugImg, debugImg, cv::COLOR_GRAY2BGR);
+
+        // 画黑边（红色）
+        if (src.channels() == 3) debugImg.setTo(cv::Scalar(0, 0, 255), finalMask);
+        else debugImg.setTo(cv::Scalar(0, 0, 255, 255), finalMask);
+
+        // 画印章保护（绿色）
+        if (src.channels() == 3) debugImg.setTo(cv::Scalar(0, 255, 0), colorDilated);
+        else debugImg.setTo(cv::Scalar(0, 255, 0, 255), colorDilated);
+
         QString debugPath = QDir::currentPath() + "/debug_mask_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".jpg";
-        cv::imwrite(debugPath.toStdString(), debugImg);
+        cv::imwrite(debugPath.toLocal8Bit().toStdString(), debugImg);
         qDebug() << "【调试信息】已生成黑边/印章Mask调试图:" << debugPath;
     } catch (...) {}
-
     // ============================================================
 
     // 7. 执行纯涂白
