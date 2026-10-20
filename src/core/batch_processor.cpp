@@ -170,17 +170,21 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
         if (step.type == StepType::Deskew) doDeskew = true;
     }
 
-    // ★ 霸王条款：强制先去黑边
+    // ★ 2. 霸王条款：强制先去黑边，并传入印章掩膜
     if (doBlackEdge) {
-        runBlackEdge(img);
+        process::BlackEdgeOptions beOpt = m_options.blackEdgeOpt;
+        beOpt.protectMask = stampMask; // ★ 注入印章掩膜！彻底保护
+        process::BlackEdgeResult r = process::BlackEdge::removeBlackEdge(img, beOpt);
+        if (r.ok && !r.image.empty()) img = r.image;
     }
     
-    // ★ 霸王条款：强制后扶正
+    // ★ 3. 霸王条款：强制后扶正
     if (doDeskew) {
-        runDeskew(img);
+        process::DeskewResult r = process::Deskew::autoDeskew(img);
+        if (r.ok && !r.image.empty()) img = r.image;
     }
 
-    // 遍历其他剩余步骤
+    // 4. 遍历其他剩余步骤
     for (const StepItem &step : m_options.steps) {
         if (!step.enabled) continue;
         if (step.type == StepType::BlackEdge) continue; 

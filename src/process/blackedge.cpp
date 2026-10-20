@@ -18,9 +18,13 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
     else if (src.channels() == 4) cv::cvtColor(src, gray, cv::COLOR_BGRA2GRAY);
     else gray = src.clone();
 
-    // 1. 提取极高饱和度的彩色掩膜（不仅抓红色，蓝色签名等也抓），做超大膨胀
+    // 1. 融合保护掩膜
     cv::Mat colorMask;
-    if (src.channels() >= 3) {
+    if (!options.protectMask.empty()) {
+        // 优先使用批处理或外部传入的印章掩膜
+        colorMask = options.protectMask.clone();
+    } else if (src.channels() >= 3) {
+        // 没传的话，自己用红色检测找
         cv::Mat bgr;
         if (src.channels() == 4) cv::cvtColor(src, bgr, cv::COLOR_BGRA2BGR);
         else bgr = src;
@@ -30,70 +34,129 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
         std::vector<cv::Mat> hsvCh;
         cv::split(hsv, hsvCh);
         
-        // ★ 饱和度 > 20 就算彩色，极其宽松！
-        cv::inRange(hsvCh[1], 20, 255, colorMask);
+        cv::Mat mask1, mask2;
+        cv::inRange(hsvCh[0], 0, 15, mask1);
+        cv::inRange(hsvCh[0], 150, 180, mask2);
+        cv::bitwise_or(mask1, mask2, colorMask);
         
-        // 亮度 > 20，防止把黑色当彩色
-        cv::Mat valMask;
-        cv::inRange(hsvCh[2], 20, 255, valMask);
-        cv::bitwise_and(colorMask, valMask, colorMask);
-        
-        // ★ 超级膨胀，把印章周围 25 个像素全部保护起来，绝不切到印章一丝一毫！
-        cv::Mat dilateKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(25, 25));
-        cv::dilate(colorMask, colorMask, dilateKernel);
+        cv::Mat satMask;
+        cv::inRange(hsvCh[1], 40, 255, satMask);
+        cv::bitwise_and(colorMask, satMask, colorMask);
     }
 
-    // 2. 自适应二值化找暗色区域（阈值定在 150，把灰影也抓出来）
-    cv::Mat binary;
-    cv::threshold(gray, binary, 150, 255, cv::THRESH_BINARY_INV);
-
-    // 3. 超强闭运算（30x30），把黑边里的反光、断点全部连成一大整块
-    cv::Mat closeKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(30, 30));
-    cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, closeKernel);
-
-    // 4. 找轮廓
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-
-    cv::Mat mask = cv::Mat::zeros(gray.size(), CV_8UC1);
-    
-    for (const auto& cnt : contours) {
-        cv::Rect r = cv::boundingRect(cnt);
-        
-        // 判定：必须在边缘 30 像素内，并且面积要够大
-        bool touchesEdge = (r.x <= 30) || (r.y <= 30) || 
-                           (r.x + r.width >= W - 30) || (r.y + r.height >= H - 30);
-        
-        bool isBigEnough = (r.width > 40 || r.height > 40);
-
-        // 排除整页是黑图的情况
-        bool isWholePage = (r.width >= W - 10 && r.height >= H - 10);
-
-        if (touchesEdge && isBigEnough && !isWholePage) {
-            cv::drawContours(mask, std::vector<std::vector<cv::Point>>{cnt}, -1, cv::Scalar(255), cv::FILLED);
-        }
-    }
-
-    // 5. 膨胀掩膜，确保边缘灰色过渡带全被涂白
-    cv::Mat dilateKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(10, 10));
-    cv::dilate(mask, mask, dilateKernel);
-
-    // 6. 核心：强制扣除彩色保护区域
+    // ★ 保护掩膜必须膨胀！印章边缘也要保
     if (!colorMask.empty()) {
-        cv::bitwise_and(mask, ~colorMask, mask);
+        cv::dilate(colorMask, colorMask, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(15, 15)));
     }
 
-    // 7. 纯涂白（绝不改变画布）
     cv::Mat dst = src.clone();
     cv::Scalar white;
     if (src.channels() == 4) white = cv::Scalar(255, 255, 255, 255);
     else if (src.channels() == 3) white = cv::Scalar(255, 255, 255);
     else white = cv::Scalar(255);
 
-    dst.setTo(white, mask);
+    int paintedCount = 0;
+    auto setWhite = [&](int y, int x) {
+        if (y < 0 || y >= dst.rows || x < 0 || x >= dst.cols) return;
+        if (!colorMask.empty() && colorMask.at<uchar>(y, x) > 0) return; // 绝对不碰保护掩膜
+        
+        if (dst.channels() == 3) dst.at<cv::Vec3b>(y, x) = cv::Vec3b(255, 255, 255);
+        else if (dst.channels() == 4) dst.at<cv::Vec4b>(y, x) = cv::Vec4b(255, 255, 255, 255);
+        else dst.at<uchar>(y, x) = 255;
+        paintedCount++;
+    };
+
+    const double darkThr = 150.0; // 容忍发灰的黑边
+    const int maxScanX = W * 0.30; // 最大扫描深度
+    const int maxScanY = H * 0.30;
+    const int maxGap = 40; // 允许 40 像素的反光断点
+
+    // 1. 扫描上边缘
+    for (int x = 0; x < W; ++x) {
+        int cut = 0;
+        int whiteRun = 0;
+        int darkRun = 0;
+        for (int y = 0; y < maxScanY; ++y) {
+            if (!colorMask.empty() && colorMask.at<uchar>(y, x) > 0) break; // 遇印章直接停
+            if (gray.at<uchar>(y, x) < darkThr) {
+                cut = y + 1;
+                whiteRun = 0;
+                darkRun++;
+            } else {
+                whiteRun++;
+                if (whiteRun > maxGap) break;
+            }
+        }
+        if (darkRun > 10) { // 确认有连续黑边才涂白
+            for (int y = 0; y < cut; ++y) setWhite(y, x);
+        }
+    }
+
+    // 2. 扫描下边缘
+    for (int x = 0; x < W; ++x) {
+        int cut = 0;
+        int whiteRun = 0;
+        int darkRun = 0;
+        for (int y = 0; y < maxScanY; ++y) {
+            if (!colorMask.empty() && colorMask.at<uchar>(H - 1 - y, x) > 0) break;
+            if (gray.at<uchar>(H - 1 - y, x) < darkThr) {
+                cut = y + 1;
+                whiteRun = 0;
+                darkRun++;
+            } else {
+                whiteRun++;
+                if (whiteRun > maxGap) break;
+            }
+        }
+        if (darkRun > 10) {
+            for (int y = 0; y < cut; ++y) setWhite(H - 1 - y, x);
+        }
+    }
+
+    // 3. 扫描左边缘
+    for (int y = 0; y < H; ++y) {
+        int cut = 0;
+        int whiteRun = 0;
+        int darkRun = 0;
+        for (int x = 0; x < maxScanX; ++x) {
+            if (!colorMask.empty() && colorMask.at<uchar>(y, x) > 0) break;
+            if (gray.at<uchar>(y, x) < darkThr) {
+                cut = x + 1;
+                whiteRun = 0;
+                darkRun++;
+            } else {
+                whiteRun++;
+                if (whiteRun > maxGap) break;
+            }
+        }
+        if (darkRun > 10) {
+            for (int x = 0; x < cut; ++x) setWhite(y, x);
+        }
+    }
+
+    // 4. 扫描右边缘
+    for (int y = 0; y < H; ++y) {
+        int cut = 0;
+        int whiteRun = 0;
+        int darkRun = 0;
+        for (int x = 0; x < maxScanX; ++x) {
+            if (!colorMask.empty() && colorMask.at<uchar>(y, W - 1 - x) > 0) break;
+            if (gray.at<uchar>(y, W - 1 - x) < darkThr) {
+                cut = x + 1;
+                whiteRun = 0;
+                darkRun++;
+            } else {
+                whiteRun++;
+                if (whiteRun > maxGap) break;
+            }
+        }
+        if (darkRun > 10) {
+            for (int x = 0; x < cut; ++x) setWhite(y, W - 1 - x);
+        }
+    }
 
     result.image = dst;
-    result.filledPixels = cv::countNonZero(mask);
+    result.filledPixels = paintedCount;
     result.ok = true;
     return result;
 }
