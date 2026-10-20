@@ -30,7 +30,7 @@ struct BlackEdgeOptions
     int expandPixels = 5;
     bool fillWhite = true;
 
-    // ★ 新增：外部传入的保护掩膜（比如印章保护）
+    // ★ 接收外部传入的印章保护掩膜
     cv::Mat protectMask;
 };
 
@@ -42,11 +42,6 @@ public:
 
 private:
     static double estimatePaperGray(const cv::Mat &gray, const BlackEdgeOptions &options);
-    static int scanTop(const cv::Mat &gray, double darkThreshold, const BlackEdgeOptions &options);
-    static int scanBottom(const cv::Mat &gray, double darkThreshold, const BlackEdgeOptions &options);
-    static int scanLeft(const cv::Mat &gray, double darkThreshold, const BlackEdgeOptions &options);
-    static int scanRight(const cv::Mat &gray, double darkThreshold, const BlackEdgeOptions &options);
-    static void smoothMask(cv::Mat &mask, int kernelSize);
 };
 
 } // namespace process

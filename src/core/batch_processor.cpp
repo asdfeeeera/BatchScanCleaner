@@ -163,30 +163,28 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
     bool doBlackEdge = false;
     bool doDeskew = false;
 
-    // 1. 先检查是否勾选了这些步骤
+    // 检查勾选
     for (const StepItem &step : m_options.steps) {
         if (!step.enabled) continue;
         if (step.type == StepType::BlackEdge) doBlackEdge = true;
         if (step.type == StepType::Deskew) doDeskew = true;
     }
 
-    // ★ 2. 霸王条款：强制先去黑边，并强制传入印章保护掩膜
+    // ★ 强制先去黑边，后扶正
     if (doBlackEdge) {
         process::BlackEdgeOptions beOpt = m_options.blackEdgeOpt;
         if (!stampMask.empty()) {
-            beOpt.protectMask = stampMask; 
+            beOpt.protectMask = stampMask; // 注入印章保护膜
         }
         process::BlackEdgeResult r = process::BlackEdge::removeBlackEdge(img, beOpt);
         if (r.ok && !r.image.empty()) img = r.image;
     }
-    
-    // ★ 3. 霸王条款：强制后扶正
     if (doDeskew) {
         process::DeskewResult r = process::Deskew::autoDeskew(img);
         if (r.ok && !r.image.empty()) img = r.image;
     }
 
-    // 4. 遍历其他剩余步骤
+    // 处理其他步骤
     for (const StepItem &step : m_options.steps) {
         if (!step.enabled) continue;
         if (step.type == StepType::BlackEdge) continue; 
@@ -275,7 +273,6 @@ bool BatchProcessor::runErrPage(cv::Mat &img, const QString &sourcePath)
 
     if (r.ok && !r.image.empty()) {
         const QFileInfo fi(sourcePath);
-        
         for (const auto &it : r.items) {
             analyze::PendingItem p;
             p.type = analyze::PendingType::WrongPageNumber;
@@ -285,17 +282,11 @@ bool BatchProcessor::runErrPage(cv::Mat &img, const QString &sourcePath)
             p.boundingBox = it.boundingBox;
             p.confidence = it.confidence;
             p.reason = QString::fromUtf8("检测到疑似错误页码（需人工确认）");
-            p.detail = QString::fromUtf8("识别结果：%1，正确页码：%2")
-                           .arg(it.recognizedNumber).arg(r.correctPage);
-
+            p.detail = QString::fromUtf8("识别结果：%1，正确页码：%2").arg(it.recognizedNumber).arg(r.correctPage);
             cv::Rect safe = it.boundingBox & cv::Rect(0, 0, r.image.cols, r.image.rows);
-            if (safe.width > 0 && safe.height > 0) {
-                p.thumbnail = r.image(safe).clone();
-            }
-
+            if (safe.width > 0 && safe.height > 0) p.thumbnail = r.image(safe).clone();
             analyze::PendingCenter::instance().addItem(p);
         }
-
         img = r.image;
         return true;
     }
@@ -306,34 +297,23 @@ QString BatchProcessor::makeOutputPath(const QString &inputPath) const
 {
     const QFileInfo fi(inputPath);
     QString baseName = fi.completeBaseName() + m_options.outputSuffix + "." + fi.suffix();
-    
     QString outDir = m_options.outputDir;
-    
     if (!m_options.inputRootDir.isEmpty()) {
         QFileInfo rootInfo(m_options.inputRootDir);
         QString rootName = rootInfo.fileName();
-        if (!rootName.isEmpty()) {
-            outDir = QDir(outDir).filePath(rootName);
-        }
+        if (!rootName.isEmpty()) outDir = QDir(outDir).filePath(rootName);
     }
-    
     QString subDir = relativeSubDir(inputPath);
-    if (!subDir.isEmpty()) {
-        outDir = QDir(outDir).filePath(subDir);
-    }
-    
+    if (!subDir.isEmpty()) outDir = QDir(outDir).filePath(subDir);
     return QDir(outDir).filePath(baseName);
 }
 
 QString BatchProcessor::relativeSubDir(const QString &inputPath) const
 {
     if (m_options.inputRootDir.isEmpty()) return QString();
-    
     QDir rootDir(m_options.inputRootDir);
     QString relPath = rootDir.relativeFilePath(inputPath);
-    
     if (relPath.startsWith("..")) return QString();
-    
     QFileInfo fi(relPath);
     return fi.path() == "." ? QString() : fi.path();
 }
@@ -341,10 +321,8 @@ QString BatchProcessor::relativeSubDir(const QString &inputPath) const
 cv::Mat BatchProcessor::makePreview(const cv::Mat &img, int maxSize) const
 {
     if (img.empty()) return cv::Mat();
-    int w = img.cols;
-    int h = img.rows;
+    int w = img.cols; int h = img.rows;
     if (w <= maxSize && h <= maxSize) return img.clone();
-
     double scale = static_cast<double>(maxSize) / std::max(w, h);
     cv::Mat res;
     cv::resize(img, res, cv::Size(), scale, scale, cv::INTER_AREA);
@@ -355,31 +333,22 @@ QString BatchProcessor::writeReport(bool cancelled) const
 {
     QString dir = m_options.reportDir;
     if (dir.isEmpty()) dir = m_options.outputDir;
-    
     QDir().mkpath(dir);
-    QString path = QDir(dir).filePath(
-        QStringLiteral("batch_report_%1.txt")
-            .arg(QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss")));
-
+    QString path = QDir(dir).filePath(QStringLiteral("batch_report_%1.txt").arg(QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss")));
     QFile f(path);
     if (f.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QTextStream ts(&f);
-        ts.setCodec("UTF-8");
+        QTextStream ts(&f); ts.setCodec("UTF-8");
         ts << "批量扫描图片净化增强软件 — 批处理报告\n";
         ts << "====================================\n";
         ts << QString("开始时间：%1\n").arg(QDateTime::fromMSecsSinceEpoch(m_startMs).toString("yyyy-MM-dd HH:mm:ss"));
         ts << QString("结束时间：%1\n").arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"));
         ts << QString("结束状态：%1\n\n").arg(cancelled ? "已取消" : "全部完成");
-
         ts << "【结果】\n";
         ts << QString("成功：%1\n").arg(m_succeeded);
         ts << QString("失败：%1\n").arg(m_failed);
-        
         if (!m_failedFiles.isEmpty()) {
             ts << "失败文件列表：\n";
-            for (const QString &failedFile : m_failedFiles) {
-                ts << "  " << failedFile << "\n";
-            }
+            for (const QString &failedFile : m_failedFiles) ts << "  " << failedFile << "\n";
         }
     }
     f.close();
@@ -390,28 +359,16 @@ bool BatchProcessor::backupOneFile(const QString &inputPath, QString &outError) 
 {
     const QFileInfo fi(inputPath);
     const QString dateStr = QDate::currentDate().toString("yyyy-MM-dd");
-    
     QString subDir = relativeSubDir(inputPath);
     QString backupDir = QDir(m_options.backupDir).filePath(dateStr);
-    
     if (!m_options.inputRootDir.isEmpty()) {
         QString rootName = QFileInfo(m_options.inputRootDir).fileName();
-        if (!rootName.isEmpty()) {
-            backupDir = QDir(backupDir).filePath(rootName);
-        }
+        if (!rootName.isEmpty()) backupDir = QDir(backupDir).filePath(rootName);
     }
-    
-    if (!subDir.isEmpty()) {
-        backupDir = QDir(backupDir).filePath(subDir);
-    }
-    
+    if (!subDir.isEmpty()) backupDir = QDir(backupDir).filePath(subDir);
     QDir().mkpath(backupDir);
     QString dstPath = QDir(backupDir).filePath(fi.fileName());
-    
-    if (QFile::exists(dstPath)) {
-        QFile::remove(dstPath);
-    }
-    
+    if (QFile::exists(dstPath)) QFile::remove(dstPath);
     if (!QFile::copy(inputPath, dstPath)) {
         outError = "复制失败";
         return false;
