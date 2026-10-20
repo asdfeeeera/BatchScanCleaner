@@ -1,5 +1,7 @@
 ﻿#include "blackedge.h"
 #include <opencv2/imgproc.hpp>
+#include <QFileInfo>
+#include <QDir>
 #include <vector>
 #include <algorithm>
 
@@ -34,27 +36,29 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
         std::vector<cv::Mat> hsvCh;
         cv::split(hsv, hsvCh);
         
-        // ★ 极度宽松的颜色检测：只要饱和度 > 15（有一丁点颜色）就抓出来
         cv::Mat colorMask2;
         cv::inRange(hsvCh[1], 15, 255, colorMask2);
         cv::Mat valMask;
-        cv::inRange(hsvCh[2], 20, 255, valMask); // 亮度 > 20，防止把黑色的字当成彩色
+        cv::inRange(hsvCh[2], 20, 255, valMask); 
         cv::bitwise_and(colorMask2, valMask, colorMask2);
         
         if (colorMask.empty()) colorMask = colorMask2;
         else cv::bitwise_or(colorMask, colorMask2, colorMask);
     }
 
-    // 2. ★ 物理级护盾：向外疯狂膨胀 35 像素！确保印章周围如同铁板一块
+    // ★ 印章膨胀保护 (为了看清楚，先用 15 像素，如果图上印章绿圈不够大，我们再调)
+    cv::Mat colorDilated;
     if (!colorMask.empty()) {
-        cv::dilate(colorMask, colorMask, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(35, 35)));
+        cv::dilate(colorMask, colorDilated, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(25, 25)));
+    } else {
+        colorDilated = cv::Mat::zeros(gray.size(), CV_8UC1);
     }
 
-    // 3. 自适应二值化抓暗区
+    // 2. 自适应二值化抓暗区
     cv::Mat binary;
     cv::adaptiveThreshold(gray, binary, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY_INV, 21, 10);
 
-    // 4. 形态学去除文字，连接黑边断点
+    // 3. 形态学去除文字，连接黑边
     cv::Mat openKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(21, 21));
     cv::Mat opened;
     cv::morphologyEx(binary, opened, cv::MORPH_OPEN, openKernel);
@@ -62,11 +66,11 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
     cv::Mat closeKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(21, 21));
     cv::morphologyEx(opened, opened, cv::MORPH_CLOSE, closeKernel);
 
-    // 5. 找轮廓并筛选贴边的
+    // 4. 找轮廓
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(opened, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
-    cv::Mat mask = cv::Mat::zeros(gray.size(), CV_8UC1);
+    cv::Mat blackMask = cv::Mat::zeros(gray.size(), CV_8UC1);
     for (const auto& cnt : contours) {
         cv::Rect r = cv::boundingRect(cnt);
         bool touchesEdge = (r.x <= 40) || (r.y <= 40) || (r.x + r.width >= W - 40) || (r.y + r.height >= H - 40);
@@ -74,29 +78,54 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
         bool isWholePage = (r.width >= W - 20 && r.height >= H - 20);
 
         if (touchesEdge && isBig && !isWholePage) {
-            cv::drawContours(mask, std::vector<std::vector<cv::Point>>{cnt}, -1, cv::Scalar(255), cv::FILLED);
+            cv::drawContours(blackMask, std::vector<std::vector<cv::Point>>{cnt}, -1, cv::Scalar(255), cv::FILLED);
         }
     }
 
-    // 6. 黑边掩膜稍微膨胀，吃掉边缘灰影
-    cv::dilate(mask, mask, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(8, 8)));
+    // 5. 黑边掩膜膨胀
+    cv::dilate(blackMask, blackMask, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(8, 8)));
 
-    // 7. 核心：从黑边中，强行抠掉那个膨胀了 35 像素的印章护盾！
-    if (!colorMask.empty()) {
-        cv::bitwise_and(mask, ~colorMask, mask);
-    }
+    // 6. 从黑边掩膜中扣除印章保护区
+    cv::Mat finalMask;
+    cv::bitwise_and(blackMask, ~colorDilated, finalMask);
 
-    // 8. 纯涂白
+    // ============================================================
+    // ★ 核心改动：生成 Debug 图！
+    // 红色 = 被判定为黑边并涂白的区域
+    // 绿色 = 被判定为印章并保护起来的区域
+    // 剩余 = 原图（文字、表格等）
+    // ============================================================
+    cv::Mat debugImg = src.clone();
+    if (debugImg.channels() == 1) cv::cvtColor(debugImg, debugImg, cv::COLOR_GRAY2BGR);
+
+    // 画黑边（红色）
+    if (src.channels() == 3) debugImg.setTo(cv::Scalar(0, 0, 255), finalMask);
+    else debugImg.setTo(cv::Scalar(0, 0, 255, 255), finalMask);
+
+    // 画印章保护（绿色）
+    if (src.channels() == 3) debugImg.setTo(cv::Scalar(0, 255, 0), colorDilated);
+    else debugImg.setTo(cv::Scalar(0, 255, 0, 255), colorDilated);
+
+    // 保存 Debug 图到临时目录
+    try {
+        QString debugPath = QDir::currentPath() + "/debug_mask_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".jpg";
+        cv::imwrite(debugPath.toStdString(), debugImg);
+        qDebug() << "【调试信息】已生成黑边/印章Mask调试图:" << debugPath;
+    } catch (...) {}
+
+    // ============================================================
+
+    // 7. 执行纯涂白
     cv::Mat dst = src.clone();
     cv::Scalar white;
     if (src.channels() == 4) white = cv::Scalar(255, 255, 255, 255);
     else if (src.channels() == 3) white = cv::Scalar(255, 255, 255);
     else white = cv::Scalar(255);
 
-    dst.setTo(white, mask);
+    dst.setTo(white, finalMask);
 
     result.image = dst;
-    result.filledPixels = cv::countNonZero(mask);
+    result.filledPixels = cv::countNonZero(finalMask);
     result.ok = true;
     return result;
 }
