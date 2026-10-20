@@ -170,17 +170,17 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
         if (step.type == StepType::Deskew) doDeskew = true;
     }
 
-    // ★ 2. 霸王条款：强制先去黑边
+    // ★ 霸王条款：强制先去黑边
     if (doBlackEdge) {
         runBlackEdge(img);
     }
     
-    // ★ 3. 霸王条款：强制后扶正
+    // ★ 霸王条款：强制后扶正
     if (doDeskew) {
         runDeskew(img);
     }
 
-    // 4. 遍历其他剩余步骤（跳过黑边和扶正）
+    // 遍历其他剩余步骤
     for (const StepItem &step : m_options.steps) {
         if (!step.enabled) continue;
         if (step.type == StepType::BlackEdge) continue; 

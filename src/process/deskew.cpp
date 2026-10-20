@@ -95,9 +95,12 @@ cv::Mat Deskew::rotateKeepAll(const cv::Mat &src, double angle)
     const double cosA = std::abs(std::cos(rad));
     const double sinA = std::abs(std::sin(rad));
 
-    // ★ 计算能容纳旋转后图像的最大边界，绝不裁切
-    const int newW = static_cast<int>(std::ceil(srcH * sinA + srcW * cosA)) + 2;
-    const int newH = static_cast<int>(std::ceil(srcH * cosA + srcW * sinA)) + 2;
+    int newW = static_cast<int>(std::ceil(srcH * sinA + srcW * cosA)) + 2;
+    int newH = static_cast<int>(std::ceil(srcH * cosA + srcW * sinA)) + 2;
+
+    // ★ 物理锁死：画布只能变大，绝对不允许比原图小哪怕1个像素！
+    newW = std::max(srcW, newW);
+    newH = std::max(srcH, newH);
 
     cv::Point2f center(srcW / 2.0f, srcH / 2.0f);
 
