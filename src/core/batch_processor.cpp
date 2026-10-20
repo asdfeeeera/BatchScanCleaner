@@ -170,10 +170,12 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
         if (step.type == StepType::Deskew) doDeskew = true;
     }
 
-    // ★ 2. 霸王条款：强制先去黑边，并传入印章掩膜
+    // ★ 2. 霸王条款：强制先去黑边，并强制传入印章保护掩膜
     if (doBlackEdge) {
         process::BlackEdgeOptions beOpt = m_options.blackEdgeOpt;
-        beOpt.protectMask = stampMask; // ★ 注入印章掩膜！彻底保护
+        if (!stampMask.empty()) {
+            beOpt.protectMask = stampMask; 
+        }
         process::BlackEdgeResult r = process::BlackEdge::removeBlackEdge(img, beOpt);
         if (r.ok && !r.image.empty()) img = r.image;
     }
