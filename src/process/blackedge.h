@@ -29,6 +29,9 @@ struct BlackEdgeOptions
     int smoothKernelSize = 5;
     int expandPixels = 5;
     bool fillWhite = true;
+
+    // ★ 新增：外部传入的保护掩膜（比如印章保护）
+    cv::Mat protectMask;
 };
 
 class BlackEdge

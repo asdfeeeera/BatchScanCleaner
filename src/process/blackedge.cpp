@@ -67,8 +67,8 @@ BlackEdgeResult BlackEdge::removeBlackEdge(const cv::Mat &src, const BlackEdgeOp
     };
 
     const double darkThr = 150.0; // 容忍发灰的黑边
-    const int maxScanX = W * 0.30; // 最大扫描深度
-    const int maxScanY = H * 0.30;
+    const int maxScanX = static_cast<int>(W * 0.30); // 修复警告
+    const int maxScanY = static_cast<int>(H * 0.30); // 修复警告
     const int maxGap = 40; // 允许 40 像素的反光断点
 
     // 1. 扫描上边缘
