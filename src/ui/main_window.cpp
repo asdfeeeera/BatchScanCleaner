@@ -197,10 +197,8 @@ void MainWindow::onFolderTreeClicked(QTreeWidgetItem *item, int column)
     QString path = item->data(0, Qt::UserRole).toString();
     if (path.isEmpty() || path == "COMPUTER" || path == "NETWORK") return;
     m_currentFolder = path;
-    
     QSettings ini(QCoreApplication::applicationDirPath() + QStringLiteral("/settings.ini"), QSettings::IniFormat); ini.setIniCodec("UTF-8");
     ini.setValue(QStringLiteral("General/lastInputRootDir"), m_currentFolder);
-
     statusBar()->showMessage(QString::fromUtf8("正在加载：%1 ...").arg(path));
     QStringList files; QDir dir(path); QStringList filters; filters << "*.jpg" << "*.jpeg" << "*.png" << "*.bmp" << "*.tif" << "*.tiff";
     QFileInfoList fileList = dir.entryInfoList(filters, QDir::Files);
@@ -257,10 +255,8 @@ void MainWindow::onAddFolder()
     const QString folder = QFileDialog::getExistingDirectory(this, QString::fromUtf8("选择图片文件夹"), QString(), QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
     if (folder.isEmpty()) return;
     m_currentFolder = folder;
-    
     QSettings ini(QCoreApplication::applicationDirPath() + QStringLiteral("/settings.ini"), QSettings::IniFormat); ini.setIniCodec("UTF-8");
     ini.setValue(QStringLiteral("General/lastInputRootDir"), m_currentFolder);
-
     const QStringList files = core::FileScanner::scanFolder(folder); m_currentFiles = files; fillFileTable(files);
 }
 
@@ -284,10 +280,8 @@ void MainWindow::onOpenImage()
 {
     const QString path = QFileDialog::getOpenFileName(this, QString::fromUtf8("选择图片"), QString(), QString::fromUtf8("图片文件 (*.jpg *.jpeg *.png *.bmp *.tif *.tiff)"));
     if (path.isEmpty()) return;
-    
     QSettings ini(QCoreApplication::applicationDirPath() + QStringLiteral("/settings.ini"), QSettings::IniFormat); ini.setIniCodec("UTF-8");
     ini.setValue(QStringLiteral("General/lastInputRootDir"), QFileInfo(path).absolutePath());
-
     showImageOnPreview(path);
 }
 
@@ -309,12 +303,23 @@ void MainWindow::onDeskew()
     if (result.ok && !result.image.empty()) { m_currentMat = result.image.clone(); showMatOnPreview(m_currentMat); statusBar()->showMessage(QString::fromUtf8("自动扶正完成，角度：%1°").arg(result.angle)); }
 }
 
+// ★ 修复：单点黑边去除时，必须传入印章保护掩膜
 void MainWindow::onRemoveBlackEdge()
 {
     if (!m_hasImage || m_currentMat.empty()) return;
+    
     process::BlackEdgeOptions options; options.fillWhite = true;
+    
+    // 提取印章掩膜并注入
+    protect::StampProtectOptions protectOpt;
+    const protect::StampProtectResult pr = protect::StampProtect::detect(m_currentMat, protectOpt);
+    if (pr.ok) options.protectMask = pr.mask;
+
     const process::BlackEdgeResult result = process::BlackEdge::removeBlackEdge(m_currentMat, options);
-    if (result.ok && !result.image.empty()) { m_currentMat = result.image.clone(); showMatOnPreview(m_currentMat); }
+    if (result.ok && !result.image.empty()) { 
+        m_currentMat = result.image.clone(); 
+        showMatOnPreview(m_currentMat); 
+    }
 }
 
 void MainWindow::onDenoise()
@@ -345,13 +350,18 @@ void MainWindow::onBackground()
     if (result.ok && !result.image.empty()) { m_currentMat = result.image.clone(); showMatOnPreview(m_currentMat); }
 }
 
+// ★ 修复：一键处理时，也必须传入印章保护掩膜
 void MainWindow::onOneClickProcess()
 {
     if (!m_hasImage || m_currentMat.empty()) return;
     
-    // ★ 强制：先黑边，后扶正
     if (m_oneClickBlackEdgeCheck && m_oneClickBlackEdgeCheck->isChecked()) {
-        const process::BlackEdgeResult r = process::BlackEdge::removeBlackEdge(m_currentMat, process::BlackEdgeOptions());
+        process::BlackEdgeOptions beOpt;
+        protect::StampProtectOptions protectOpt;
+        const protect::StampProtectResult pr = protect::StampProtect::detect(m_currentMat, protectOpt);
+        if (pr.ok) beOpt.protectMask = pr.mask;
+        
+        const process::BlackEdgeResult r = process::BlackEdge::removeBlackEdge(m_currentMat, beOpt);
         if (r.ok && !r.image.empty()) m_currentMat = r.image.clone();
     }
     if (m_oneClickDeskewCheck && m_oneClickDeskewCheck->isChecked()) {
@@ -418,7 +428,6 @@ void MainWindow::onOpenBackupManager() {}
 void MainWindow::onOpenAnnotator() {}
 void MainWindow::onBatchPreview(const cv::Mat &mat, bool before) {}
 
-// 获取输出路径
 static QString getOutputPathForSrc(const QString &sourcePath)
 {
     QSettings ini(QCoreApplication::applicationDirPath() + QStringLiteral("/settings.ini"), QSettings::IniFormat);
@@ -426,7 +435,6 @@ static QString getOutputPathForSrc(const QString &sourcePath)
     QString defaultOutDir = ini.value(QStringLiteral("General/defaultOutputDir")).toString().trimmed();
     QString suffix = ini.value(QStringLiteral("General/defaultOutputSuffix")).toString().trimmed();
     QString inputRootDir = ini.value(QStringLiteral("General/lastInputRootDir")).toString().trimmed();
-    
     QFileInfo srcInfo(sourcePath);
     QString relativePath;
     if (!inputRootDir.isEmpty() && sourcePath.startsWith(inputRootDir, Qt::CaseInsensitive)) {
@@ -437,13 +445,11 @@ static QString getOutputPathForSrc(const QString &sourcePath)
     } else {
         relativePath = srcInfo.absoluteDir().dirName() + "/" + srcInfo.fileName();
     }
-    
     QFileInfo relInfo(relativePath);
     QString fileName = relInfo.completeBaseName();
     if (!suffix.isEmpty()) fileName += suffix;
     fileName += ".jpg";
     relativePath = QDir(relInfo.path()).filePath(fileName);
-
     if (!defaultOutDir.isEmpty()) return QDir(defaultOutDir).filePath(relativePath);
     return srcInfo.absoluteDir().filePath("output/" + relativePath);
 }
@@ -477,9 +483,11 @@ void MainWindow::showMatOnPreview(const cv::Mat &mat)
 void MainWindow::showImageOnPreview(const QString &path)
 {
     cv::Mat mat; image::ImageMeta meta;
+    const QString outPath = getOutputPathForSrc(path);
+    QString loadPath = path;
+    if (QFile::exists(outPath)) loadPath = outPath;
     
-    // ★ 彻底断掉读取 output 文件的缓存！
-    if (image::ImageIO::read(path, mat, meta)) {
+    if (image::ImageIO::read(loadPath, mat, meta)) {
         m_currentMat = mat; m_currentImagePath = path; m_enhancePreviewBase = mat.clone(); showMatOnPreview(m_currentMat);
     }
 }
