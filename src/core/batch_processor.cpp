@@ -151,7 +151,6 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
 {
     cv::Mat img;
     image::ImageMeta meta;
-    // 使用 ImageIO::read 读取，完美解决中文路径问题
     if (!image::ImageIO::read(inputPath, img, meta)) {
         outError = "读取图片失败(可能包含中文路径或文件损坏)";
         return false;
@@ -184,8 +183,8 @@ bool BatchProcessor::processOneFile(const QString &inputPath, QString &outError)
     // 4. 遍历其他剩余步骤（跳过黑边和扶正）
     for (const StepItem &step : m_options.steps) {
         if (!step.enabled) continue;
-        if (step.type == StepType::BlackEdge) continue; // 已经强制优先执行过了
-        if (step.type == StepType::Deskew) continue;    // 已经强制优先执行过了
+        if (step.type == StepType::BlackEdge) continue; 
+        if (step.type == StepType::Deskew) continue;    
 
         switch (step.type) {
             case StepType::Denoise:    runDenoise(img, stampMask); break;

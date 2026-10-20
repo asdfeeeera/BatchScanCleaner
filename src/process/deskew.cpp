@@ -95,6 +95,7 @@ cv::Mat Deskew::rotateKeepAll(const cv::Mat &src, double angle)
     const double cosA = std::abs(std::cos(rad));
     const double sinA = std::abs(std::sin(rad));
 
+    // ★ 计算能容纳旋转后图像的最大边界，绝不裁切
     const int newW = static_cast<int>(std::ceil(srcH * sinA + srcW * cosA)) + 2;
     const int newH = static_cast<int>(std::ceil(srcH * cosA + srcW * sinA)) + 2;
 
@@ -105,6 +106,7 @@ cv::Mat Deskew::rotateKeepAll(const cv::Mat &src, double angle)
     rot.at<double>(1, 2) += (newH - srcH) / 2.0;
 
     cv::Mat dst;
+    // 四周填充纯白
     cv::warpAffine(src, dst, rot, cv::Size(newW, newH), cv::INTER_CUBIC, cv::BORDER_CONSTANT, cv::Scalar::all(255));
 
     return dst;
